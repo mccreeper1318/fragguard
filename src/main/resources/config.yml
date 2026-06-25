@@ -1,0 +1,26 @@
+# How long block logs are kept before automatic deletion.
+retention-days: 30
+
+# How often old records are removed from SQLite.
+cleanup-interval-minutes: 60
+
+# What FragGuard should log.
+log-explosions: true
+# Includes fire spreading and blocks destroyed by fire.
+log-fire-spread: true
+# Includes natural liquid flow and player bucket water/lava placement/removal.
+log-liquid-flow: true
+log-pistons: true
+
+# Lookup output settings.
+lookup-page-size: 15
+max-lookup-radius: 150
+
+# Rollback safety settings.
+# Increase these if you trust your server hardware and know the radius can be large.
+max-rollback-radius: 100
+rollback-blocks-per-tick: 500
+rollback-max-blocks-per-command: 50000
+
+# Usually false is safer for rollback because it avoids triggering gravity/neighbor updates everywhere.
+apply-physics-during-rollback: false

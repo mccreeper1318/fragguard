@@ -1,0 +1,372 @@
+package org.pinnaclesmp.fragguard;
+
+import io.papermc.paper.event.block.BlockBreakBlockEvent;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.World;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockState;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockBurnEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
+import org.bukkit.event.player.PlayerBucketFillEvent;
+
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
+
+final class BlockChangeListener implements Listener {
+    private static final String AIR_DATA = Material.AIR.createBlockData().getAsString();
+    private static final String SYSTEM_UUID = "SYSTEM";
+
+    private final FragGuardPlugin plugin;
+    private final Database database;
+
+    BlockChangeListener(FragGuardPlugin plugin, Database database) {
+        this.plugin = plugin;
+        this.database = database;
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockPlace(BlockPlaceEvent event) {
+        Player player = event.getPlayer();
+        Block placedBlock = event.getBlockPlaced();
+        BlockState replacedState = event.getBlockReplacedState();
+
+        logNow(
+                placedBlock,
+                ChangeAction.PLACE,
+                player.getUniqueId().toString(),
+                player.getName(),
+                replacedState.getBlockData().getAsString(),
+                placedBlock.getBlockData().getAsString()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockBreak(BlockBreakEvent event) {
+        Player player = event.getPlayer();
+        Block brokenBlock = event.getBlock();
+
+        logNow(
+                brokenBlock,
+                ChangeAction.BREAK,
+                player.getUniqueId().toString(),
+                player.getName(),
+                brokenBlock.getBlockData().getAsString(),
+                AIR_DATA
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockBurn(BlockBurnEvent event) {
+        if (!plugin.getConfig().getBoolean("log-fire-spread", true)) {
+            return;
+        }
+
+        Block burnedBlock = event.getBlock();
+        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        captureBefore(beforeStates, burnedBlock);
+        logAfterServerAppliesChange(beforeStates, ChangeAction.FIRE_BURN, "Fire Burn");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onPlayerBucketEmpty(PlayerBucketEmptyEvent event) {
+        if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
+            return;
+        }
+
+        Material bucket = event.getBucket();
+        if (bucket != Material.WATER_BUCKET && bucket != Material.LAVA_BUCKET) {
+            return;
+        }
+
+        Player player = event.getPlayer();
+        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        captureBefore(beforeStates, event.getBlock());
+        captureBefore(beforeStates, event.getBlockClicked().getRelative(event.getBlockFace()));
+        logAfterServerAppliesChange(
+                beforeStates,
+                ChangeAction.LIQUID_PLACE,
+                player.getUniqueId().toString(),
+                player.getName()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onPlayerBucketFill(PlayerBucketFillEvent event) {
+        if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
+            return;
+        }
+
+        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        captureLiquidBefore(beforeStates, event.getBlock());
+        captureLiquidBefore(beforeStates, event.getBlockClicked());
+        captureLiquidBefore(beforeStates, event.getBlockClicked().getRelative(event.getBlockFace()));
+        if (beforeStates.isEmpty()) {
+            return;
+        }
+
+        Player player = event.getPlayer();
+        logAfterServerAppliesChange(
+                beforeStates,
+                ChangeAction.LIQUID_REMOVE,
+                player.getUniqueId().toString(),
+                player.getName()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onEntityExplode(EntityExplodeEvent event) {
+        if (!plugin.getConfig().getBoolean("log-explosions", true)) {
+            return;
+        }
+
+        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        event.blockList().forEach(block -> captureBefore(beforeStates, block));
+
+        Entity entity = event.getEntity();
+        String actorName = "Explosion";
+        if (entity != null) {
+            actorName = "Explosion: " + readableEnum(entity.getType().name());
+        }
+
+        logAfterServerAppliesChange(beforeStates, ChangeAction.EXPLOSION, actorName);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockExplode(BlockExplodeEvent event) {
+        if (!plugin.getConfig().getBoolean("log-explosions", true)) {
+            return;
+        }
+
+        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        event.blockList().forEach(block -> captureBefore(beforeStates, block));
+
+        BlockState explodedState = event.getExplodedBlockState();
+        if (explodedState != null && explodedState.getType() != Material.AIR) {
+            captureBefore(beforeStates, explodedState.getBlock());
+        }
+
+        logAfterServerAppliesChange(beforeStates, ChangeAction.EXPLOSION, "Explosion: Block");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onFireSpread(BlockSpreadEvent event) {
+        if (!plugin.getConfig().getBoolean("log-fire-spread", true)) {
+            return;
+        }
+
+        if (!isFire(event.getNewState().getType()) && !isFire(event.getSource().getType())) {
+            return;
+        }
+
+        Block targetBlock = event.getBlock();
+        logNow(
+                targetBlock,
+                ChangeAction.FIRE_SPREAD,
+                SYSTEM_UUID,
+                "Fire Spread",
+                targetBlock.getBlockData().getAsString(),
+                event.getNewState().getBlockData().getAsString()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onLiquidFlow(BlockFromToEvent event) {
+        if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
+            return;
+        }
+
+        Material sourceType = event.getBlock().getType();
+        if (!isLiquid(sourceType)) {
+            return;
+        }
+
+        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        captureBefore(beforeStates, event.getToBlock());
+        logAfterServerAppliesChange(beforeStates, ChangeAction.LIQUID_FLOW, readableEnum(sourceType.name()) + " Flow");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    void onBlockBrokenByBlock(BlockBreakBlockEvent event) {
+        Block source = event.getSource();
+        Material sourceType = source.getType();
+        boolean liquidCause = isLiquid(sourceType);
+        boolean pistonCause = isPiston(sourceType);
+        if (!liquidCause && !pistonCause) {
+            return;
+        }
+        if ((liquidCause && !plugin.getConfig().getBoolean("log-liquid-flow", true))
+                || (pistonCause && !plugin.getConfig().getBoolean("log-pistons", true))) {
+            return;
+        }
+
+        Block broken = event.getBlock();
+
+        ChangeAction action = pistonCause ? ChangeAction.PISTON_BREAK : ChangeAction.LIQUID_BREAK;
+        String actorName = pistonCause ? "Piston Break" : readableEnum(sourceType.name()) + " Break";
+
+        logNow(
+                broken,
+                action,
+                SYSTEM_UUID,
+                actorName,
+                broken.getBlockData().getAsString(),
+                AIR_DATA
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onPistonExtend(BlockPistonExtendEvent event) {
+        if (!plugin.getConfig().getBoolean("log-pistons", true)) {
+            return;
+        }
+
+        Map<BlockPosition, String> beforeStates = capturePistonAffectedBlocks(event.getBlock(), event.getDirection(), event.getBlocks());
+        logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_EXTEND, "Piston Extend");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onPistonRetract(BlockPistonRetractEvent event) {
+        if (!plugin.getConfig().getBoolean("log-pistons", true)) {
+            return;
+        }
+
+        Map<BlockPosition, String> beforeStates = capturePistonAffectedBlocks(event.getBlock(), event.getDirection(), event.getBlocks());
+        logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_RETRACT, "Piston Retract");
+    }
+
+    private Map<BlockPosition, String> capturePistonAffectedBlocks(Block pistonBlock, org.bukkit.block.BlockFace direction, Iterable<Block> movedBlocks) {
+        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+
+        captureBefore(beforeStates, pistonBlock);
+        captureBefore(beforeStates, pistonBlock.getRelative(direction));
+        captureBefore(beforeStates, pistonBlock.getRelative(direction, 2));
+
+        for (Block movedBlock : movedBlocks) {
+            captureBefore(beforeStates, movedBlock);
+            captureBefore(beforeStates, movedBlock.getRelative(direction));
+            captureBefore(beforeStates, movedBlock.getRelative(direction.getOppositeFace()));
+        }
+
+        return beforeStates;
+    }
+
+    private void logAfterServerAppliesChange(Map<BlockPosition, String> beforeStates, ChangeAction action, String actorName) {
+        logAfterServerAppliesChange(beforeStates, action, SYSTEM_UUID, actorName);
+    }
+
+    private void logAfterServerAppliesChange(Map<BlockPosition, String> beforeStates, ChangeAction action, String actorUuid, String actorName) {
+        if (beforeStates.isEmpty()) {
+            return;
+        }
+
+        long happenedAt = System.currentTimeMillis();
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            for (Map.Entry<BlockPosition, String> entry : beforeStates.entrySet()) {
+                BlockPosition position = entry.getKey();
+                World world = Bukkit.getWorld(position.worldName());
+                if (world == null) {
+                    continue;
+                }
+
+                String beforeData = entry.getValue();
+                String afterData = world.getBlockAt(position.x(), position.y(), position.z()).getBlockData().getAsString();
+                if (beforeData.equals(afterData)) {
+                    continue;
+                }
+
+                database.insertAsync(new BlockChange(
+                        happenedAt,
+                        actorUuid,
+                        actorName,
+                        position.worldName(),
+                        position.x(),
+                        position.y(),
+                        position.z(),
+                        action,
+                        beforeData,
+                        afterData
+                ));
+            }
+        });
+    }
+
+    private void logNow(Block block, ChangeAction action, String actorUuid, String actorName, String beforeData, String afterData) {
+        if (beforeData.equals(afterData)) {
+            return;
+        }
+
+        database.insertAsync(new BlockChange(
+                System.currentTimeMillis(),
+                actorUuid,
+                actorName,
+                block.getWorld().getName(),
+                block.getX(),
+                block.getY(),
+                block.getZ(),
+                action,
+                beforeData,
+                afterData
+        ));
+    }
+
+    private void captureLiquidBefore(Map<BlockPosition, String> beforeStates, Block block) {
+        if (isLiquid(block.getType())) {
+            captureBefore(beforeStates, block);
+        }
+    }
+
+    private void captureBefore(Map<BlockPosition, String> beforeStates, Block block) {
+        beforeStates.putIfAbsent(
+                new BlockPosition(block.getWorld().getName(), block.getX(), block.getY(), block.getZ()),
+                block.getBlockData().getAsString()
+        );
+    }
+
+    private boolean isFire(Material material) {
+        return material == Material.FIRE || material == Material.SOUL_FIRE;
+    }
+
+    private boolean isLiquid(Material material) {
+        return material == Material.WATER || material == Material.LAVA;
+    }
+
+    private boolean isPiston(Material material) {
+        return material == Material.PISTON || material == Material.STICKY_PISTON || material == Material.PISTON_HEAD || material == Material.MOVING_PISTON;
+    }
+
+    private String readableEnum(String enumName) {
+        String lower = enumName.toLowerCase(Locale.ROOT).replace('_', ' ');
+        StringBuilder builder = new StringBuilder(lower.length());
+        boolean capitalizeNext = true;
+        for (char character : lower.toCharArray()) {
+            if (Character.isWhitespace(character)) {
+                builder.append(character);
+                capitalizeNext = true;
+            } else if (capitalizeNext) {
+                builder.append(Character.toUpperCase(character));
+                capitalizeNext = false;
+            } else {
+                builder.append(character);
+            }
+        }
+        return builder.toString();
+    }
+
+    private record BlockPosition(String worldName, int x, int y, int z) {
+    }
+}

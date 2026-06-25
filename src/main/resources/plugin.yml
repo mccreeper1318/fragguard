@@ -1,0 +1,15 @@
+name: FragGuard
+version: ${version}
+main: org.pinnaclesmp.fragguard.FragGuardPlugin
+description: Logs block placement and destruction for radius lookups and rollbacks.
+author: Kevin
+api-version: '26.2'
+commands:
+  fg:
+    description: FragGuard block logging, lookup, and rollback commands.
+    usage: /fg <lookup|rollback|help>
+    aliases: [fragguard]
+permissions:
+  fragguard.admin:
+    description: Allows use of all FragGuard commands.
+    default: op
