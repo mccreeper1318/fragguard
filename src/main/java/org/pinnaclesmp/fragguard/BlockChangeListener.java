@@ -15,6 +15,7 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -28,7 +29,7 @@ import java.util.Locale;
 import java.util.Map;
 
 final class BlockChangeListener implements Listener {
-    private static final String AIR_DATA = Material.AIR.createBlockData().getAsString();
+    private static final String AIR_DATA = "minecraft:air";
     private static final String SYSTEM_UUID = "SYSTEM";
 
     private final FragGuardPlugin plugin;
@@ -42,9 +43,19 @@ final class BlockChangeListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockPlace(BlockPlaceEvent event) {
         Player player = event.getPlayer();
-        Block placedBlock = event.getBlockPlaced();
-        BlockState replacedState = event.getBlockReplacedState();
 
+        if (event instanceof BlockMultiPlaceEvent multiPlaceEvent) {
+            for (BlockState replacedState : multiPlaceEvent.getReplacedBlockStates()) {
+                logPlacement(replacedState, player);
+            }
+            return;
+        }
+
+        logPlacement(event.getBlockReplacedState(), player);
+    }
+
+    private void logPlacement(BlockState replacedState, Player player) {
+        Block placedBlock = replacedState.getBlock();
         logNow(
                 placedBlock,
                 ChangeAction.PLACE,
