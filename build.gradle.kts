@@ -15,11 +15,19 @@ dependencies {
     compileOnly("io.papermc.paper:paper-api:26.2.build.+")
     implementation("org.xerial:sqlite-jdbc:3.49.1.0")
     implementation("org.slf4j:slf4j-nop:2.0.16")
+
+    testImplementation("io.papermc.paper:paper-api:26.2.build.+")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
+    testImplementation("org.mockito:mockito-core:5.23.0")
 }
 
 tasks {
     compileJava {
         options.encoding = "UTF-8"
+    }
+
+    test {
+        useJUnitPlatform()
     }
 
     processResources {
