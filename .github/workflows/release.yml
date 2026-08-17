@@ -1,0 +1,246 @@
+name: Build Release Package
+
+run-name: Build FragGuard ${{ github.event.release.tag_name || inputs.tag }}
+
+on:
+  release:
+    types:
+      - published
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-24.04
+
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Read and validate version
+        id: version
+        shell: bash
+        run: |
+          RAW_TAG="$RELEASE_TAG"
+          VERSION="$RAW_TAG"
+
+          if [[ "$VERSION" == v.* ]]; then
+            VERSION="${VERSION#v.}"
+          elif [[ "$VERSION" == v* ]]; then
+            VERSION="${VERSION#v}"
+          fi
+
+          # Stable examples: 26.2-6
+          # Prerelease examples: 26.2-6-beta.1, 26.2-6-rc.2
+          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+-[0-9]+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
+            BASE_VERSION="${BASH_REMATCH[1]}"
+          else
+            echo "Invalid FragGuard release tag: $RAW_TAG"
+            echo "Expected a tag such as 26.2-6, 26.2-6-beta.1, v26.2-6, or v26.2-6-beta.1."
+            exit 1
+          fi
+
+          TAG_IS_PRERELEASE=false
+          if [[ "$VERSION" != "$BASE_VERSION" ]]; then
+            TAG_IS_PRERELEASE=true
+          fi
+
+          RELEASE_IS_PRERELEASE="$(
+            gh release view "$RAW_TAG" \
+              --json isPrerelease \
+              --jq '.isPrerelease'
+          )"
+
+          if [[ "$TAG_IS_PRERELEASE" != "$RELEASE_IS_PRERELEASE" ]]; then
+            echo "The tag version and GitHub release type do not match."
+            echo "Tag: $RAW_TAG"
+            echo "Tag indicates prerelease: $TAG_IS_PRERELEASE"
+            echo "GitHub release is prerelease: $RELEASE_IS_PRERELEASE"
+            exit 1
+          fi
+
+          PROJECT_VERSION="$(
+            sed -nE \
+              's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+              build.gradle.kts \
+              | head -n 1
+          )"
+
+          if [[ -z "$PROJECT_VERSION" ]]; then
+            echo "Could not read the project version from build.gradle.kts."
+            exit 1
+          fi
+
+          if [[ "$PROJECT_VERSION" != "$BASE_VERSION" ]]; then
+            echo "Release tag base version does not match the Gradle project version."
+            echo "Release version: $VERSION"
+            echo "Base version:    $BASE_VERSION"
+            echo "Project version: $PROJECT_VERSION"
+            exit 1
+          fi
+
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$TAG_IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "FragGuard release version: $VERSION"
+          echo "FragGuard source version:  $PROJECT_VERSION"
+          echo "Prerelease: $TAG_IS_PRERELEASE"
+
+      - name: Apply release version to Gradle build
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          python3 - "$VERSION" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          version = sys.argv[1]
+          path = pathlib.Path("build.gradle.kts")
+          content = path.read_text(encoding="utf-8")
+          pattern = re.compile(r'(?m)^([ \t]*)version[ \t]*=[ \t]*"[^"]+"[ \t]*$')
+          updated, count = pattern.subn(
+              lambda match: f'{match.group(1)}version = "{version}"',
+              content,
+              count=1,
+          )
+
+          if count != 1:
+              raise SystemExit("Could not apply the release version to build.gradle.kts.")
+
+          path.write_text(updated, encoding="utf-8")
+          PY
+
+          APPLIED_VERSION="$(
+            sed -nE \
+              's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+              build.gradle.kts \
+              | head -n 1
+          )"
+
+          if [[ "$APPLIED_VERSION" != "$VERSION" ]]; then
+            echo "Failed to apply the release version to the Gradle build."
+            echo "Expected: $VERSION"
+            echo "Applied:  $APPLIED_VERSION"
+            exit 1
+          fi
+
+          echo "Gradle release version: $APPLIED_VERSION"
+
+      - name: Build plugin
+        run: ./gradlew --no-daemon clean build
+
+      - name: Verify and stage release files
+        id: package
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          EXPECTED_NAME="FragGuard-${VERSION}.jar"
+          EXPECTED_JAR="build/libs/${EXPECTED_NAME}"
+
+          if [[ ! -f "$EXPECTED_JAR" ]]; then
+            echo "Expected release JAR was not created: $EXPECTED_JAR"
+            echo "Available files:"
+            find build/libs -maxdepth 1 -type f -print || true
+            exit 1
+          fi
+
+          for REQUIRED_FILE in plugin.yml config.yml; do
+            if ! jar tf "$EXPECTED_JAR" | grep -qx "$REQUIRED_FILE"; then
+              echo "The built JAR does not contain $REQUIRED_FILE."
+              exit 1
+            fi
+          done
+
+          PLUGIN_VERSION="$(python3 - "$EXPECTED_JAR" <<'PY'
+          import re
+          import sys
+          import zipfile
+
+          jar_path = sys.argv[1]
+          with zipfile.ZipFile(jar_path) as archive:
+              plugin_yml = archive.read("plugin.yml").decode("utf-8")
+
+          match = re.search(
+              r"(?m)^\s*version:\s*['\"]?([^'\"\s]+)['\"]?\s*$",
+              plugin_yml,
+          )
+          if match is None:
+              raise SystemExit("Could not read the version from plugin.yml inside the JAR.")
+
+          print(match.group(1))
+          PY
+          )"
+
+          if [[ "$PLUGIN_VERSION" != "$VERSION" ]]; then
+            echo "plugin.yml version does not match the release tag."
+            echo "Tag version:        $VERSION"
+            echo "plugin.yml version: $PLUGIN_VERSION"
+            exit 1
+          fi
+
+          RELEASE_DIR="build/release"
+          mkdir -p "$RELEASE_DIR"
+          cp "$EXPECTED_JAR" "$RELEASE_DIR/$EXPECTED_NAME"
+
+          (
+            cd "$RELEASE_DIR"
+            sha256sum "$EXPECTED_NAME" > "$EXPECTED_NAME.sha256"
+          )
+
+          echo "jar=$RELEASE_DIR/$EXPECTED_NAME" >> "$GITHUB_OUTPUT"
+          echo "checksum=$RELEASE_DIR/$EXPECTED_NAME.sha256" >> "$GITHUB_OUTPUT"
+
+          echo "Release files:"
+          ls -l "$RELEASE_DIR"
+          cat "$RELEASE_DIR/$EXPECTED_NAME.sha256"
+
+      - name: Upload release files
+        shell: bash
+        run: |
+          gh release upload \
+            "$RELEASE_TAG" \
+            "${{ steps.package.outputs.jar }}" \
+            "${{ steps.package.outputs.checksum }}" \
+            --clobber
+
+      - name: Save workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fragguard-${{ steps.version.outputs.version }}
+          path: |
+            ${{ steps.package.outputs.jar }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
