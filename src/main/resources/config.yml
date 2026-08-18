@@ -4,6 +4,13 @@ retention-days: 30
 # How often old records are removed from SQLite.
 cleanup-interval-minutes: 60
 
+# Bound memory usage while SQLite writes are grouped into transactions.
+database-write-queue-capacity: 20000
+database-operation-queue-capacity: 256
+database-write-batch-size: 500
+database-query-timeout-seconds: 15
+database-shutdown-timeout-seconds: 15
+
 # What FragGuard should log.
 log-explosions: true
 # Includes fire spreading and blocks destroyed by fire.
@@ -21,6 +28,8 @@ max-lookup-radius: 150
 max-rollback-radius: 100
 rollback-blocks-per-tick: 500
 rollback-max-blocks-per-command: 50000
+# Preview tokens expire before a rollback can be confirmed.
+rollback-confirmation-timeout-seconds: 60
 
 # Usually false is safer for rollback because it avoids triggering gravity/neighbor updates everywhere.
 apply-physics-during-rollback: false
