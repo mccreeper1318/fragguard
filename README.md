@@ -31,6 +31,9 @@ Only server operators with `fragguard.admin` can use these commands.
 /fg lookup r:30
 /fg lookup r:30 p:2
 /fg rollback r:30 t:2d 7h 15m
+/fg rollback confirm <token>
+/fg undo <job-id>
+/fg status
 ```
 
 ### Lookup
@@ -47,7 +50,29 @@ Shows recent block-change logs in a full-height cylinder around your current pos
 /fg rollback r:30 t:2d 7h 15m
 ```
 
-Restores every logged block change in a radius of 30 blocks back to the state it was in 2 days, 7 hours, and 15 minutes ago. The radius covers the full world height, from bedrock/minimum world height to maximum build height.
+Previews every logged block change in a radius of 30 blocks back to the state it was in 2 days, 7 hours, and 15 minutes ago. The radius covers the full world height, from bedrock/minimum world height to maximum build height. The preview reports the affected block count, chunk count, and target time without changing any blocks.
+
+To execute the preview, enter the single-use token displayed by FragGuard:
+
+```text
+/fg rollback confirm <token>
+```
+
+Confirmation tokens are tied to the operator and expire after 60 seconds by default. Every confirmed rollback receives a durable job ID. Reverse a completed or failed rollback with:
+
+```text
+/fg undo <job-id>
+```
+
+Rollback and undo progress is stored in SQLite. Interrupted jobs automatically resume after a server restart, and overlapping jobs in the same world are rejected.
+
+### Storage status
+
+```text
+/fg status
+```
+
+Shows database health, bounded write/control queue usage, coalesced same-tick changes, and dropped-write warnings. Block changes are written through one long-lived SQLite connection in transactional batches; lookups and rollback previews read all changes accepted before the query was submitted.
 
 ## Config
 
@@ -56,6 +81,11 @@ Restores every logged block change in a radius of 30 blocks back to the state it
 ```yaml
 retention-days: 30
 cleanup-interval-minutes: 60
+database-write-queue-capacity: 20000
+database-operation-queue-capacity: 256
+database-write-batch-size: 500
+database-query-timeout-seconds: 15
+database-shutdown-timeout-seconds: 15
 
 log-explosions: true
 log-fire-spread: true
@@ -68,6 +98,7 @@ max-lookup-radius: 150
 max-rollback-radius: 100
 rollback-blocks-per-tick: 500
 rollback-max-blocks-per-command: 50000
+rollback-confirmation-timeout-seconds: 60
 apply-physics-during-rollback: false
 ```
 
@@ -95,7 +126,8 @@ Put that JAR into your server's `plugins` folder and restart the Paper server.
 - It does not restore inventories inside containers, sign text, books, or other tile-entity contents.
 - Explosion, fire burn, bucket, liquid, and piston handlers record the before-state during the event and the after-state on the next server tick so the saved log matches what the server actually changed.
 - Fire-burn and bucket-source logging was added after the first version. Old damage that happened before installing this update cannot be rolled back unless it was already logged.
-- Rollbacks are applied in batches to reduce lag.
+- Rollback previews are capped inside SQLite at the configured maximum plus one, and use indexed world/chunk coordinates instead of loading an entire region's history.
+- Rollbacks and undo operations are applied in durable batches to reduce lag and recover safely after restart.
 
 
 ## Gradle / IntelliJ note

@@ -7,7 +7,7 @@ api-version: '26.2'
 commands:
   fg:
     description: FragGuard block logging, lookup, and rollback commands.
-    usage: /fg <lookup|rollback|help>
+    usage: /fg <lookup|rollback|undo|status|help>
     aliases: [fragguard]
 permissions:
   fragguard.admin:

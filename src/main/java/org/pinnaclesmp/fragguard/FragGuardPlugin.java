@@ -31,6 +31,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         PluginCommand command = Objects.requireNonNull(getCommand("fg"), "Command /fg is missing from plugin.yml");
         command.setExecutor(commandExecutor);
         command.setTabCompleter(commandExecutor);
+        commandExecutor.resumeInterruptedJobs();
 
         scheduleCleanup();
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");

@@ -1,5 +1,23 @@
 # Changelog
 
+## The database write system can be overwhelmed by ordinary gameplay fix
+
+- Replaced per-change SQLite connections with one dedicated database worker and long-lived connection.
+- Added bounded write and operation queues, transactional write batches, same-tick coordinate coalescing, fair query scheduling, and read-your-writes barriers.
+- Added queue-depth/storage-health warnings, configurable capacity and timeout settings, and the `/fg status` operator command.
+
+## Rollback queries can read millions of rows before enforcing the limit fix
+
+- Persisted indexed world UUID and chunk coordinates, including automatic migration of existing block history.
+- Selected each coordinate's earliest rollback state directly in SQLite with `ROW_NUMBER()` and enforced `rollback-max-blocks-per-command + 1` in the SQL query.
+- Added exact indexed region filtering, cancellable query timeouts, and visible rollback-preview progress updates.
+
+## Rollbacks execute immediately with no preview, confirmation, or undo fix
+
+- Changed `/fg rollback` to show the affected blocks, chunks, and target time without modifying the world.
+- Added expiring, operator-bound `/fg rollback confirm <token>` confirmation and durable rollback job IDs.
+- Added `/fg undo <job-id>`, persisted per-block original states and batch progress, rejected overlapping jobs, and automatically resumed interrupted rollback/undo jobs after restart.
+
 ## Player block breaks always record air as the result fix
 
 - Deferred player break logging until the next server tick so FragGuard records the block data that actually remains after the break instead of assuming air.
