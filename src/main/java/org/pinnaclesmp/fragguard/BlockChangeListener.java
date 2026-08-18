@@ -5,7 +5,6 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
-import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
@@ -16,8 +15,6 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
-import org.bukkit.event.block.BlockMultiPlaceEvent;
-import org.bukkit.event.block.BlockPhysicsEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -29,23 +26,13 @@ import org.bukkit.event.player.PlayerBucketFillEvent;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 
 final class BlockChangeListener implements Listener {
-    private static final String AIR_DATA = "minecraft:air";
+    private static final String AIR_DATA = Material.AIR.createBlockData().getAsString();
     private static final String SYSTEM_UUID = "SYSTEM";
-    private static final BlockFace[] PLAYER_BREAK_NEIGHBORS = {
-            BlockFace.UP,
-            BlockFace.DOWN,
-            BlockFace.NORTH,
-            BlockFace.SOUTH,
-            BlockFace.EAST,
-            BlockFace.WEST
-    };
 
     private final FragGuardPlugin plugin;
     private final Database database;
-    private final Map<UUID, PendingPlayerBreak> pendingPlayerBreaks = new LinkedHashMap<>();
 
     BlockChangeListener(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
@@ -55,19 +42,9 @@ final class BlockChangeListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockPlace(BlockPlaceEvent event) {
         Player player = event.getPlayer();
+        Block placedBlock = event.getBlockPlaced();
+        BlockState replacedState = event.getBlockReplacedState();
 
-        if (event instanceof BlockMultiPlaceEvent multiPlaceEvent) {
-            for (BlockState replacedState : multiPlaceEvent.getReplacedBlockStates()) {
-                logPlacement(replacedState, player);
-            }
-            return;
-        }
-
-        logPlacement(event.getBlockReplacedState(), player);
-    }
-
-    private void logPlacement(BlockState replacedState, Player player) {
-        Block placedBlock = replacedState.getBlock();
         logNow(
                 placedBlock,
                 ChangeAction.PLACE,
@@ -81,50 +58,16 @@ final class BlockChangeListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockBreak(BlockBreakEvent event) {
         Player player = event.getPlayer();
-        UUID playerUuid = player.getUniqueId();
-        PendingPlayerBreak pendingBreak = pendingPlayerBreaks.get(playerUuid);
-        boolean shouldScheduleFlush = pendingBreak == null;
-
-        if (pendingBreak == null) {
-            pendingBreak = new PendingPlayerBreak(
-                    System.currentTimeMillis(),
-                    playerUuid.toString(),
-                    player.getName()
-            );
-            pendingPlayerBreaks.put(playerUuid, pendingBreak);
-        }
-
         Block brokenBlock = event.getBlock();
-        captureBefore(pendingBreak.beforeStates, brokenBlock);
-        for (BlockFace face : PLAYER_BREAK_NEIGHBORS) {
-            captureBefore(pendingBreak.beforeStates, brokenBlock.getRelative(face));
-        }
 
-        if (shouldScheduleFlush) {
-            PendingPlayerBreak scheduledBreak = pendingBreak;
-            Bukkit.getScheduler().runTask(
-                    plugin,
-                    () -> flushPlayerBreak(playerUuid, scheduledBreak)
-            );
-        }
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    void onBlockPhysics(BlockPhysicsEvent event) {
-        if (pendingPlayerBreaks.isEmpty()) {
-            return;
-        }
-
-        Block affectedBlock = event.getBlock();
-        BlockPosition affectedPosition = positionOf(affectedBlock);
-        BlockPosition sourcePosition = positionOf(event.getSourceBlock());
-
-        for (PendingPlayerBreak pendingBreak : pendingPlayerBreaks.values()) {
-            if (pendingBreak.beforeStates.containsKey(sourcePosition)
-                    || pendingBreak.beforeStates.containsKey(affectedPosition)) {
-                captureBefore(pendingBreak.beforeStates, affectedBlock);
-            }
-        }
+        logNow(
+                brokenBlock,
+                ChangeAction.BREAK,
+                player.getUniqueId().toString(),
+                player.getName(),
+                brokenBlock.getBlockData().getAsString(),
+                AIR_DATA
+        );
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -332,69 +275,34 @@ final class BlockChangeListener implements Listener {
         }
 
         long happenedAt = System.currentTimeMillis();
-        Bukkit.getScheduler().runTask(
-                plugin,
-                () -> writeCapturedChanges(
-                        beforeStates,
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            for (Map.Entry<BlockPosition, String> entry : beforeStates.entrySet()) {
+                BlockPosition position = entry.getKey();
+                World world = Bukkit.getWorld(position.worldName());
+                if (world == null) {
+                    continue;
+                }
+
+                String beforeData = entry.getValue();
+                String afterData = world.getBlockAt(position.x(), position.y(), position.z()).getBlockData().getAsString();
+                if (beforeData.equals(afterData)) {
+                    continue;
+                }
+
+                database.insertAsync(new BlockChange(
                         happenedAt,
-                        action,
                         actorUuid,
-                        actorName
-                )
-        );
-    }
-
-    private void flushPlayerBreak(UUID playerUuid, PendingPlayerBreak pendingBreak) {
-        if (!pendingPlayerBreaks.remove(playerUuid, pendingBreak)) {
-            return;
-        }
-
-        writeCapturedChanges(
-                pendingBreak.beforeStates,
-                pendingBreak.happenedAt,
-                ChangeAction.BREAK,
-                pendingBreak.actorUuid,
-                pendingBreak.actorName
-        );
-    }
-
-    private void writeCapturedChanges(
-            Map<BlockPosition, String> beforeStates,
-            long happenedAt,
-            ChangeAction action,
-            String actorUuid,
-            String actorName
-    ) {
-        for (Map.Entry<BlockPosition, String> entry : beforeStates.entrySet()) {
-            BlockPosition position = entry.getKey();
-            World world = Bukkit.getWorld(position.worldName());
-            if (world == null) {
-                continue;
+                        actorName,
+                        position.worldName(),
+                        position.x(),
+                        position.y(),
+                        position.z(),
+                        action,
+                        beforeData,
+                        afterData
+                ));
             }
-
-            String beforeData = entry.getValue();
-            String afterData = world.getBlockAt(
-                    position.x(),
-                    position.y(),
-                    position.z()
-            ).getBlockData().getAsString();
-            if (beforeData.equals(afterData)) {
-                continue;
-            }
-
-            database.insertAsync(new BlockChange(
-                    happenedAt,
-                    actorUuid,
-                    actorName,
-                    position.worldName(),
-                    position.x(),
-                    position.y(),
-                    position.z(),
-                    action,
-                    beforeData,
-                    afterData
-            ));
-        }
+        });
     }
 
     private void logNow(Block block, ChangeAction action, String actorUuid, String actorName, String beforeData, String afterData) {
@@ -424,17 +332,8 @@ final class BlockChangeListener implements Listener {
 
     private void captureBefore(Map<BlockPosition, String> beforeStates, Block block) {
         beforeStates.putIfAbsent(
-                positionOf(block),
+                new BlockPosition(block.getWorld().getName(), block.getX(), block.getY(), block.getZ()),
                 block.getBlockData().getAsString()
-        );
-    }
-
-    private BlockPosition positionOf(Block block) {
-        return new BlockPosition(
-                block.getWorld().getName(),
-                block.getX(),
-                block.getY(),
-                block.getZ()
         );
     }
 
@@ -466,23 +365,6 @@ final class BlockChangeListener implements Listener {
             }
         }
         return builder.toString();
-    }
-
-    private static final class PendingPlayerBreak {
-        private final long happenedAt;
-        private final String actorUuid;
-        private final String actorName;
-        private final Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
-
-        private PendingPlayerBreak(
-                long happenedAt,
-                String actorUuid,
-                String actorName
-        ) {
-            this.happenedAt = happenedAt;
-            this.actorUuid = actorUuid;
-            this.actorName = actorName;
-        }
     }
 
     private record BlockPosition(String worldName, int x, int y, int z) {
