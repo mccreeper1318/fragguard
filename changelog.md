@@ -8,6 +8,7 @@
 - Preserved the original event tick for deferred next-tick block snapshots so unrelated changes from different ticks cannot be merged.
 - Kept writes queued through their enqueue tick before normal batch flushing, preserving same-tick coalescing while avoiding cross-tick history corruption.
 - Added regression coverage for same-tick changes that cross wall-clock buckets and distinct server ticks inside the same 50 ms bucket.
+- Fixed release builds failing version validation by aligning the Gradle project base version with the `26.2-3` release line; prerelease workflows can now apply tags such as `26.2-3-beta.2` correctly.
 
 ## 26.2-3-beta.1
 
