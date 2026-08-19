@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "org.pinnaclesmp"
-version = "1.0.1"
+version = "26.2-3"
 
 java {
     // Paper 26.x uses the newer Paper API versioning and currently documents Java 25 for 26.x builds.
