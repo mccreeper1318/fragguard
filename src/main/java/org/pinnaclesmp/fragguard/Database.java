@@ -24,7 +24,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    private static final long TICK_MILLIS = 50L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final String AREA_FILTER = """
             world_uuid IN (?, ?)
@@ -124,17 +123,21 @@ final class Database {
         }
 
         String worldUuid = resolveWorldUuid(change.worldName());
-        CoalesceKey key = new CoalesceKey(worldUuid, change.x(), change.y(), change.z(), change.happenedAt() / TICK_MILLIS);
+        long enqueuedTick = plugin.getServer().getCurrentTick();
+        long serverTick = change.serverTick() == BlockChange.UNSPECIFIED_SERVER_TICK
+                ? enqueuedTick
+                : change.serverTick();
+        CoalesceKey key = new CoalesceKey(worldUuid, change.x(), change.y(), change.z(), serverTick);
         synchronized (coalescedChanges) {
             PendingBlockChange existing = coalescedChanges.get(key);
             if (existing != null) {
-                existing.change = merge(existing.change, change);
+                existing.change = merge(existing.change, change, serverTick);
                 coalescedWrites.incrementAndGet();
                 return;
             }
 
             long sequence = acceptedWriteSequence.get() + 1;
-            PendingBlockChange pending = new PendingBlockChange(sequence, key, worldUuid, change);
+            PendingBlockChange pending = new PendingBlockChange(sequence, key, enqueuedTick, worldUuid, change);
             if (!writeQueue.offer(pending)) {
                 droppedWrites.incrementAndGet();
                 warnStorage("FragGuard database write queue is full (" + writeCapacity
@@ -374,8 +377,7 @@ final class Database {
                 }
 
                 PendingBlockChange first = writeQueue.peek();
-                if (first != null && (!running || writeQueue.size() >= batchSize
-                        || System.currentTimeMillis() / TICK_MILLIS > first.key.tick)) {
+                if (first != null && (!running || plugin.getServer().getCurrentTick() != first.enqueuedTick)) {
                     flushWriteBatch(false);
                     continue;
                 }
@@ -557,15 +559,27 @@ final class Database {
         if (first == null) {
             return;
         }
-        if (!force && running && writeQueue.size() < batchSize
-                && System.currentTimeMillis() / TICK_MILLIS <= first.key.tick) {
+
+        long currentTick = plugin.getServer().getCurrentTick();
+        if (!force && running && first.enqueuedTick == currentTick) {
             return;
         }
 
         List<PendingBlockChange> batch = new ArrayList<>(Math.min(batchSize, writeQueue.size()));
         synchronized (coalescedChanges) {
-            writeQueue.drainTo(batch, batchSize);
-            for (PendingBlockChange pending : batch) {
+            while (batch.size() < batchSize) {
+                PendingBlockChange pending = writeQueue.peek();
+                if (pending == null) {
+                    break;
+                }
+                if (!force && running && pending.enqueuedTick == currentTick) {
+                    break;
+                }
+                pending = writeQueue.poll();
+                if (pending == null) {
+                    break;
+                }
+                batch.add(pending);
                 coalescedChanges.remove(pending.key, pending);
             }
         }
@@ -860,8 +874,8 @@ final class Database {
         }
     }
 
-    private BlockChange merge(BlockChange previous, BlockChange latest) {
-        return new BlockChange(previous.happenedAt(), latest.actorUuid(), latest.actorName(), previous.worldName(),
+    private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {
+        return new BlockChange(previous.happenedAt(), serverTick, latest.actorUuid(), latest.actorName(), previous.worldName(),
                 previous.x(), previous.y(), previous.z(), latest.action(), previous.beforeData(), latest.afterData());
     }
 
@@ -913,12 +927,15 @@ final class Database {
     private static final class PendingBlockChange {
         private final long sequence;
         private final CoalesceKey key;
+        private final long enqueuedTick;
         private final String worldUuid;
         private BlockChange change;
 
-        private PendingBlockChange(long sequence, CoalesceKey key, String worldUuid, BlockChange change) {
+        private PendingBlockChange(long sequence, CoalesceKey key, long enqueuedTick,
+                                   String worldUuid, BlockChange change) {
             this.sequence = sequence;
             this.key = key;
+            this.enqueuedTick = enqueuedTick;
             this.worldUuid = worldUuid;
             this.change = change;
         }

@@ -1,5 +1,14 @@
 # FG Changelog
 
+## 26.2-3-beta.2
+
+### Fixed
+
+- Fixed #27 by using the actual Paper server tick as the database coalescing key instead of 50 ms wall-clock buckets.
+- Preserved the original event tick for deferred next-tick block snapshots so unrelated changes from different ticks cannot be merged.
+- Kept writes queued through their enqueue tick before normal batch flushing, preserving same-tick coalescing while avoiding cross-tick history corruption.
+- Added regression coverage for same-tick changes that cross wall-clock buckets and distinct server ticks inside the same 50 ms bucket.
+
 ## 26.2-3-beta.1
 
 ### Added
