@@ -104,4 +104,15 @@ class DatabaseShutdownTest {
         assertFalse(health.healthy(),
                 "a session with confirmed log loss must not report storage health as OK");
     }
+
+    @Test
+    void activeDatabaseErrorIsVisibleEvenWhileWorkerIsReachable() {
+        DatabaseHealth health = new DatabaseHealth(0, 64, 0, 16,
+                0L, 0L, true, "database or disk is full");
+
+        assertTrue(health.storageAvailable());
+        assertTrue(health.degraded());
+        assertFalse(health.healthy(),
+                "a reported SQLite failure must be visible instead of appearing healthy");
+    }
 }
