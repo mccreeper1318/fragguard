@@ -13,6 +13,7 @@
 - Added regression coverage for crash-window rollback mutations whose world change succeeded before the batch's `applied` progress marker was committed.
 - Added regression coverage for stale undo coordinates remaining unresolved and retryable until a later undo attempt succeeds.
 - Added shutdown regression coverage proving queued current-tick logs drain to SQLite before close and the database worker completes its WAL checkpoint after the drain.
+- Added shutdown accounting regression coverage ensuring abandoned writes are not reported as successfully drained and still-running in-flight write batches are surfaced as unconfirmed.
 
 ### Changed
 
@@ -25,6 +26,8 @@
 - Stale rollback audit rows are retracted when live-state revalidation fails, and `/fg undo` now operates only on coordinates the rollback actually changed or durably prepared for mutation before an interrupted progress commit; force retries completed by another actor are marked conflicting and excluded.
 - Undo conflicts now remain unresolved instead of being marked `undone`; an incomplete undo attempt stays retryable and reports the number of coordinates that still need another `/fg undo <job-id>` attempt.
 - Shutdown now reports queued, drained, remaining, and lost writes; after all accepted work drains, the database worker runs `wal_checkpoint(TRUNCATE)` before closing its SQLite connection and warns if the worker or checkpoint does not complete.
+- Shutdown cancellation now waits through a configurable second grace period after cancelling the active SQLite statement; if the worker still does not stop, queued writes are explicitly abandoned/count as lost, pending database operations are failed, and any active write batch is reported as unconfirmed.
+- Shutdown `drained` reporting is now derived from successfully completed write batches instead of queue-depth shrinkage, so failed or abandoned writes cannot be presented as persisted.
 - Any confirmed dropped log or unavailable SQLite worker now keeps storage visibly degraded for the session, with configurable repeated warnings sent to online operators.
 
 ### Fixed
@@ -43,6 +46,8 @@
 - Fixed externally completed force retries being incorrectly eligible for `/fg undo`; when another actor reaches the rollback target after a stale force audit is retracted, FragGuard now records the retry as conflicted/non-applied so the saved pre-retry state cannot later overwrite that external change.
 - Fixed stale undo coordinates being silently finalized as `undone = 1`; revalidation conflicts now stay recoverable, prevent the job from falsely becoming `UNDONE`, and are reported with a retry instruction.
 - Fixed #9 by making shutdown durability observable: FragGuard drains accepted bounded-queue work before close, checkpoints the WAL on the database worker, explicitly counts still-queued logs as dropped if the worker fails, reports incomplete shutdown state, preserves degraded health after known log loss/database failure, and notifies online operators when logging is unhealthy.
+- Fixed the shutdown timeout path returning immediately after cancellation while accepted writes were still owned by a live worker; FragGuard now waits for cancellation and explicitly accounts for queued losses plus any in-flight writes whose durability remains unconfirmed.
+- Fixed abandoned shutdown writes being counted as both `drained` and `lost`; only write batches that actually complete successfully contribute to the drained count.
 
 ## 26.2-3-beta.1
 
