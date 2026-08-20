@@ -5,6 +5,10 @@ record RollbackTarget(
         int x,
         int y,
         int z,
-        String blockData
+        String blockData,
+        String expectedData
 ) {
+    RollbackTarget(String worldName, int x, int y, int z, String blockData) {
+        this(worldName, x, y, z, blockData, blockData);
+    }
 }

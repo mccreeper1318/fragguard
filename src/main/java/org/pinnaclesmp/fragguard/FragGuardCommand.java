@@ -30,12 +30,14 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z")
             .withZone(ZoneId.systemDefault());
     private static final String OPERATION_QUEUE_FULL = "FragGuard's database operation queue is full.";
+    private static final int MAX_FORCE_REVALIDATION_RETRIES = 8;
 
     private final FragGuardPlugin plugin;
     private final Database database;
@@ -113,7 +115,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
     private void sendLookupResults(Player player, LookupPage page, int radius) {
         player.sendMessage(color("&8&m------&r &bFragGuard Lookup &8&m------"));
-        player.sendMessage(color("&7Radius: &f" + radius + " &7| Page: &f" + page.page() + "/" + page.totalPages() + " &7| Results: &f" + page.totalRows()));
+        player.sendMessage(color("&7Radius: &f" + radius + " &7| Page: &f" + page.page() + "/" + page.totalPages()
+                + " &7| Results: &f" + page.totalRows()));
 
         if (page.rows().isEmpty()) {
             player.sendMessage(color("&7No block change logs found here in the retained history."));
@@ -190,34 +193,38 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        long targetTimestamp = System.currentTimeMillis() - durationMillis;
+        boolean force = Arrays.stream(args).anyMatch(this::isForceToken);
+        long snapshotTimestamp = System.currentTimeMillis();
+        long targetTimestamp = snapshotTimestamp - durationMillis;
         int centerX = player.getLocation().getBlockX();
         int centerZ = player.getLocation().getBlockZ();
         String worldName = player.getWorld().getName();
 
-        player.sendMessage(color("&7Finding changes to rollback in radius &f" + radius + "&7 back to &f" + DATE_FORMAT.format(Instant.ofEpochMilli(targetTimestamp)) + "&7..."));
+        player.sendMessage(color("&7Finding changes to rollback in radius &f" + radius + "&7 back to &f"
+                + DATE_FORMAT.format(Instant.ofEpochMilli(targetTimestamp)) + "&7..."));
         int maxBlocks = Math.max(1, plugin.getConfig().getInt("rollback-max-blocks-per-command", 50_000));
         CompletableFuture<List<RollbackTarget>> query = database.rollbackTargetsAsync(
-                worldName, centerX, centerZ, radius, targetTimestamp, maxBlocks);
+                worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp, maxBlocks);
         reportQueryProgress(player, query);
-        query
-                .whenComplete((targets, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
-                    if (throwable != null) {
-                        Throwable cause = unwrap(throwable);
-                        if (cause instanceof TimeoutException) {
-                            player.sendMessage(color("&cRollback preview timed out. Reduce the radius or time range and try again."));
-                        } else {
-                            plugin.getLogger().log(Level.WARNING, "FragGuard rollback query failed", cause);
-                            player.sendMessage(color("&cRollback query failed. Check console for details."));
-                        }
-                        return;
-                    }
-                    previewRollback(player, targets, centerX, centerZ, radius, targetTimestamp, maxBlocks);
-                }));
+        query.whenComplete((targets, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (throwable != null) {
+                Throwable cause = unwrap(throwable);
+                if (cause instanceof TimeoutException) {
+                    player.sendMessage(color("&cRollback preview timed out. Reduce the radius or time range and try again."));
+                } else {
+                    plugin.getLogger().log(Level.WARNING, "FragGuard rollback query failed", cause);
+                    player.sendMessage(color("&cRollback query failed. Check console for details."));
+                }
+                return;
+            }
+            previewRollback(player, targets, centerX, centerZ, radius, targetTimestamp,
+                    snapshotTimestamp, force, maxBlocks);
+        }));
     }
 
     private void previewRollback(Player player, List<RollbackTarget> targets, int centerX, int centerZ,
-                                 int radius, long targetTimestamp, int maxBlocks) {
+                                 int radius, long targetTimestamp, long snapshotTimestamp,
+                                 boolean force, int maxBlocks) {
         if (targets.isEmpty()) {
             player.sendMessage(color("&7No block changes found to rollback in that radius."));
             return;
@@ -235,8 +242,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 || entry.getValue().actorUuid.equals(player.getUniqueId()));
         String token = UUID.randomUUID().toString().substring(0, 8);
         RollbackPreview preview = new RollbackPreview(token, player.getUniqueId(), player.getName(),
-                player.getWorld().getName(), centerX, centerZ, radius, targetTimestamp,
-                List.copyOf(targets), now + expirationSeconds * 1_000L);
+                player.getWorld().getName(), centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
+                force, List.copyOf(targets), now + expirationSeconds * 1_000L);
         previews.put(token, preview);
 
         long affectedChunks = targets.stream()
@@ -247,6 +254,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(color("&7Affected blocks: &f" + targets.size() + " &7| Chunks: &f" + affectedChunks
                 + " &7| Radius: &f" + radius));
         player.sendMessage(color("&7Target time: &f" + DATE_FORMAT.format(Instant.ofEpochMilli(targetTimestamp))));
+        player.sendMessage(color("&7Snapshot: &f" + DATE_FORMAT.format(Instant.ofEpochMilli(snapshotTimestamp))));
+        if (force) {
+            player.sendMessage(color("&cFORCE mode: newer conflicting block states will be overwritten after revalidation."));
+        } else {
+            player.sendMessage(color("&aConflict protection: newer block changes will be skipped and reported."));
+        }
         player.sendMessage(color("&eNo blocks have been changed. Confirm within " + expirationSeconds
                 + " seconds: &f/fg rollback confirm " + token));
     }
@@ -275,7 +288,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         previews.remove(preview.token);
         player.sendMessage(color("&7Saving rollback job and undo information..."));
         database.createRollbackJobAsync(preview.actorUuid.toString(), preview.actorName, preview.worldName,
-                        preview.centerX, preview.centerZ, preview.radius, preview.targetTimestamp, preview.targets)
+                        preview.centerX, preview.centerZ, preview.radius, preview.targetTimestamp,
+                        preview.snapshotTimestamp, preview.force, preview.targets)
                 .whenComplete((job, throwable) -> onServerThread(() -> {
                     if (throwable != null) {
                         reportJobError(player, "Could not start rollback", throwable);
@@ -321,7 +335,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             }
             for (RollbackJob job : jobs) {
                 boolean undo = job.status().equals("UNDOING");
-                plugin.getLogger().warning("Resuming interrupted " + (undo ? "undo" : "rollback") + " job #" + job.id() + ".");
+                plugin.getLogger().warning("Resuming interrupted " + (undo ? "undo" : "rollback")
+                        + " job #" + job.id() + ".");
                 Player operator;
                 try {
                     operator = Bukkit.getPlayer(UUID.fromString(job.actorUuid()));
@@ -350,15 +365,24 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private void runJobBatch(RollbackJob job, Player operator, List<RollbackJobChange> changes,
                              int index, boolean undo, int previousProgress) {
         if (index >= changes.size()) {
-            database.completeRollbackJobAsync(job.id(), undo).whenComplete((ignored, throwable) -> onServerThread(() -> {
+            database.completeRollbackJobAsync(job.id(), undo).whenComplete((completedJob, throwable) -> onServerThread(() -> {
                 executingJobs.remove(job.id());
                 if (throwable != null) {
                     failJob(job, operator, throwable);
                     return;
                 }
+                if (undo && !completedJob.status().equals("UNDONE")) {
+                    String detail = Objects.requireNonNullElse(completedJob.lastError(),
+                            "Undo left unresolved conflicts; run /fg undo " + job.id() + " to retry.");
+                    message(operator, "&eUndo job #" + job.id() + " is incomplete. &7" + detail);
+                    return;
+                }
+                String conflictText = !undo && completedJob.conflictBlocks() > 0
+                        ? " &eSkipped " + completedJob.conflictBlocks() + " conflicting block(s)."
+                        : "";
                 message(operator, "&a" + (undo ? "Undo" : "Rollback") + " job #" + job.id()
                         + " complete. &7Processed &f" + changes.size() + "&7 blocks."
-                        + (undo ? "" : " &7Reverse it with &f/fg undo " + job.id()));
+                        + conflictText + (undo ? "" : " &7Reverse it with &f/fg undo " + job.id()));
             }));
             return;
         }
@@ -373,10 +397,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 if (world == null) {
                     throw new IllegalStateException("World '" + change.worldName() + "' is not loaded.");
                 }
-                if (!undo && change.beforeData() == null) {
-                    Block block = world.getBlockAt(change.x(), change.y(), change.z());
-                    change = change.withBeforeData(block.getBlockData().getAsString());
-                }
                 batch.add(change);
             }
         } catch (RuntimeException exception) {
@@ -384,25 +404,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        CompletableFuture<Void> prepared = undo ? CompletableFuture.completedFuture(null)
-                : database.prepareRollbackBatchAsync(job.id(), batch);
-        int nextIndex = end;
-        prepared.whenComplete((ignored, throwable) -> onServerThread(() -> {
-            if (throwable != null) {
-                failJob(job, operator, throwable);
-                return;
-            }
-            applyPreparedBatch(job, operator, changes, batch, nextIndex, undo, previousProgress);
-        }));
+        applyPreparedBatch(job, operator, changes, batch, end, undo, previousProgress);
     }
 
     private void applyPreparedBatch(RollbackJob job, Player operator, List<RollbackJobChange> changes,
                                      List<RollbackJobChange> batch, int nextIndex, boolean undo,
                                      int previousProgress) {
-        boolean applyPhysics = plugin.getConfig().getBoolean("apply-physics-during-rollback", false);
-        List<RollbackStepResult> results = new ArrayList<>(batch.size());
-        List<PreparedWorldChange> worldChanges = new ArrayList<>();
-        List<BlockChange> initialAudits = new ArrayList<>();
+        Map<Integer, RollbackStepResult> results = new HashMap<>();
+        List<PreparedWorldChange> candidates = new ArrayList<>();
         try {
             for (RollbackJobChange change : batch) {
                 World world = Bukkit.getWorld(change.worldName());
@@ -412,71 +421,211 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 String desiredData = undo ? change.beforeData() : change.targetData();
                 BlockData desired = Bukkit.createBlockData(Objects.requireNonNull(desiredData, "Missing saved block state"));
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
-                String beforeData = block.getBlockData().getAsString();
-                boolean changed = !block.getBlockData().matches(desired);
-                results.add(new RollbackStepResult(change.sequence(), changed));
-                if (!changed) {
+                String actualData = block.getBlockData().getAsString();
+                String normalizedDesired = desired.getAsString();
+
+                if (undo) {
+                    if (actualData.equals(normalizedDesired)) {
+                        results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, false));
+                    } else {
+                        candidates.add(new PreparedWorldChange(change, block, desired, actualData));
+                    }
                     continue;
                 }
 
-                worldChanges.add(new PreparedWorldChange(block, desired));
-                initialAudits.add(RollbackAudit.create(
-                        job,
-                        block,
-                        beforeData,
-                        desired.getAsString(),
-                        undo
-                ));
+                String expectedData = Objects.requireNonNullElse(change.expectedData(), actualData);
+                RollbackStateGuard.Decision decision = RollbackStateGuard.decide(
+                        actualData, expectedData, normalizedDesired, job.force());
+                switch (decision) {
+                    case ALREADY_TARGET -> results.put(change.sequence(),
+                            new RollbackStepResult(change.sequence(), false, false));
+                    case CONFLICT -> results.put(change.sequence(),
+                            new RollbackStepResult(change.sequence(), false, true));
+                    case APPLY -> candidates.add(new PreparedWorldChange(change, block, desired, actualData));
+                }
             }
         } catch (RuntimeException exception) {
             failJob(job, operator, exception);
             return;
         }
 
-        persistRequiredAudits(job, operator, initialAudits, () -> {
-            List<BlockChange> observedCorrections = new ArrayList<>();
-            try {
-                for (PreparedWorldChange worldChange : worldChanges) {
-                    Block block = worldChange.block();
-                    BlockData desired = worldChange.desired();
-                    if (applyPhysics) {
-                        block.setBlockData(desired, true);
-                        String actualData = block.getBlockData().getAsString();
-                        String desiredData = desired.getAsString();
-                        if (!desiredData.equals(actualData)) {
-                            observedCorrections.add(RollbackAudit.create(
-                                    job,
-                                    block,
-                                    desiredData,
-                                    actualData,
-                                    undo
-                            ));
-                        }
-                    } else {
-                        BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(desired, false));
-                    }
-                }
-            } catch (RuntimeException exception) {
-                failJob(job, operator, exception);
-                return;
-            }
-
-            persistRequiredAudits(job, operator, observedCorrections,
-                    () -> persistBatchResults(job, operator, changes, results,
-                            nextIndex, undo, previousProgress));
-        });
+        List<BlockChange> observedCorrections = new ArrayList<>();
+        persistAndApplyCandidates(job, operator, candidates, results, observedCorrections,
+                undo, false, 0, () -> persistRequiredAudits(job, operator, observedCorrections, ignored -> {
+                    List<RollbackStepResult> orderedResults = batch.stream()
+                            .map(change -> results.getOrDefault(change.sequence(),
+                                    new RollbackStepResult(change.sequence(), false, false)))
+                            .toList();
+                    persistBatchResults(job, operator, changes, orderedResults,
+                            nextIndex, undo, previousProgress);
+                }));
     }
 
-    private void persistRequiredAudits(RollbackJob job, Player operator, List<BlockChange> audits,
-                                       Runnable afterPersisted) {
-        if (audits.isEmpty()) {
-            afterPersisted.run();
+    private void persistAndApplyCandidates(RollbackJob job, Player operator,
+                                           List<PreparedWorldChange> candidates,
+                                           Map<Integer, RollbackStepResult> results,
+                                           List<BlockChange> observedCorrections,
+                                           boolean undo, boolean replaceBeforeData,
+                                           int forceAttempt, Runnable afterApplied) {
+        if (candidates.isEmpty()) {
+            afterApplied.run();
             return;
         }
 
-        database.insertRequiredAsync(audits).whenComplete((ignored, throwable) -> onServerThread(() -> {
+        CompletableFuture<Void> prepared;
+        if (undo) {
+            prepared = CompletableFuture.completedFuture(null);
+        } else {
+            List<RollbackJobChange> preparedChanges = candidates.stream()
+                    .map(candidate -> candidate.change().withBeforeData(candidate.beforeData()))
+                    .toList();
+            prepared = replaceBeforeData
+                    ? database.replaceRollbackBeforeDataAsync(job.id(), preparedChanges)
+                    : database.prepareRollbackBatchAsync(job.id(), preparedChanges);
+        }
+
+        prepared.whenComplete((ignored, throwable) -> onServerThread(() -> {
+            if (throwable != null) {
+                failJob(job, operator, throwable);
+                return;
+            }
+
+            List<BlockChange> audits = candidates.stream()
+                    .map(candidate -> RollbackAudit.create(
+                            job,
+                            candidate.block(),
+                            candidate.beforeData(),
+                            candidate.desired().getAsString(),
+                            undo
+                    ))
+                    .toList();
+            persistRequiredAudits(job, operator, audits, auditIds -> applyPersistedCandidates(
+                    job, operator, candidates, auditIds, results, observedCorrections,
+                    undo, forceAttempt, afterApplied));
+        }));
+    }
+
+    private void applyPersistedCandidates(RollbackJob job, Player operator,
+                                          List<PreparedWorldChange> candidates,
+                                          List<Long> auditIds,
+                                          Map<Integer, RollbackStepResult> results,
+                                          List<BlockChange> observedCorrections,
+                                          boolean undo, int forceAttempt,
+                                          Runnable afterApplied) {
+        if (auditIds.size() != candidates.size()) {
+            failJob(job, operator, new IllegalStateException(
+                    "Rollback audit persistence returned an unexpected number of record IDs."));
+            return;
+        }
+
+        boolean applyPhysics = plugin.getConfig().getBoolean("apply-physics-during-rollback", false);
+        List<Long> staleAuditIds = new ArrayList<>();
+        List<RollbackJobChange> forceRetries = new ArrayList<>();
+
+        for (int index = 0; index < candidates.size(); index++) {
+            PreparedWorldChange candidate = candidates.get(index);
+            long auditId = auditIds.get(index);
+            Block block = candidate.block();
+            String actualData = block.getBlockData().getAsString();
+            if (!RollbackStateGuard.stillMatchesAudit(actualData, candidate.beforeData())) {
+                staleAuditIds.add(auditId);
+                if (!undo && job.force()) {
+                    forceRetries.add(candidate.change());
+                } else {
+                    results.put(candidate.change().sequence(),
+                            new RollbackStepResult(candidate.change().sequence(), false, true));
+                }
+                continue;
+            }
+
+            try {
+                if (applyPhysics) {
+                    block.setBlockData(candidate.desired(), true);
+                    String resultingData = block.getBlockData().getAsString();
+                    String desiredData = candidate.desired().getAsString();
+                    if (!desiredData.equals(resultingData)) {
+                        observedCorrections.add(RollbackAudit.create(
+                                job,
+                                block,
+                                desiredData,
+                                resultingData,
+                                undo
+                        ));
+                    }
+                } else {
+                    BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(candidate.desired(), false));
+                }
+                results.put(candidate.change().sequence(),
+                        new RollbackStepResult(candidate.change().sequence(), true, false));
+            } catch (RuntimeException exception) {
+                for (int remaining = index; remaining < candidates.size(); remaining++) {
+                    staleAuditIds.add(auditIds.get(remaining));
+                }
+                deleteRequiredAudits(job, operator, staleAuditIds, () ->
+                        persistRequiredAudits(job, operator, observedCorrections,
+                                ignored -> failJob(job, operator, exception)));
+                return;
+            }
+        }
+
+        deleteRequiredAudits(job, operator, staleAuditIds, () -> {
+            if (forceRetries.isEmpty()) {
+                afterApplied.run();
+                return;
+            }
+            if (forceAttempt >= MAX_FORCE_REVALIDATION_RETRIES) {
+                failJob(job, operator, new IllegalStateException(
+                        "Could not obtain a stable live block state after "
+                                + MAX_FORCE_REVALIDATION_RETRIES + " force revalidation attempts."));
+                return;
+            }
+            retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
+                    forceAttempt + 1, afterApplied);
+        });
+    }
+
+    private void retryForcedChanges(RollbackJob job, Player operator,
+                                    List<RollbackJobChange> changes,
+                                    Map<Integer, RollbackStepResult> results,
+                                    List<BlockChange> observedCorrections,
+                                    int forceAttempt, Runnable afterApplied) {
+        List<PreparedWorldChange> retryCandidates = new ArrayList<>();
+        try {
+            for (RollbackJobChange change : changes) {
+                World world = Bukkit.getWorld(change.worldName());
+                if (world == null) {
+                    throw new IllegalStateException("World '" + change.worldName() + "' is not loaded.");
+                }
+                BlockData desired = Bukkit.createBlockData(
+                        Objects.requireNonNull(change.targetData(), "Missing saved block state"));
+                Block block = world.getBlockAt(change.x(), change.y(), change.z());
+                String actualData = block.getBlockData().getAsString();
+                if (actualData.equals(desired.getAsString())) {
+                    // The stale force attempt never mutated this coordinate; another actor completed it.
+                    results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
+                } else {
+                    retryCandidates.add(new PreparedWorldChange(change, block, desired, actualData));
+                }
+            }
+        } catch (RuntimeException exception) {
+            failJob(job, operator, exception);
+            return;
+        }
+
+        persistAndApplyCandidates(job, operator, retryCandidates, results, observedCorrections,
+                false, true, forceAttempt, afterApplied);
+    }
+
+    private void persistRequiredAudits(RollbackJob job, Player operator, List<BlockChange> audits,
+                                       Consumer<List<Long>> afterPersisted) {
+        if (audits.isEmpty()) {
+            afterPersisted.accept(List.of());
+            return;
+        }
+
+        database.insertRequiredAsync(audits).whenComplete((ids, throwable) -> onServerThread(() -> {
             if (throwable == null) {
-                afterPersisted.run();
+                afterPersisted.accept(ids);
                 return;
             }
 
@@ -484,6 +633,27 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             if (cause instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
                 Bukkit.getScheduler().runTaskLater(plugin,
                         () -> persistRequiredAudits(job, operator, audits, afterPersisted), 1L);
+                return;
+            }
+            failJob(job, operator, cause);
+        }));
+    }
+
+    private void deleteRequiredAudits(RollbackJob job, Player operator, List<Long> auditIds,
+                                      Runnable afterDeleted) {
+        if (auditIds.isEmpty()) {
+            afterDeleted.run();
+            return;
+        }
+        database.deleteRequiredAsync(auditIds).whenComplete((ignored, throwable) -> onServerThread(() -> {
+            if (throwable == null) {
+                afterDeleted.run();
+                return;
+            }
+            Throwable cause = unwrap(throwable);
+            if (cause instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
+                Bukkit.getScheduler().runTaskLater(plugin,
+                        () -> deleteRequiredAudits(job, operator, auditIds, afterDeleted), 1L);
                 return;
             }
             failJob(job, operator, cause);
@@ -615,6 +785,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
         for (String arg : args) {
             String lower = arg.toLowerCase(Locale.ROOT);
+            if (isForceToken(arg)) {
+                continue;
+            }
             if (lower.startsWith("t:") || lower.startsWith("time:")) {
                 String first = arg.substring(arg.indexOf(':') + 1);
                 if (!first.isBlank()) {
@@ -625,7 +798,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             }
 
             if (collecting) {
-                if (lower.startsWith("r:") || lower.startsWith("radius:") || lower.startsWith("p:") || lower.startsWith("page:")) {
+                if (lower.startsWith("r:") || lower.startsWith("radius:")
+                        || lower.startsWith("p:") || lower.startsWith("page:")) {
                     continue;
                 }
                 tokens.add(arg);
@@ -633,6 +807,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         }
 
         return tokens;
+    }
+
+    private boolean isForceToken(String arg) {
+        return arg.equalsIgnoreCase("force") || arg.equalsIgnoreCase("--force");
     }
 
     private Throwable unwrap(Throwable throwable) {
@@ -647,8 +825,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(color("&f/fg lookup r:30 &7- Show block-change logs in a full-height radius."));
         player.sendMessage(color("&f/fg lookup r:30 p:2 &7- View another lookup page."));
         player.sendMessage(color("&f/fg rollback r:30 t:2d 7h 15m &7- Preview an area rollback."));
+        player.sendMessage(color("&f/fg rollback r:30 t:2d force &7- Preview a rollback that may overwrite newer changes."));
         player.sendMessage(color("&f/fg rollback confirm <token> &7- Run a previewed rollback."));
-        player.sendMessage(color("&f/fg undo <job-id> &7- Reverse a saved rollback job."));
+        player.sendMessage(color("&f/fg undo <job-id> &7- Reverse blocks actually changed by a saved rollback job."));
         player.sendMessage(color("&f/fg status &7- Show database queue and storage health."));
         player.sendMessage(color("&7Only server operators can use these commands."));
     }
@@ -674,7 +853,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         .map(RollbackPreview::token)
                         .toList());
             }
-            return partial(args[args.length - 1], List.of("confirm", "r:15", "r:30", "r:50", "t:1h", "t:1d", "2d", "7h", "15m"));
+            return partial(args[args.length - 1],
+                    List.of("confirm", "r:15", "r:30", "r:50", "t:1h", "t:1d", "2d", "7h", "15m", "force"));
         }
         return Collections.emptyList();
     }
@@ -690,7 +870,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         return ChatColor.translateAlternateColorCodes('&', message);
     }
 
-    private record PreparedWorldChange(Block block, BlockData desired) {
+    private record PreparedWorldChange(
+            RollbackJobChange change,
+            Block block,
+            BlockData desired,
+            String beforeData
+    ) {
     }
 
     private record RollbackPreview(
@@ -702,6 +887,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             int centerZ,
             int radius,
             long targetTimestamp,
+            long snapshotTimestamp,
+            boolean force,
             List<RollbackTarget> targets,
             long expiresAt
     ) {

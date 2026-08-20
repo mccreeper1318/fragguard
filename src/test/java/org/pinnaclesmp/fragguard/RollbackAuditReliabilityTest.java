@@ -67,8 +67,9 @@ class RollbackAuditReliabilityTest {
                 "minecraft:air"
         );
 
-        database.insertRequiredAsync(List.of(requested, observedPhysics)).join();
+        List<Long> ids = database.insertRequiredAsync(List.of(requested, observedPhysics)).join();
 
+        assertEquals(2, ids.size(), "required writes must return stable IDs for post-persist revalidation cleanup");
         DatabaseHealth health = database.health();
         assertEquals(0, health.queuedWrites(), "required rollback audits must not use the bounded gameplay queue");
         assertEquals(0, health.droppedWrites());
@@ -81,6 +82,13 @@ class RollbackAuditReliabilityTest {
         assertEquals("minecraft:air", page.rows().get(0).afterData());
         assertEquals("minecraft:stone", page.rows().get(1).beforeData());
         assertEquals("minecraft:torch", page.rows().get(1).afterData());
+
+        database.deleteRequiredAsync(List.of(ids.get(0))).join();
+        LookupPage afterRetraction = database.lookupAsync("world", 4, 4, 1, 1, 15, 30).join();
+        assertEquals(1, afterRetraction.totalRows(),
+                "a stale pre-mutation audit must be retractable when live-state revalidation fails");
+        assertEquals("minecraft:torch", afterRetraction.rows().get(0).beforeData());
+        assertEquals("minecraft:air", afterRetraction.rows().get(0).afterData());
     }
 
     @Test
