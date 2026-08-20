@@ -9,6 +9,7 @@
 - Added read-only GitHub Actions build checks for every branch push, pull request, and manual dispatch; checks compile and test the plugin, verify the expected JAR contents/version, and upload the verified JAR plus SHA-256 checksum as a workflow artifact.
 - Added regression coverage for same-tick changes that cross wall-clock buckets, distinct server ticks inside the same 50 ms bucket, pressure draining without advancing the tick, coalescing across separate database flushes, cross-flush coalesce metrics, net no-op cleanup, and matching tick numbers across server restarts.
 - Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, suppression restoration, required audit persistence outside the bounded gameplay queue, and separate requested/observed physics transitions.
+- Added regression coverage for snapshot-bounded rollback planning, expected live-state capture, conflict decisions, force decisions, stale audit retraction, and overlap rejection.
 
 ### Changed
 
@@ -17,6 +18,8 @@
 - Rollback audit entries retain the initiating operator UUID/name, the exact before/after block data, and identify the originating rollback job in the stored/displayed actor label.
 - Rollback and undo batches now wait for required audit records to commit before changing blocks, retrying transient database-operation queue backpressure instead of allowing an unaudited world change.
 - Physics-enabled rollback writes now leave normal block listeners active and record a second reliable `ROLLBACK` transition whenever the block's observed state differs from the requested state before the job marks the batch processed.
+- Rollback plans now persist an upper snapshot timestamp and the expected state of each target coordinate; normal rollbacks skip and count conflicting newer changes, while an explicit `force` option revalidates and retries against the latest live state before overwriting it.
+- Stale rollback audit rows are retracted when live-state revalidation fails, and `/fg undo` now operates only on coordinates the rollback actually changed.
 
 ### Fixed
 
@@ -28,6 +31,8 @@
 - Fixed #6 by recording every block actually changed by a rollback or undo as a `ROLLBACK` history entry before the programmatic world change is applied.
 - Fixed rollback audit loss when the bounded gameplay write queue is full by persisting rollback/undo audit batches through an acknowledged database-operation path that is committed before world mutation.
 - Fixed inaccurate physics-enabled rollback history by no longer suppressing listener-generated transitions and by auditing the observed post-physics state when it differs from the requested target.
+- Fixed #7 by bounding rollback history queries to the planning snapshot, persisting each coordinate's expected snapshot state, revalidating immediately before mutation, skipping/reporting conflicts unless force mode was explicitly chosen, and retaining the existing durable overlap lock for active rollback regions.
+- Fixed the post-audit race where a block could change while required rollback history was being committed; FragGuard now revalidates the audit's before-state, retracts stale audit rows, and in force mode retries with a newly audited live state instead of applying a stale transition.
 
 ## 26.2-3-beta.1
 
