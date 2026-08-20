@@ -22,6 +22,7 @@
 - Counted SQLite cross-flush same-tick upserts in the `/fg status` coalesced-write metric so status reporting includes both in-memory and persisted coalescing.
 - Removed persisted same-tick net no-op rows when a coordinate returns to its original state after separate flushes.
 - Fixed release builds failing version validation by aligning the Gradle project base version with the `26.2-3` release line; prerelease workflows can now apply tags such as `26.2-3-beta.2` correctly.
+- Fixed GitHub Actions test execution by adding the JUnit Platform launcher to the test runtime classpath for JUnit 6.1.3.
 - Fixed #6 by recording every block actually changed by a rollback or undo as a `ROLLBACK` history entry before the programmatic world change is applied.
 
 ## 26.2-3-beta.1
