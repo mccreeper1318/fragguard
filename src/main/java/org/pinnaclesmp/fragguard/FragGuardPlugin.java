@@ -50,16 +50,23 @@ public final class FragGuardPlugin extends JavaPlugin {
         }
 
         DatabaseHealth before = database.health();
+        long completedWritesBefore = database.completedWrites();
         database.shutdown();
         DatabaseHealth after = database.health();
+        long completedWritesAfter = database.completedWrites();
+        int unconfirmedWrites = database.workerStopped() ? 0 : database.inFlightWrites();
         StorageShutdownReport report = StorageShutdownSupport.finish(
-                before, after, database.workerStopped(), database.walCheckpointCompleted());
+                before, after,
+                completedWritesBefore, completedWritesAfter,
+                unconfirmedWrites,
+                database.workerStopped(), database.walCheckpointCompleted());
 
         String summary = "FragGuard storage shutdown: queued=" + report.queuedWritesAtStart()
                 + ", drained=" + report.drainedWrites()
                 + ", remaining=" + report.remainingWrites()
                 + ", remaining operations=" + report.remainingOperations()
                 + ", lost during shutdown=" + report.lostDuringShutdown()
+                + ", unconfirmed in-flight=" + report.unconfirmedWrites()
                 + ", total dropped this session=" + report.totalDroppedWrites()
                 + ", worker stopped=" + report.workerStopped()
                 + ", WAL checkpoint=" + (report.walCheckpointCompleted() ? "complete" : "FAILED");
