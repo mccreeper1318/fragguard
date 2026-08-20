@@ -12,6 +12,10 @@
 - Removed persisted same-tick net no-op rows when a coordinate returns to its original state after separate flushes.
 - Added regression coverage for same-tick changes that cross wall-clock buckets, distinct server ticks inside the same 50 ms bucket, pressure draining without advancing the tick, coalescing across separate database flushes, cross-flush coalesce metrics, net no-op cleanup, and matching tick numbers across server restarts.
 - Fixed release builds failing version validation by aligning the Gradle project base version with the `26.2-3` release line; prerelease workflows can now apply tags such as `26.2-3-beta.2` correctly.
+- Fixed #6 by recording every block actually changed by a rollback or undo as a `ROLLBACK` history entry before the programmatic world change is applied.
+- Rollback audit entries retain the initiating operator UUID/name, the exact before/after block data, and identify the originating rollback job in the stored/displayed actor label.
+- Added a nested, exception-safe logging suppression scope around programmatic rollback writes so rollback-triggered physics or future programmatic-change listeners cannot create duplicate ordinary history entries.
+- Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, and suppression restoration.
 
 ## 26.2-3-beta.1
 
