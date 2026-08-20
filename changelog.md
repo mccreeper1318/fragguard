@@ -10,6 +10,7 @@
 - Added regression coverage for same-tick changes that cross wall-clock buckets, distinct server ticks inside the same 50 ms bucket, pressure draining without advancing the tick, coalescing across separate database flushes, cross-flush coalesce metrics, net no-op cleanup, and matching tick numbers across server restarts.
 - Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, suppression restoration, required audit persistence outside the bounded gameplay queue, and separate requested/observed physics transitions.
 - Added regression coverage for snapshot-bounded rollback planning, expected live-state capture, conflict decisions, force decisions, stale audit retraction, and overlap rejection.
+- Added regression coverage for crash-window rollback mutations whose world change succeeded before the batch's `applied` progress marker was committed.
 
 ### Changed
 
@@ -19,7 +20,7 @@
 - Rollback and undo batches now wait for required audit records to commit before changing blocks, retrying transient database-operation queue backpressure instead of allowing an unaudited world change.
 - Physics-enabled rollback writes now leave normal block listeners active and record a second reliable `ROLLBACK` transition whenever the block's observed state differs from the requested state before the job marks the batch processed.
 - Rollback plans now persist an upper snapshot timestamp and the expected state of each target coordinate; normal rollbacks skip and count conflicting newer changes, while an explicit `force` option revalidates and retries against the latest live state before overwriting it.
-- Stale rollback audit rows are retracted when live-state revalidation fails, and `/fg undo` now operates only on coordinates the rollback actually changed.
+- Stale rollback audit rows are retracted when live-state revalidation fails, and `/fg undo` now operates only on coordinates the rollback actually changed or durably prepared for mutation before an interrupted progress commit.
 
 ### Fixed
 
@@ -33,6 +34,7 @@
 - Fixed inaccurate physics-enabled rollback history by no longer suppressing listener-generated transitions and by auditing the observed post-physics state when it differs from the requested target.
 - Fixed #7 by bounding rollback history queries to the planning snapshot, persisting each coordinate's expected snapshot state, revalidating immediately before mutation, skipping/reporting conflicts unless force mode was explicitly chosen, and retaining the existing durable overlap lock for active rollback regions.
 - Fixed the post-audit race where a block could change while required rollback history was being committed; FragGuard now revalidates the audit's before-state, retracts stale audit rows, and in force mode retries with a newly audited live state instead of applying a stale transition.
+- Fixed crash-window rollback mutations being permanently omitted from `/fg undo` when the world change succeeded but shutdown or failure occurred before the batch could commit `applied = 1`; durably prepared, non-conflicted rows remain undo-recoverable even when that progress marker is missing.
 
 ## 26.2-3-beta.1
 
