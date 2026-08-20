@@ -371,6 +371,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     failJob(job, operator, throwable);
                     return;
                 }
+                if (undo && !completedJob.status().equals("UNDONE")) {
+                    String detail = Objects.requireNonNullElse(completedJob.lastError(),
+                            "Undo left unresolved conflicts; run /fg undo " + job.id() + " to retry.");
+                    message(operator, "&eUndo job #" + job.id() + " is incomplete. &7" + detail);
+                    return;
+                }
                 String conflictText = !undo && completedJob.conflictBlocks() > 0
                         ? " &eSkipped " + completedJob.conflictBlocks() + " conflicting block(s)."
                         : "";
