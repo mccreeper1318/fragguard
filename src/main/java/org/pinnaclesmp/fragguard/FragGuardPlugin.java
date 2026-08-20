@@ -6,7 +6,6 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.io.File;
 import java.sql.SQLException;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -54,7 +53,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         database.shutdown();
         DatabaseHealth after = database.health();
         StorageShutdownReport report = StorageShutdownSupport.finish(
-                new File(getDataFolder(), "fragguard.db"), before, after);
+                before, after, database.workerStopped(), database.walCheckpointCompleted());
 
         String summary = "FragGuard storage shutdown: queued=" + report.queuedWritesAtStart()
                 + ", drained=" + report.drainedWrites()
@@ -62,13 +61,14 @@ public final class FragGuardPlugin extends JavaPlugin {
                 + ", remaining operations=" + report.remainingOperations()
                 + ", lost during shutdown=" + report.lostDuringShutdown()
                 + ", total dropped this session=" + report.totalDroppedWrites()
-                + ", WAL checkpoint=" + (report.checkpoint().success() ? "complete" : "FAILED");
+                + ", worker stopped=" + report.workerStopped()
+                + ", WAL checkpoint=" + (report.walCheckpointCompleted() ? "complete" : "FAILED");
         if (report.clean()) {
             getLogger().info(summary);
         } else {
             getLogger().warning(summary);
-            if (!report.checkpoint().success() && !report.checkpoint().error().isBlank()) {
-                getLogger().warning("FragGuard WAL checkpoint error: " + report.checkpoint().error());
+            if (!after.lastError().isBlank()) {
+                getLogger().warning("FragGuard final storage error: " + after.lastError());
             }
         }
     }
