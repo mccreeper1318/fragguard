@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -174,11 +175,41 @@ class DatabaseTest {
         database.insertAsync(change(timestamp - 700, 604L, 5, 64, 5, "minecraft:outside", "minecraft:air"));
 
         List<RollbackTarget> targets = database.rollbackTargetsAsync("world", 0, 0, 3,
-                timestamp - 3_000, 2).join();
+                timestamp - 3_000, timestamp, 2).join();
 
         assertEquals(3, targets.size(), "SQLite should return only maxBlocks + 1 distinct coordinates");
         assertEquals("minecraft:stone", targets.get(0).blockData());
+        assertEquals("minecraft:gold_block", targets.get(0).expectedData());
         assertEquals(List.of(0, 1, 2), targets.stream().map(RollbackTarget::x).toList());
+    }
+
+    @Test
+    void rollbackSnapshotExcludesLaterChangesAndCapturesExpectedState() throws Exception {
+        database = startDatabase();
+        long now = System.currentTimeMillis();
+        long targetTimestamp = now - 5_000L;
+        long snapshotTimestamp = now - 2_000L;
+
+        database.insertRequiredAsync(List.of(
+                change(targetTimestamp + 1_000L, 610L, 0, 64, 0,
+                        "minecraft:stone", "minecraft:dirt"),
+                change(targetTimestamp + 2_000L, 611L, 0, 64, 0,
+                        "minecraft:dirt", "minecraft:gold_block"),
+                change(snapshotTimestamp + 500L, 612L, 0, 64, 0,
+                        "minecraft:gold_block", "minecraft:diamond_block"),
+                change(snapshotTimestamp + 600L, 613L, 1, 64, 0,
+                        "minecraft:oak_log", "minecraft:air")
+        )).join();
+
+        List<RollbackTarget> targets = database.rollbackTargetsAsync("world", 0, 0, 3,
+                targetTimestamp, snapshotTimestamp, 10).join();
+
+        assertEquals(1, targets.size(), "post-snapshot-only coordinates must not enter the rollback plan");
+        RollbackTarget target = targets.get(0);
+        assertEquals(0, target.x());
+        assertEquals("minecraft:stone", target.blockData());
+        assertEquals("minecraft:gold_block", target.expectedData(),
+                "expected state must be the latest state at the snapshot boundary");
     }
 
     @Test
@@ -207,7 +238,7 @@ class DatabaseTest {
         database = startDatabase();
 
         List<RollbackTarget> targets = database.rollbackTargetsAsync("world", -17, -33, 1,
-                timestamp - 1, 10).join();
+                timestamp - 1, timestamp, 10).join();
         assertEquals(1, targets.size());
         try (Connection connection = openDatabase();
              Statement statement = connection.createStatement();
@@ -226,36 +257,42 @@ class DatabaseTest {
     void persistsRollbackProgressRejectsOverlapAndSupportsUndo() throws Exception {
         database = startDatabase();
         List<RollbackTarget> targets = List.of(
-                new RollbackTarget("world", 4, 70, 4, "minecraft:stone"),
-                new RollbackTarget("world", 5, 70, 4, "minecraft:oak_log")
+                new RollbackTarget("world", 4, 70, 4, "minecraft:stone", "minecraft:air"),
+                new RollbackTarget("world", 5, 70, 4, "minecraft:oak_log", "minecraft:air")
         );
+        long snapshotTimestamp = System.currentTimeMillis();
         RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
-                4, 4, 10, System.currentTimeMillis() - 1_000, targets).join();
+                4, 4, 10, snapshotTimestamp - 1_000, snapshotTimestamp, false, targets).join();
 
         assertEquals("RUNNING", job.status());
+        assertEquals(snapshotTimestamp, job.snapshotTimestamp());
+        assertFalse(job.force());
         assertEquals(1, database.loadResumableJobsAsync().join().size());
         CompletionException overlap = assertThrows(CompletionException.class, () ->
                 database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
-                        6, 6, 10, System.currentTimeMillis(), targets).join());
+                        6, 6, 10, snapshotTimestamp - 500, snapshotTimestamp, false, targets).join());
         assertTrue(overlap.getCause().getMessage().contains("overlapping region"));
 
         List<RollbackJobChange> changes = database.loadRollbackChangesAsync(job.id(), false).join();
+        assertTrue(changes.stream().allMatch(change -> "minecraft:air".equals(change.expectedData())));
         List<RollbackJobChange> prepared = changes.stream()
                 .map(change -> change.withBeforeData("minecraft:air"))
                 .toList();
         database.prepareRollbackBatchAsync(job.id(), prepared).join();
         database.markRollbackBatchAppliedAsync(job.id(), List.of(
-                new RollbackStepResult(changes.get(0).sequence(), true),
-                new RollbackStepResult(changes.get(1).sequence(), false)
+                new RollbackStepResult(changes.get(0).sequence(), true, false),
+                new RollbackStepResult(changes.get(1).sequence(), false, true)
         )).join();
-        database.completeRollbackJobAsync(job.id(), false).join();
+        RollbackJob completed = database.completeRollbackJobAsync(job.id(), false).join();
+        assertEquals(1, completed.conflictBlocks());
 
         RollbackJob undo = database.beginUndoAsync(job.id()).join();
         assertEquals("UNDOING", undo.status());
         assertEquals(2, undo.processedBlocks());
         assertEquals(1, undo.appliedBlocks());
         List<RollbackJobChange> undoChanges = database.loadRollbackChangesAsync(job.id(), true).join();
-        assertEquals(List.of(1, 0), undoChanges.stream().map(RollbackJobChange::sequence).toList());
+        assertEquals(List.of(0), undoChanges.stream().map(RollbackJobChange::sequence).toList(),
+                "undo must ignore conflict-skipped or otherwise unapplied rollback coordinates");
         assertTrue(undoChanges.stream().allMatch(change -> change.beforeData().equals("minecraft:air")));
 
         database.markUndoBatchAppliedAsync(job.id(), undoChanges.stream()
