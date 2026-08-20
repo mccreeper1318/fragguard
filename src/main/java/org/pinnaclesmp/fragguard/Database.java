@@ -345,7 +345,7 @@ final class Database {
     CompletableFuture<List<RollbackJobChange>> loadRollbackChangesAsync(long jobId, boolean undo) {
         return submit(databaseConnection -> {
             String condition = undo
-                    ? "applied = 1 AND before_data IS NOT NULL AND undone = 0"
+                    ? "before_data IS NOT NULL AND conflicted = 0 AND undone = 0"
                     : "processed = 0";
             String order = undo ? "DESC" : "ASC";
             String sql = "SELECT * FROM rollback_job_changes WHERE job_id = ? AND " + condition
