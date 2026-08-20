@@ -26,6 +26,7 @@ import java.util.logging.Level;
 
 final class Database {
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
+    private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
     private static final String AREA_FILTER = """
             world_uuid IN (?, ?)
             AND world = ?
@@ -605,7 +606,8 @@ final class Database {
         }
 
         try {
-            inTransaction(connection, () -> {
+            long persistedCoalesces = inTransaction(connection, () -> {
+                long existingRows = countPersistedCoalesceConflicts(connection, batch);
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
@@ -659,8 +661,9 @@ final class Database {
                     }
                     statement.executeBatch();
                 }
-                return null;
+                return existingRows;
             });
+            coalescedWrites.addAndGet(persistedCoalesces);
             healthy = true;
             lastError = "";
         } catch (SQLException exception) {
@@ -671,6 +674,57 @@ final class Database {
                     + " queued block changes; check SQLite storage health.", exception);
             throw exception;
         }
+    }
+
+    private long countPersistedCoalesceConflicts(Connection databaseConnection,
+                                                  List<PendingBlockChange> batch) throws SQLException {
+        List<PendingBlockChange> candidates = batch.stream()
+                .filter(pending -> !pending.change.beforeData().equals(pending.change.afterData()))
+                .toList();
+        long conflicts = 0L;
+        for (int offset = 0; offset < candidates.size(); offset += COALESCE_CONFLICT_QUERY_BATCH_SIZE) {
+            int end = Math.min(candidates.size(), offset + COALESCE_CONFLICT_QUERY_BATCH_SIZE);
+            StringBuilder values = new StringBuilder();
+            for (int index = offset; index < end; index++) {
+                if (!values.isEmpty()) {
+                    values.append(", ");
+                }
+                values.append("(?, ?, ?, ?, ?, ?)");
+            }
+
+            String sql = """
+                    WITH incoming(world_uuid, x, y, z, coalesce_session, server_tick) AS (
+                        VALUES %s
+                    )
+                    SELECT COUNT(*)
+                    FROM incoming
+                    JOIN block_changes existing
+                      ON existing.world_uuid = incoming.world_uuid
+                     AND existing.x = incoming.x
+                     AND existing.y = incoming.y
+                     AND existing.z = incoming.z
+                     AND existing.coalesce_session = incoming.coalesce_session
+                     AND existing.server_tick = incoming.server_tick
+                    """.formatted(values);
+            try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
+                int parameter = 1;
+                for (int index = offset; index < end; index++) {
+                    PendingBlockChange pending = candidates.get(index);
+                    statement.setString(parameter++, pending.worldUuid);
+                    statement.setInt(parameter++, pending.key.x());
+                    statement.setInt(parameter++, pending.key.y());
+                    statement.setInt(parameter++, pending.key.z());
+                    statement.setString(parameter++, coalesceSession);
+                    statement.setLong(parameter++, pending.key.tick());
+                }
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (rows.next()) {
+                        conflicts += rows.getLong(1);
+                    }
+                }
+            }
+        }
+        return conflicts;
     }
 
     private <T> void executeOperation(DatabaseOperation<T> operation) {
