@@ -5,8 +5,10 @@ final class StorageShutdownSupport {
     }
 
     static StorageShutdownReport finish(DatabaseHealth before, DatabaseHealth after,
+                                        long completedWritesBefore, long completedWritesAfter,
+                                        int unconfirmedWrites,
                                         boolean workerStopped, boolean walCheckpointCompleted) {
-        int drainedWrites = Math.max(0, before.queuedWrites() - after.queuedWrites());
+        long drainedWrites = Math.max(0L, completedWritesAfter - completedWritesBefore);
         long lostDuringShutdown = Math.max(0L, after.droppedWrites() - before.droppedWrites());
         return new StorageShutdownReport(
                 before.queuedWrites(),
@@ -14,6 +16,7 @@ final class StorageShutdownSupport {
                 after.queuedWrites(),
                 after.queuedOperations(),
                 lostDuringShutdown,
+                Math.max(0, unconfirmedWrites),
                 after.droppedWrites(),
                 after.storageAvailable(),
                 workerStopped,
@@ -24,10 +27,11 @@ final class StorageShutdownSupport {
 
 record StorageShutdownReport(
         int queuedWritesAtStart,
-        int drainedWrites,
+        long drainedWrites,
         int remainingWrites,
         int remainingOperations,
         long lostDuringShutdown,
+        int unconfirmedWrites,
         long totalDroppedWrites,
         boolean storageAvailable,
         boolean workerStopped,
@@ -37,6 +41,7 @@ record StorageShutdownReport(
         return remainingWrites == 0
                 && remainingOperations == 0
                 && lostDuringShutdown == 0
+                && unconfirmedWrites == 0
                 && storageAvailable
                 && workerStopped
                 && walCheckpointCompleted;
