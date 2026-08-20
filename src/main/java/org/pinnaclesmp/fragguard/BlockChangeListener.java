@@ -54,6 +54,10 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockPlace(BlockPlaceEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
         Player player = event.getPlayer();
 
         if (event instanceof BlockMultiPlaceEvent multiPlaceEvent) {
@@ -80,6 +84,10 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockBreak(BlockBreakEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
         Player player = event.getPlayer();
         UUID playerUuid = player.getUniqueId();
         PendingPlayerBreak pendingBreak = pendingPlayerBreaks.get(playerUuid);
@@ -112,7 +120,7 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockPhysics(BlockPhysicsEvent event) {
-        if (pendingPlayerBreaks.isEmpty()) {
+        if (BlockLoggingSuppression.isSuppressed() || pendingPlayerBreaks.isEmpty()) {
             return;
         }
 
@@ -130,6 +138,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockBurn(BlockBurnEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-fire-spread", true)) {
             return;
         }
@@ -142,6 +153,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onPlayerBucketEmpty(PlayerBucketEmptyEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
             return;
         }
@@ -165,6 +179,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onPlayerBucketFill(PlayerBucketFillEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
             return;
         }
@@ -188,6 +205,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onEntityExplode(EntityExplodeEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-explosions", true)) {
             return;
         }
@@ -206,6 +226,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockExplode(BlockExplodeEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-explosions", true)) {
             return;
         }
@@ -223,6 +246,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onFireSpread(BlockSpreadEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-fire-spread", true)) {
             return;
         }
@@ -244,6 +270,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onLiquidFlow(BlockFromToEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
             return;
         }
@@ -260,6 +289,10 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     void onBlockBrokenByBlock(BlockBreakBlockEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
         Block source = event.getSource();
         Material sourceType = source.getType();
         boolean liquidCause = isLiquid(sourceType);
@@ -289,6 +322,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onPistonExtend(BlockPistonExtendEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-pistons", true)) {
             return;
         }
@@ -299,6 +335,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onPistonRetract(BlockPistonRetractEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
         if (!plugin.getConfig().getBoolean("log-pistons", true)) {
             return;
         }
@@ -328,7 +367,7 @@ final class BlockChangeListener implements Listener {
     }
 
     private void logAfterServerAppliesChange(Map<BlockPosition, String> beforeStates, ChangeAction action, String actorUuid, String actorName) {
-        if (beforeStates.isEmpty()) {
+        if (BlockLoggingSuppression.isSuppressed() || beforeStates.isEmpty()) {
             return;
         }
 
@@ -404,7 +443,7 @@ final class BlockChangeListener implements Listener {
     }
 
     private void logNow(Block block, ChangeAction action, String actorUuid, String actorName, String beforeData, String afterData) {
-        if (beforeData.equals(afterData)) {
+        if (BlockLoggingSuppression.isSuppressed() || beforeData.equals(afterData)) {
             return;
         }
 

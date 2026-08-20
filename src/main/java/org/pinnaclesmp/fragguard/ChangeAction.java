@@ -12,7 +12,8 @@ enum ChangeAction {
     LIQUID_BREAK,
     PISTON_EXTEND,
     PISTON_RETRACT,
-    PISTON_BREAK;
+    PISTON_BREAK,
+    ROLLBACK;
 
     String displayPastTense() {
         return switch (this) {
@@ -28,6 +29,7 @@ enum ChangeAction {
             case PISTON_EXTEND -> "moved";
             case PISTON_RETRACT -> "moved";
             case PISTON_BREAK -> "destroyed";
+            case ROLLBACK -> "rolled back";
         };
     }
 }

@@ -161,6 +161,45 @@ final class Database {
         }
     }
 
+    CompletableFuture<Void> insertRequiredAsync(List<BlockChange> changes) {
+        List<RequiredBlockChange> requiredChanges = changes.stream()
+                .filter(change -> !change.beforeData().equals(change.afterData()))
+                .map(change -> new RequiredBlockChange(resolveWorldUuid(change.worldName()), change))
+                .toList();
+        if (requiredChanges.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+
+        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            try (PreparedStatement statement = databaseConnection.prepareStatement("""
+                    INSERT INTO block_changes
+                    (happened_at, actor_uuid, actor_name, world, x, y, z, action,
+                     before_data, after_data, world_uuid, chunk_x, chunk_z)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """)) {
+                for (RequiredBlockChange required : requiredChanges) {
+                    BlockChange change = required.change();
+                    statement.setLong(1, change.happenedAt());
+                    statement.setString(2, change.actorUuid());
+                    statement.setString(3, change.actorName());
+                    statement.setString(4, change.worldName());
+                    statement.setInt(5, change.x());
+                    statement.setInt(6, change.y());
+                    statement.setInt(7, change.z());
+                    statement.setString(8, change.action().name());
+                    statement.setString(9, change.beforeData());
+                    statement.setString(10, change.afterData());
+                    statement.setString(11, required.worldUuid());
+                    statement.setInt(12, change.x() >> 4);
+                    statement.setInt(13, change.z() >> 4);
+                    statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+            return null;
+        }), false);
+    }
+
     DatabaseHealth health() {
         return new DatabaseHealth(writeQueue.size(), writeCapacity, operationQueue.size(), operationCapacity,
                 droppedWrites.get(), coalescedWrites.get(), healthy, lastError);
@@ -1018,6 +1057,9 @@ final class Database {
     }
 
     private record CoalesceKey(String worldUuid, int x, int y, int z, long tick) {
+    }
+
+    private record RequiredBlockChange(String worldUuid, BlockChange change) {
     }
 
     private static final class PendingBlockChange {
