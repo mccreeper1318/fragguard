@@ -16,9 +16,12 @@ import java.sql.Statement;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -31,6 +34,7 @@ class DatabaseTest {
     @TempDir
     Path temporaryDirectory;
 
+    private final AtomicInteger currentTick = new AtomicInteger(100);
     private Database database;
 
     @AfterEach
@@ -41,11 +45,11 @@ class DatabaseTest {
     }
 
     @Test
-    void batchesWritesCoalescesSameTickUpdatesAndReadsAcceptedWrites() throws Exception {
+    void batchesWritesCoalescesSameServerTickAcrossWallClockBucketsAndReadsAcceptedWrites() throws Exception {
         database = startDatabase();
-        long timestamp = System.currentTimeMillis() + 1_000;
-        database.insertAsync(change(timestamp, -17, 70, -1, "minecraft:stone", "minecraft:dirt"));
-        database.insertAsync(change(timestamp, -17, 70, -1, "minecraft:dirt", "minecraft:grass_block"));
+        long timestamp = ((System.currentTimeMillis() + 1_000) / 50L) * 50L + 10L;
+        database.insertAsync(change(timestamp, 400L, -17, 70, -1, "minecraft:stone", "minecraft:dirt"));
+        database.insertAsync(change(timestamp + 75L, 400L, -17, 70, -1, "minecraft:dirt", "minecraft:grass_block"));
 
         LookupPage page = database.lookupAsync("world", -17, -1, 1, 1, 15, 30).join();
 
@@ -56,23 +60,118 @@ class DatabaseTest {
 
         try (Connection connection = openDatabase();
              Statement statement = connection.createStatement();
-             ResultSet row = statement.executeQuery("SELECT world_uuid, chunk_x, chunk_z FROM block_changes")) {
+             ResultSet row = statement.executeQuery(
+                     "SELECT world_uuid, chunk_x, chunk_z, coalesce_session, server_tick FROM block_changes")) {
             assertTrue(row.next());
             assertEquals(WORLD_UUID.toString(), row.getString("world_uuid"));
             assertEquals(-2, row.getInt("chunk_x"));
             assertEquals(-1, row.getInt("chunk_z"));
+            assertNotNull(row.getString("coalesce_session"));
+            assertEquals(400L, row.getLong("server_tick"));
         }
+    }
+
+    @Test
+    void doesNotCoalesceDistinctServerTicksInsideSameWallClockBucket() throws Exception {
+        database = startDatabase();
+        long timestamp = ((System.currentTimeMillis() + 1_000) / 50L) * 50L + 10L;
+        database.insertAsync(change(timestamp, 500L, 3, 64, 3, "minecraft:stone", "minecraft:dirt"));
+        database.insertAsync(change(timestamp + 1L, 501L, 3, 64, 3, "minecraft:dirt", "minecraft:grass_block"));
+
+        LookupPage page = database.lookupAsync("world", 3, 3, 1, 1, 15, 30).join();
+
+        assertEquals(2, page.totalRows());
+        assertEquals("minecraft:grass_block", page.rows().get(0).afterData());
+        assertEquals("minecraft:dirt", page.rows().get(1).afterData());
+        assertEquals(0, database.health().coalescedWrites());
+    }
+
+    @Test
+    void drainsPressureBatchesWithoutWaitingForServerTickToAdvance() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+
+        for (int batch = 0; batch < 5; batch++) {
+            for (int offset = 0; offset < 16; offset++) {
+                int x = batch * 16 + offset;
+                database.insertAsync(change(timestamp + x, 800L, x, 64, 0,
+                        "minecraft:stone", "minecraft:air"));
+            }
+            waitForWriteQueueToDrain();
+        }
+
+        assertEquals(100, currentTick.get(), "the test must not advance the server tick");
+        assertEquals(0, database.health().droppedWrites());
+        LookupPage page = database.lookupAsync("world", 40, 0, 100, 1, 100, 30).join();
+        assertEquals(80, page.totalRows());
+    }
+
+    @Test
+    void coalescesSameTickAcrossSeparateDatabaseFlushes() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+
+        database.insertAsync(change(timestamp, 900L, 7, 64, 7,
+                "minecraft:stone", "minecraft:dirt"));
+        database.lookupAsync("world", 7, 7, 1, 1, 15, 30).join();
+        assertEquals(0, database.health().coalescedWrites());
+
+        database.insertAsync(change(timestamp + 1L, 900L, 7, 64, 7,
+                "minecraft:dirt", "minecraft:grass_block"));
+        LookupPage page = database.lookupAsync("world", 7, 7, 1, 1, 15, 30).join();
+
+        assertEquals(1, page.totalRows());
+        assertEquals("minecraft:stone", page.rows().get(0).beforeData());
+        assertEquals("minecraft:grass_block", page.rows().get(0).afterData());
+        assertEquals(1, database.health().coalescedWrites(),
+                "SQLite cross-flush upserts must contribute to /fg status coalesce metrics");
+    }
+
+    @Test
+    void removesSameTickNetNoOpAcrossSeparateDatabaseFlushes() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+
+        database.insertAsync(change(timestamp, 901L, 8, 64, 8,
+                "minecraft:stone", "minecraft:dirt"));
+        database.lookupAsync("world", 8, 8, 1, 1, 15, 30).join();
+
+        database.insertAsync(change(timestamp + 1L, 901L, 8, 64, 8,
+                "minecraft:dirt", "minecraft:stone"));
+        LookupPage page = database.lookupAsync("world", 8, 8, 1, 1, 15, 30).join();
+
+        assertEquals(0, page.totalRows());
+        assertEquals(1, database.health().coalescedWrites());
+    }
+
+    @Test
+    void doesNotCoalesceMatchingTickNumbersAcrossServerSessions() throws Exception {
+        long timestamp = System.currentTimeMillis();
+        database = startDatabase();
+        database.insertAsync(change(timestamp, 42L, 9, 64, 9,
+                "minecraft:stone", "minecraft:dirt"));
+        database.lookupAsync("world", 9, 9, 1, 1, 15, 30).join();
+        database.shutdown();
+        database = null;
+
+        database = startDatabase();
+        database.insertAsync(change(timestamp + 1L, 42L, 9, 64, 9,
+                "minecraft:dirt", "minecraft:grass_block"));
+        LookupPage page = database.lookupAsync("world", 9, 9, 1, 1, 15, 30).join();
+
+        assertEquals(2, page.totalRows());
+        assertEquals(0, database.health().coalescedWrites());
     }
 
     @Test
     void rollbackQuerySelectsEarliestChangeAndEnforcesLimitInSql() throws Exception {
         database = startDatabase();
         long timestamp = System.currentTimeMillis();
-        database.insertAsync(change(timestamp - 2_000, 0, 64, 0, "minecraft:stone", "minecraft:dirt"));
-        database.insertAsync(change(timestamp - 1_000, 0, 64, 0, "minecraft:dirt", "minecraft:gold_block"));
-        database.insertAsync(change(timestamp - 900, 1, 64, 0, "minecraft:oak_log", "minecraft:air"));
-        database.insertAsync(change(timestamp - 800, 2, 64, 0, "minecraft:diamond_block", "minecraft:air"));
-        database.insertAsync(change(timestamp - 700, 5, 64, 5, "minecraft:outside", "minecraft:air"));
+        database.insertAsync(change(timestamp - 2_000, 600L, 0, 64, 0, "minecraft:stone", "minecraft:dirt"));
+        database.insertAsync(change(timestamp - 1_000, 601L, 0, 64, 0, "minecraft:dirt", "minecraft:gold_block"));
+        database.insertAsync(change(timestamp - 900, 602L, 1, 64, 0, "minecraft:oak_log", "minecraft:air"));
+        database.insertAsync(change(timestamp - 800, 603L, 2, 64, 0, "minecraft:diamond_block", "minecraft:air"));
+        database.insertAsync(change(timestamp - 700, 604L, 5, 64, 5, "minecraft:outside", "minecraft:air"));
 
         List<RollbackTarget> targets = database.rollbackTargetsAsync("world", 0, 0, 3,
                 timestamp - 3_000, 2).join();
@@ -112,11 +211,14 @@ class DatabaseTest {
         assertEquals(1, targets.size());
         try (Connection connection = openDatabase();
              Statement statement = connection.createStatement();
-             ResultSet row = statement.executeQuery("SELECT world_uuid, chunk_x, chunk_z FROM block_changes")) {
+             ResultSet row = statement.executeQuery(
+                     "SELECT world_uuid, chunk_x, chunk_z, coalesce_session, server_tick FROM block_changes")) {
             assertTrue(row.next());
             assertEquals("world", row.getString("world_uuid"));
             assertEquals(-2, row.getInt("chunk_x"));
             assertEquals(-3, row.getInt("chunk_z"));
+            assertNull(row.getString("coalesce_session"));
+            assertNull(row.getObject("server_tick"));
         }
     }
 
@@ -176,6 +278,7 @@ class DatabaseTest {
         when(plugin.getConfig()).thenReturn(configuration);
         when(plugin.getServer()).thenReturn(server);
         when(plugin.getLogger()).thenReturn(Logger.getLogger("FragGuardTest"));
+        when(server.getCurrentTick()).thenAnswer(invocation -> currentTick.get());
         when(server.getWorld("world")).thenReturn(world);
         when(world.getUID()).thenReturn(WORLD_UUID);
 
@@ -184,13 +287,22 @@ class DatabaseTest {
         return instance;
     }
 
+    private void waitForWriteQueueToDrain() throws InterruptedException {
+        long deadline = System.nanoTime() + 2_000_000_000L;
+        while (database.health().queuedWrites() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(5L);
+        }
+        assertEquals(0, database.health().queuedWrites(),
+                "write queue should drain under pressure without waiting for the server tick to advance");
+    }
+
     private Connection openDatabase() throws Exception {
         Class.forName("org.sqlite.JDBC");
         return DriverManager.getConnection("jdbc:sqlite:" + temporaryDirectory.resolve("fragguard.db"));
     }
 
-    private BlockChange change(long timestamp, int x, int y, int z, String before, String after) {
-        return new BlockChange(timestamp, ACTOR_UUID.toString(), "Builder", "world", x, y, z,
+    private BlockChange change(long timestamp, long serverTick, int x, int y, int z, String before, String after) {
+        return new BlockChange(timestamp, serverTick, ACTOR_UUID.toString(), "Builder", "world", x, y, z,
                 ChangeAction.BREAK, before, after);
     }
 }

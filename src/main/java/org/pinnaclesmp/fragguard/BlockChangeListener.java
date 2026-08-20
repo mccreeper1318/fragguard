@@ -88,6 +88,7 @@ final class BlockChangeListener implements Listener {
         if (pendingBreak == null) {
             pendingBreak = new PendingPlayerBreak(
                     System.currentTimeMillis(),
+                    Bukkit.getCurrentTick(),
                     playerUuid.toString(),
                     player.getName()
             );
@@ -332,11 +333,13 @@ final class BlockChangeListener implements Listener {
         }
 
         long happenedAt = System.currentTimeMillis();
+        long serverTick = Bukkit.getCurrentTick();
         Bukkit.getScheduler().runTask(
                 plugin,
                 () -> writeCapturedChanges(
                         beforeStates,
                         happenedAt,
+                        serverTick,
                         action,
                         actorUuid,
                         actorName
@@ -352,6 +355,7 @@ final class BlockChangeListener implements Listener {
         writeCapturedChanges(
                 pendingBreak.beforeStates,
                 pendingBreak.happenedAt,
+                pendingBreak.serverTick,
                 ChangeAction.BREAK,
                 pendingBreak.actorUuid,
                 pendingBreak.actorName
@@ -361,6 +365,7 @@ final class BlockChangeListener implements Listener {
     private void writeCapturedChanges(
             Map<BlockPosition, String> beforeStates,
             long happenedAt,
+            long serverTick,
             ChangeAction action,
             String actorUuid,
             String actorName
@@ -384,6 +389,7 @@ final class BlockChangeListener implements Listener {
 
             database.insertAsync(new BlockChange(
                     happenedAt,
+                    serverTick,
                     actorUuid,
                     actorName,
                     position.worldName(),
@@ -470,16 +476,19 @@ final class BlockChangeListener implements Listener {
 
     private static final class PendingPlayerBreak {
         private final long happenedAt;
+        private final long serverTick;
         private final String actorUuid;
         private final String actorName;
         private final Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
 
         private PendingPlayerBreak(
                 long happenedAt,
+                long serverTick,
                 String actorUuid,
                 String actorName
         ) {
             this.happenedAt = happenedAt;
+            this.serverTick = serverTick;
             this.actorUuid = actorUuid;
             this.actorName = actorName;
         }

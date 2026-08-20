@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -24,8 +25,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    private static final long TICK_MILLIS = 50L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
+    private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
     private static final String AREA_FILTER = """
             world_uuid IN (?, ?)
             AND world = ?
@@ -40,6 +41,7 @@ final class Database {
 
     private final JavaPlugin plugin;
     private final String jdbcUrl;
+    private final String coalesceSession = UUID.randomUUID().toString();
     private final ArrayBlockingQueue<PendingBlockChange> writeQueue;
     private final ArrayBlockingQueue<DatabaseOperation<?>> operationQueue;
     private final Map<CoalesceKey, PendingBlockChange> coalescedChanges = new HashMap<>();
@@ -49,6 +51,7 @@ final class Database {
     private final int writeCapacity;
     private final int operationCapacity;
     private final int batchSize;
+    private final int pressureFlushThreshold;
     private final int queryTimeoutSeconds;
 
     private volatile Thread worker;
@@ -66,7 +69,9 @@ final class Database {
         this.jdbcUrl = "jdbc:sqlite:" + databaseFile.getAbsolutePath();
         this.writeCapacity = Math.max(64, plugin.getConfig().getInt("database-write-queue-capacity", 20_000));
         this.operationCapacity = Math.max(8, plugin.getConfig().getInt("database-operation-queue-capacity", 256));
-        this.batchSize = Math.max(1, plugin.getConfig().getInt("database-write-batch-size", 500));
+        this.batchSize = Math.min(writeCapacity,
+                Math.max(1, plugin.getConfig().getInt("database-write-batch-size", 500)));
+        this.pressureFlushThreshold = Math.min(batchSize, Math.max(1, (writeCapacity * 3) / 4));
         this.queryTimeoutSeconds = Math.max(1, plugin.getConfig().getInt("database-query-timeout-seconds", 15));
         this.writeQueue = new ArrayBlockingQueue<>(writeCapacity);
         this.operationQueue = new ArrayBlockingQueue<>(operationCapacity);
@@ -124,17 +129,21 @@ final class Database {
         }
 
         String worldUuid = resolveWorldUuid(change.worldName());
-        CoalesceKey key = new CoalesceKey(worldUuid, change.x(), change.y(), change.z(), change.happenedAt() / TICK_MILLIS);
+        long enqueuedTick = plugin.getServer().getCurrentTick();
+        long serverTick = change.serverTick() == BlockChange.UNSPECIFIED_SERVER_TICK
+                ? enqueuedTick
+                : change.serverTick();
+        CoalesceKey key = new CoalesceKey(worldUuid, change.x(), change.y(), change.z(), serverTick);
         synchronized (coalescedChanges) {
             PendingBlockChange existing = coalescedChanges.get(key);
             if (existing != null) {
-                existing.change = merge(existing.change, change);
+                existing.change = merge(existing.change, change, serverTick);
                 coalescedWrites.incrementAndGet();
                 return;
             }
 
             long sequence = acceptedWriteSequence.get() + 1;
-            PendingBlockChange pending = new PendingBlockChange(sequence, key, worldUuid, change);
+            PendingBlockChange pending = new PendingBlockChange(sequence, key, enqueuedTick, worldUuid, change);
             if (!writeQueue.offer(pending)) {
                 droppedWrites.incrementAndGet();
                 warnStorage("FragGuard database write queue is full (" + writeCapacity
@@ -374,8 +383,9 @@ final class Database {
                 }
 
                 PendingBlockChange first = writeQueue.peek();
-                if (first != null && (!running || writeQueue.size() >= batchSize
-                        || System.currentTimeMillis() / TICK_MILLIS > first.key.tick)) {
+                if (first != null && (!running
+                        || writeQueue.size() >= pressureFlushThreshold
+                        || plugin.getServer().getCurrentTick() != first.enqueuedTick)) {
                     flushWriteBatch(false);
                     continue;
                 }
@@ -429,7 +439,9 @@ final class Database {
                         after_data TEXT NOT NULL,
                         world_uuid TEXT NOT NULL DEFAULT '',
                         chunk_x INTEGER NOT NULL DEFAULT 0,
-                        chunk_z INTEGER NOT NULL DEFAULT 0
+                        chunk_z INTEGER NOT NULL DEFAULT 0,
+                        coalesce_session TEXT,
+                        server_tick INTEGER
                     )
                     """);
         }
@@ -437,6 +449,8 @@ final class Database {
         addColumnIfMissing(databaseConnection, "block_changes", "world_uuid", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(databaseConnection, "block_changes", "chunk_x", "INTEGER NOT NULL DEFAULT 0");
         addColumnIfMissing(databaseConnection, "block_changes", "chunk_z", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(databaseConnection, "block_changes", "coalesce_session", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "server_tick", "INTEGER");
 
         try (Statement statement = databaseConnection.createStatement()) {
             statement.executeUpdate("""
@@ -448,6 +462,10 @@ final class Database {
             statement.executeUpdate("""
                     CREATE INDEX IF NOT EXISTS idx_fg_spatial_time
                     ON block_changes(world_uuid, chunk_x, chunk_z, happened_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_fg_tick_coalesce
+                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
                     """);
             statement.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS rollback_jobs (
@@ -557,15 +575,29 @@ final class Database {
         if (first == null) {
             return;
         }
-        if (!force && running && writeQueue.size() < batchSize
-                && System.currentTimeMillis() / TICK_MILLIS <= first.key.tick) {
+
+        long currentTick = plugin.getServer().getCurrentTick();
+        boolean pressureFlush = writeQueue.size() >= pressureFlushThreshold;
+        if (!force && running && first.enqueuedTick == currentTick && !pressureFlush) {
             return;
         }
+        boolean allowCurrentTick = force || !running || pressureFlush;
 
         List<PendingBlockChange> batch = new ArrayList<>(Math.min(batchSize, writeQueue.size()));
         synchronized (coalescedChanges) {
-            writeQueue.drainTo(batch, batchSize);
-            for (PendingBlockChange pending : batch) {
+            while (batch.size() < batchSize) {
+                PendingBlockChange pending = writeQueue.peek();
+                if (pending == null) {
+                    break;
+                }
+                if (!allowCurrentTick && pending.enqueuedTick == currentTick) {
+                    break;
+                }
+                pending = writeQueue.poll();
+                if (pending == null) {
+                    break;
+                }
+                batch.add(pending);
                 coalescedChanges.remove(pending.key, pending);
             }
         }
@@ -574,12 +606,18 @@ final class Database {
         }
 
         try {
-            inTransaction(connection, () -> {
+            long persistedCoalesces = inTransaction(connection, () -> {
+                long existingRows = countPersistedCoalesceConflicts(connection, batch);
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
-                         before_data, after_data, world_uuid, chunk_x, chunk_z)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(world_uuid, x, y, z, coalesce_session, server_tick) DO UPDATE SET
+                            actor_uuid = excluded.actor_uuid,
+                            actor_name = excluded.actor_name,
+                            action = excluded.action,
+                            after_data = excluded.after_data
                         """)) {
                     for (PendingBlockChange pending : batch) {
                         BlockChange change = pending.change;
@@ -599,12 +637,33 @@ final class Database {
                         statement.setString(11, pending.worldUuid);
                         statement.setInt(12, change.x() >> 4);
                         statement.setInt(13, change.z() >> 4);
+                        statement.setString(14, coalesceSession);
+                        statement.setLong(15, pending.key.tick());
                         statement.addBatch();
                     }
                     statement.executeBatch();
                 }
-                return null;
+
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        DELETE FROM block_changes
+                        WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?
+                          AND coalesce_session = ? AND server_tick = ?
+                          AND before_data = after_data
+                        """)) {
+                    for (PendingBlockChange pending : batch) {
+                        statement.setString(1, pending.worldUuid);
+                        statement.setInt(2, pending.key.x());
+                        statement.setInt(3, pending.key.y());
+                        statement.setInt(4, pending.key.z());
+                        statement.setString(5, coalesceSession);
+                        statement.setLong(6, pending.key.tick());
+                        statement.addBatch();
+                    }
+                    statement.executeBatch();
+                }
+                return existingRows;
             });
+            coalescedWrites.addAndGet(persistedCoalesces);
             healthy = true;
             lastError = "";
         } catch (SQLException exception) {
@@ -615,6 +674,57 @@ final class Database {
                     + " queued block changes; check SQLite storage health.", exception);
             throw exception;
         }
+    }
+
+    private long countPersistedCoalesceConflicts(Connection databaseConnection,
+                                                  List<PendingBlockChange> batch) throws SQLException {
+        List<PendingBlockChange> candidates = batch.stream()
+                .filter(pending -> !pending.change.beforeData().equals(pending.change.afterData()))
+                .toList();
+        long conflicts = 0L;
+        for (int offset = 0; offset < candidates.size(); offset += COALESCE_CONFLICT_QUERY_BATCH_SIZE) {
+            int end = Math.min(candidates.size(), offset + COALESCE_CONFLICT_QUERY_BATCH_SIZE);
+            StringBuilder values = new StringBuilder();
+            for (int index = offset; index < end; index++) {
+                if (!values.isEmpty()) {
+                    values.append(", ");
+                }
+                values.append("(?, ?, ?, ?, ?, ?)");
+            }
+
+            String sql = """
+                    WITH incoming(world_uuid, x, y, z, coalesce_session, server_tick) AS (
+                        VALUES %s
+                    )
+                    SELECT COUNT(*)
+                    FROM incoming
+                    JOIN block_changes existing
+                      ON existing.world_uuid = incoming.world_uuid
+                     AND existing.x = incoming.x
+                     AND existing.y = incoming.y
+                     AND existing.z = incoming.z
+                     AND existing.coalesce_session = incoming.coalesce_session
+                     AND existing.server_tick = incoming.server_tick
+                    """.formatted(values);
+            try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
+                int parameter = 1;
+                for (int index = offset; index < end; index++) {
+                    PendingBlockChange pending = candidates.get(index);
+                    statement.setString(parameter++, pending.worldUuid);
+                    statement.setInt(parameter++, pending.key.x());
+                    statement.setInt(parameter++, pending.key.y());
+                    statement.setInt(parameter++, pending.key.z());
+                    statement.setString(parameter++, coalesceSession);
+                    statement.setLong(parameter++, pending.key.tick());
+                }
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (rows.next()) {
+                        conflicts += rows.getLong(1);
+                    }
+                }
+            }
+        }
+        return conflicts;
     }
 
     private <T> void executeOperation(DatabaseOperation<T> operation) {
@@ -860,8 +970,8 @@ final class Database {
         }
     }
 
-    private BlockChange merge(BlockChange previous, BlockChange latest) {
-        return new BlockChange(previous.happenedAt(), latest.actorUuid(), latest.actorName(), previous.worldName(),
+    private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {
+        return new BlockChange(previous.happenedAt(), serverTick, latest.actorUuid(), latest.actorName(), previous.worldName(),
                 previous.x(), previous.y(), previous.z(), latest.action(), previous.beforeData(), latest.afterData());
     }
 
@@ -913,12 +1023,15 @@ final class Database {
     private static final class PendingBlockChange {
         private final long sequence;
         private final CoalesceKey key;
+        private final long enqueuedTick;
         private final String worldUuid;
         private BlockChange change;
 
-        private PendingBlockChange(long sequence, CoalesceKey key, String worldUuid, BlockChange change) {
+        private PendingBlockChange(long sequence, CoalesceKey key, long enqueuedTick,
+                                   String worldUuid, BlockChange change) {
             this.sequence = sequence;
             this.key = key;
+            this.enqueuedTick = enqueuedTick;
             this.worldUuid = worldUuid;
             this.change = change;
         }
