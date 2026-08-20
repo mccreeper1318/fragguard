@@ -161,22 +161,23 @@ final class Database {
         }
     }
 
-    CompletableFuture<Void> insertRequiredAsync(List<BlockChange> changes) {
+    CompletableFuture<List<Long>> insertRequiredAsync(List<BlockChange> changes) {
         List<RequiredBlockChange> requiredChanges = changes.stream()
                 .filter(change -> !change.beforeData().equals(change.afterData()))
                 .map(change -> new RequiredBlockChange(resolveWorldUuid(change.worldName()), change))
                 .toList();
         if (requiredChanges.isEmpty()) {
-            return CompletableFuture.completedFuture(null);
+            return CompletableFuture.completedFuture(List.of());
         }
 
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            List<Long> insertedIds = new ArrayList<>(requiredChanges.size());
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     INSERT INTO block_changes
                     (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                      before_data, after_data, world_uuid, chunk_x, chunk_z)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """)) {
+                    """, Statement.RETURN_GENERATED_KEYS)) {
                 for (RequiredBlockChange required : requiredChanges) {
                     BlockChange change = required.change();
                     statement.setLong(1, change.happenedAt());
@@ -192,6 +193,29 @@ final class Database {
                     statement.setString(11, required.worldUuid());
                     statement.setInt(12, change.x() >> 4);
                     statement.setInt(13, change.z() >> 4);
+                    statement.executeUpdate();
+                    try (ResultSet keys = statement.getGeneratedKeys()) {
+                        if (!keys.next()) {
+                            throw new SQLException("SQLite did not return a required block-change ID");
+                        }
+                        insertedIds.add(keys.getLong(1));
+                    }
+                }
+            }
+            return List.copyOf(insertedIds);
+        }), false);
+    }
+
+    CompletableFuture<Void> deleteRequiredAsync(List<Long> ids) {
+        List<Long> savedIds = List.copyOf(ids);
+        if (savedIds.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            try (PreparedStatement statement = databaseConnection.prepareStatement(
+                    "DELETE FROM block_changes WHERE id = ?")) {
+                for (long id : savedIds) {
+                    statement.setLong(1, id);
                     statement.addBatch();
                 }
                 statement.executeBatch();
@@ -231,15 +255,17 @@ final class Database {
     }
 
     CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
-                                                                   int radius, long targetTimestamp, int maxBlocks) {
+                                                                   int radius, long targetTimestamp,
+                                                                   long snapshotTimestamp, int maxBlocks) {
         String worldUuid = resolveWorldUuid(worldName);
         return submit(databaseConnection -> selectRollbackTargets(databaseConnection, worldUuid, worldName,
-                centerX, centerZ, radius, targetTimestamp, Math.max(1, maxBlocks)), true);
+                centerX, centerZ, radius, targetTimestamp, snapshotTimestamp, Math.max(1, maxBlocks)), true);
     }
 
     CompletableFuture<RollbackJob> createRollbackJobAsync(String actorUuid, String actorName, String worldName,
                                                            int centerX, int centerZ, int radius,
-                                                           long targetTimestamp, List<RollbackTarget> targets) {
+                                                           long targetTimestamp, long snapshotTimestamp,
+                                                           boolean force, List<RollbackTarget> targets) {
         String worldUuid = resolveWorldUuid(worldName);
         List<RollbackTarget> savedTargets = List.copyOf(targets);
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
@@ -249,8 +275,9 @@ final class Database {
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     INSERT INTO rollback_jobs
                     (created_at, updated_at, actor_uuid, actor_name, world_uuid, world,
-                     center_x, center_z, radius, target_timestamp, status, total_blocks)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
+                     center_x, center_z, radius, target_timestamp, snapshot_timestamp, force,
+                     status, total_blocks)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
                     """, Statement.RETURN_GENERATED_KEYS)) {
                 statement.setLong(1, now);
                 statement.setLong(2, now);
@@ -262,7 +289,9 @@ final class Database {
                 statement.setInt(8, centerZ);
                 statement.setInt(9, radius);
                 statement.setLong(10, targetTimestamp);
-                statement.setInt(11, savedTargets.size());
+                statement.setLong(11, snapshotTimestamp);
+                statement.setInt(12, force ? 1 : 0);
+                statement.setInt(13, savedTargets.size());
                 statement.executeUpdate();
                 try (ResultSet keys = statement.getGeneratedKeys()) {
                     if (!keys.next()) {
@@ -273,8 +302,9 @@ final class Database {
             }
 
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
-                    INSERT INTO rollback_job_changes(job_id, sequence, world, x, y, z, target_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO rollback_job_changes
+                    (job_id, sequence, world, x, y, z, expected_data, target_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """)) {
                 for (int index = 0; index < savedTargets.size(); index++) {
                     RollbackTarget target = savedTargets.get(index);
@@ -284,7 +314,8 @@ final class Database {
                     statement.setInt(4, target.x());
                     statement.setInt(5, target.y());
                     statement.setInt(6, target.z());
-                    statement.setString(7, target.blockData());
+                    statement.setString(7, target.expectedData());
+                    statement.setString(8, target.blockData());
                     statement.addBatch();
                     if ((index + 1) % batchSize == 0) {
                         statement.executeBatch();
@@ -313,7 +344,9 @@ final class Database {
 
     CompletableFuture<List<RollbackJobChange>> loadRollbackChangesAsync(long jobId, boolean undo) {
         return submit(databaseConnection -> {
-            String condition = undo ? "before_data IS NOT NULL AND undone = 0" : "processed = 0";
+            String condition = undo
+                    ? "applied = 1 AND before_data IS NOT NULL AND undone = 0"
+                    : "processed = 0";
             String order = undo ? "DESC" : "ASC";
             String sql = "SELECT * FROM rollback_job_changes WHERE job_id = ? AND " + condition
                     + " ORDER BY sequence " + order;
@@ -322,10 +355,16 @@ final class Database {
                 statement.setLong(1, jobId);
                 try (ResultSet rows = statement.executeQuery()) {
                     while (rows.next()) {
+                        String beforeData = rows.getString("before_data");
+                        String expectedData = rows.getString("expected_data");
+                        if (expectedData == null) {
+                            expectedData = beforeData;
+                        }
                         changes.add(new RollbackJobChange(rows.getInt("sequence"), rows.getString("world"),
                                 rows.getInt("x"), rows.getInt("y"), rows.getInt("z"),
-                                rows.getString("before_data"), rows.getString("target_data"),
-                                rows.getBoolean("processed"), rows.getBoolean("applied"), rows.getBoolean("undone")));
+                                beforeData, rows.getString("target_data"), expectedData,
+                                rows.getBoolean("processed"), rows.getBoolean("applied"),
+                                rows.getBoolean("conflicted"), rows.getBoolean("undone")));
                     }
                 }
             }
@@ -339,7 +378,28 @@ final class Database {
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     UPDATE rollback_job_changes
                     SET before_data = COALESCE(before_data, ?)
-                    WHERE job_id = ? AND sequence = ?
+                    WHERE job_id = ? AND sequence = ? AND processed = 0
+                    """)) {
+                for (RollbackJobChange change : savedChanges) {
+                    statement.setString(1, Objects.requireNonNull(change.beforeData(), "Missing original block data"));
+                    statement.setLong(2, jobId);
+                    statement.setInt(3, change.sequence());
+                    statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+            touchJob(databaseConnection, jobId);
+            return null;
+        }), false);
+    }
+
+    CompletableFuture<Void> replaceRollbackBeforeDataAsync(long jobId, List<RollbackJobChange> changes) {
+        List<RollbackJobChange> savedChanges = List.copyOf(changes);
+        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            try (PreparedStatement statement = databaseConnection.prepareStatement("""
+                    UPDATE rollback_job_changes
+                    SET before_data = ?
+                    WHERE job_id = ? AND sequence = ? AND processed = 0
                     """)) {
                 for (RollbackJobChange change : savedChanges) {
                     statement.setString(1, Objects.requireNonNull(change.beforeData(), "Missing original block data"));
@@ -362,7 +422,7 @@ final class Database {
         return markBatchAsync(jobId, results, true);
     }
 
-    CompletableFuture<Void> completeRollbackJobAsync(long jobId, boolean undo) {
+    CompletableFuture<RollbackJob> completeRollbackJobAsync(long jobId, boolean undo) {
         return submit(databaseConnection -> {
             try (PreparedStatement statement = databaseConnection.prepareStatement(
                     "UPDATE rollback_jobs SET status = ?, updated_at = ?, last_error = NULL WHERE id = ?")) {
@@ -371,7 +431,7 @@ final class Database {
                 statement.setLong(3, jobId);
                 statement.executeUpdate();
             }
-            return null;
+            return loadJob(databaseConnection, jobId);
         }, false);
     }
 
@@ -519,10 +579,13 @@ final class Database {
                         center_z INTEGER NOT NULL,
                         radius INTEGER NOT NULL,
                         target_timestamp INTEGER NOT NULL,
+                        snapshot_timestamp INTEGER NOT NULL DEFAULT 0,
+                        force INTEGER NOT NULL DEFAULT 0,
                         status TEXT NOT NULL,
                         total_blocks INTEGER NOT NULL,
                         processed_blocks INTEGER NOT NULL DEFAULT 0,
                         applied_blocks INTEGER NOT NULL DEFAULT 0,
+                        conflict_blocks INTEGER NOT NULL DEFAULT 0,
                         undo_processed_blocks INTEGER NOT NULL DEFAULT 0,
                         last_error TEXT
                     )
@@ -537,8 +600,10 @@ final class Database {
                         z INTEGER NOT NULL,
                         before_data TEXT,
                         target_data TEXT NOT NULL,
+                        expected_data TEXT,
                         processed INTEGER NOT NULL DEFAULT 0,
                         applied INTEGER NOT NULL DEFAULT 0,
+                        conflicted INTEGER NOT NULL DEFAULT 0,
                         undone INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY(job_id, sequence),
                         FOREIGN KEY(job_id) REFERENCES rollback_jobs(id) ON DELETE CASCADE
@@ -552,6 +617,25 @@ final class Database {
             statement.executeUpdate("""
                     CREATE INDEX IF NOT EXISTS idx_fg_undo_changes
                     ON rollback_job_changes(job_id, undone, sequence)
+                    """);
+        }
+
+        addColumnIfMissing(databaseConnection, "rollback_jobs", "snapshot_timestamp", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(databaseConnection, "rollback_jobs", "force", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(databaseConnection, "rollback_jobs", "conflict_blocks", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "expected_data", "TEXT");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "conflicted", "INTEGER NOT NULL DEFAULT 0");
+
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.executeUpdate("""
+                    UPDATE rollback_jobs
+                    SET snapshot_timestamp = created_at
+                    WHERE snapshot_timestamp = 0
+                    """);
+            statement.executeUpdate("""
+                    UPDATE rollback_job_changes
+                    SET expected_data = before_data
+                    WHERE expected_data IS NULL AND before_data IS NOT NULL
                     """);
         }
     }
@@ -830,32 +914,53 @@ final class Database {
 
     private List<RollbackTarget> selectRollbackTargets(Connection databaseConnection, String worldUuid,
                                                          String worldName, int centerX, int centerZ,
-                                                         int radius, long targetTimestamp, int maxBlocks) throws SQLException {
+                                                         int radius, long targetTimestamp,
+                                                         long snapshotTimestamp, int maxBlocks) throws SQLException {
         String sql = """
                 WITH ranked AS (
-                    SELECT x, y, z, before_data, happened_at, id,
+                    SELECT x, y, z, before_data, after_data, happened_at, id,
                            ROW_NUMBER() OVER (
                                PARTITION BY x, y, z
                                ORDER BY happened_at ASC, id ASC
-                           ) AS change_rank
+                           ) AS first_rank,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY x, y, z
+                               ORDER BY happened_at DESC, id DESC
+                           ) AS last_rank
                     FROM block_changes
                     WHERE %s
+                      AND happened_at <= ?
+                ),
+                first_changes AS (
+                    SELECT x, y, z, before_data, happened_at, id
+                    FROM ranked
+                    WHERE first_rank = 1
+                ),
+                last_changes AS (
+                    SELECT x, y, z, after_data
+                    FROM ranked
+                    WHERE last_rank = 1
                 )
-                SELECT x, y, z, before_data
-                FROM ranked
-                WHERE change_rank = 1
-                ORDER BY happened_at ASC, id ASC
+                SELECT first_changes.x, first_changes.y, first_changes.z,
+                       first_changes.before_data AS target_data,
+                       last_changes.after_data AS expected_data,
+                       first_changes.happened_at, first_changes.id
+                FROM first_changes
+                JOIN last_changes USING (x, y, z)
+                ORDER BY first_changes.happened_at ASC, first_changes.id ASC
                 LIMIT ?
                 """.formatted(AREA_FILTER.formatted(">"));
 
         try (PreparedStatement statement = queryStatement(databaseConnection, sql)) {
             int index = bindArea(statement, worldUuid, worldName, centerX, centerZ, radius, targetTimestamp);
+            statement.setLong(index++, snapshotTimestamp);
             statement.setLong(index, (long) maxBlocks + 1L);
             List<RollbackTarget> targets = new ArrayList<>(Math.min(maxBlocks, 255) + 1);
             try (ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
                     targets.add(new RollbackTarget(worldName, resultSet.getInt("x"), resultSet.getInt("y"),
-                            resultSet.getInt("z"), Objects.requireNonNull(resultSet.getString("before_data"))));
+                            resultSet.getInt("z"), Objects.requireNonNull(resultSet.getString("target_data")),
+                            Objects.requireNonNull(resultSet.getString("expected_data"))));
                 }
             }
             return targets;
@@ -901,14 +1006,16 @@ final class Database {
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
             String sql = undo
                     ? "UPDATE rollback_job_changes SET undone = 1 WHERE job_id = ? AND sequence = ? AND undone = 0"
-                    : "UPDATE rollback_job_changes SET processed = 1, applied = ? WHERE job_id = ? AND sequence = ? AND processed = 0";
+                    : "UPDATE rollback_job_changes SET processed = 1, applied = ?, conflicted = ? WHERE job_id = ? AND sequence = ? AND processed = 0";
             int processed = 0;
             int applied = 0;
+            int conflicts = 0;
             try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
                 for (RollbackStepResult result : savedResults) {
                     int index = 1;
                     if (!undo) {
                         statement.setInt(index++, result.changed() ? 1 : 0);
+                        statement.setInt(index++, result.conflicted() ? 1 : 0);
                     }
                     statement.setLong(index++, jobId);
                     statement.setInt(index, result.sequence());
@@ -917,17 +1024,21 @@ final class Database {
                     if (!undo && updated > 0 && result.changed()) {
                         applied++;
                     }
+                    if (!undo && updated > 0 && result.conflicted()) {
+                        conflicts++;
+                    }
                 }
             }
 
             String counters = undo
                     ? "UPDATE rollback_jobs SET undo_processed_blocks = undo_processed_blocks + ?, updated_at = ? WHERE id = ?"
-                    : "UPDATE rollback_jobs SET processed_blocks = processed_blocks + ?, applied_blocks = applied_blocks + ?, updated_at = ? WHERE id = ?";
+                    : "UPDATE rollback_jobs SET processed_blocks = processed_blocks + ?, applied_blocks = applied_blocks + ?, conflict_blocks = conflict_blocks + ?, updated_at = ? WHERE id = ?";
             try (PreparedStatement statement = databaseConnection.prepareStatement(counters)) {
                 int index = 1;
                 statement.setInt(index++, processed);
                 if (!undo) {
                     statement.setInt(index++, applied);
+                    statement.setInt(index++, conflicts);
                 }
                 statement.setLong(index++, System.currentTimeMillis());
                 statement.setLong(index, jobId);
@@ -977,11 +1088,17 @@ final class Database {
     }
 
     private RollbackJob readJob(ResultSet rows) throws SQLException {
-        return new RollbackJob(rows.getLong("id"), rows.getLong("created_at"), rows.getString("actor_uuid"),
+        long createdAt = rows.getLong("created_at");
+        long snapshotTimestamp = rows.getLong("snapshot_timestamp");
+        if (snapshotTimestamp == 0L) {
+            snapshotTimestamp = createdAt;
+        }
+        return new RollbackJob(rows.getLong("id"), createdAt, rows.getString("actor_uuid"),
                 rows.getString("actor_name"), rows.getString("world_uuid"), rows.getString("world"),
                 rows.getInt("center_x"), rows.getInt("center_z"), rows.getInt("radius"),
-                rows.getLong("target_timestamp"), rows.getString("status"), rows.getInt("total_blocks"),
-                rows.getInt("processed_blocks"), rows.getInt("applied_blocks"),
+                rows.getLong("target_timestamp"), snapshotTimestamp, rows.getBoolean("force"),
+                rows.getString("status"), rows.getInt("total_blocks"), rows.getInt("processed_blocks"),
+                rows.getInt("applied_blocks"), rows.getInt("conflict_blocks"),
                 rows.getInt("undo_processed_blocks"), rows.getString("last_error"));
     }
 
