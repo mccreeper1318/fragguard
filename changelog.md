@@ -6,6 +6,7 @@
 
 - Added persisted same-tick coalescing keyed by server session and Paper tick, allowing later writes in the same tick to merge correctly even after an earlier batch has already been written to SQLite.
 - Added a nested, exception-safe logging suppression scope around programmatic rollback writes so rollback-triggered physics or future programmatic-change listeners cannot create duplicate ordinary history entries.
+- Added read-only GitHub Actions build checks for every branch push, pull request, and manual dispatch; checks compile and test the plugin, verify the expected JAR contents/version, and upload the verified JAR plus SHA-256 checksum as a workflow artifact.
 - Added regression coverage for same-tick changes that cross wall-clock buckets, distinct server ticks inside the same 50 ms bucket, pressure draining without advancing the tick, coalescing across separate database flushes, cross-flush coalesce metrics, net no-op cleanup, and matching tick numbers across server restarts.
 - Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, and suppression restoration.
 
