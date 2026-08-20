@@ -595,7 +595,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
                 String actualData = block.getBlockData().getAsString();
                 if (actualData.equals(desired.getAsString())) {
-                    results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, false));
+                    // The stale force attempt never mutated this coordinate; another actor completed it.
+                    results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                 } else {
                     retryCandidates.add(new PreparedWorldChange(change, block, desired, actualData));
                 }
