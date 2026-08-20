@@ -46,6 +46,7 @@ final class Database {
     private final ArrayBlockingQueue<DatabaseOperation<?>> operationQueue;
     private final Map<CoalesceKey, PendingBlockChange> coalescedChanges = new HashMap<>();
     private final AtomicLong acceptedWriteSequence = new AtomicLong();
+    private final AtomicLong completedWrites = new AtomicLong();
     private final AtomicLong droppedWrites = new AtomicLong();
     private final AtomicLong coalescedWrites = new AtomicLong();
     private final int writeCapacity;
@@ -59,6 +60,7 @@ final class Database {
     private volatile boolean healthy = true;
     private volatile boolean walCheckpointCompleted;
     private volatile boolean workerStopped = true;
+    private volatile int activeWriteBatchSize;
     private volatile String lastError = "";
     private volatile long lastWarningAt;
     private volatile Statement activeStatement;
@@ -90,6 +92,7 @@ final class Database {
         lastError = "";
         walCheckpointCompleted = false;
         workerStopped = false;
+        activeWriteBatchSize = 0;
         running = true;
         worker = new Thread(() -> runWorker(started), "FragGuard-Database");
         worker.setDaemon(true);
@@ -121,11 +124,51 @@ final class Database {
             if (databaseWorker.isAlive()) {
                 cancelActiveStatement();
                 databaseWorker.interrupt();
-                plugin.getLogger().warning("FragGuard database worker did not finish before the shutdown timeout.");
+                plugin.getLogger().warning("FragGuard database worker did not finish before the shutdown timeout; "
+                        + "waiting for cancellation.");
+
+                long cancelTimeoutSeconds = Math.max(1,
+                        plugin.getConfig().getInt("database-shutdown-cancel-timeout-seconds", 5));
+                databaseWorker.join(TimeUnit.SECONDS.toMillis(cancelTimeoutSeconds));
+                if (databaseWorker.isAlive()) {
+                    int abandonedWrites = abandonQueuedWrites();
+                    if (abandonedWrites > 0) {
+                        droppedWrites.addAndGet(abandonedWrites);
+                    }
+
+                    IllegalStateException shutdownFailure = new IllegalStateException(
+                            "FragGuard database worker did not stop after cancellation.");
+                    DatabaseOperation<?> pending;
+                    while ((pending = operationQueue.poll()) != null) {
+                        pending.future.completeExceptionally(shutdownFailure);
+                    }
+
+                    healthy = false;
+                    int inFlightWrites = activeWriteBatchSize;
+                    String detail = "Database worker did not stop after cancellation; "
+                            + abandonedWrites + " queued write"
+                            + (abandonedWrites == 1 ? " was" : "s were") + " abandoned";
+                    if (inFlightWrites > 0) {
+                        detail += " and " + inFlightWrites + " in-flight write"
+                                + (inFlightWrites == 1 ? " remains" : "s remain")
+                                + " unconfirmed";
+                    }
+                    lastError = detail + ".";
+                    plugin.getLogger().severe("FragGuard database shutdown could not confirm durability for all "
+                            + "accepted work: " + lastError);
+                }
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    long completedWrites() {
+        return completedWrites.get();
+    }
+
+    int inFlightWrites() {
+        return activeWriteBatchSize;
     }
 
     boolean workerStopped() {
@@ -793,6 +836,7 @@ final class Database {
             return;
         }
 
+        activeWriteBatchSize = batch.size();
         try {
             long persistedCoalesces = inTransaction(connection, () -> {
                 long existingRows = countPersistedCoalesceConflicts(connection, batch);
@@ -851,6 +895,7 @@ final class Database {
                 }
                 return existingRows;
             });
+            completedWrites.addAndGet(batch.size());
             coalescedWrites.addAndGet(persistedCoalesces);
             healthy = true;
             lastError = "";
@@ -861,6 +906,8 @@ final class Database {
             warnStorage("FragGuard could not persist " + batch.size()
                     + " queued block changes; check SQLite storage health.", exception);
             throw exception;
+        } finally {
+            activeWriteBatchSize = 0;
         }
     }
 
