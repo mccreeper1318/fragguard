@@ -424,11 +424,22 @@ final class Database {
 
     CompletableFuture<RollbackJob> completeRollbackJobAsync(long jobId, boolean undo) {
         return submit(databaseConnection -> {
+            String status = undo ? "UNDONE" : "COMPLETED";
+            String lastError = null;
+            if (undo) {
+                int unresolved = countUnresolvedUndoChanges(databaseConnection, jobId);
+                if (unresolved > 0) {
+                    status = "FAILED";
+                    lastError = "Undo left " + unresolved + " unresolved conflict"
+                            + (unresolved == 1 ? "" : "s") + "; run /fg undo " + jobId + " to retry.";
+                }
+            }
             try (PreparedStatement statement = databaseConnection.prepareStatement(
-                    "UPDATE rollback_jobs SET status = ?, updated_at = ?, last_error = NULL WHERE id = ?")) {
-                statement.setString(1, undo ? "UNDONE" : "COMPLETED");
+                    "UPDATE rollback_jobs SET status = ?, updated_at = ?, last_error = ? WHERE id = ?")) {
+                statement.setString(1, status);
                 statement.setLong(2, System.currentTimeMillis());
-                statement.setLong(3, jobId);
+                statement.setString(3, lastError);
+                statement.setLong(4, jobId);
                 statement.executeUpdate();
             }
             return loadJob(databaseConnection, jobId);
@@ -1012,6 +1023,9 @@ final class Database {
             int conflicts = 0;
             try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
                 for (RollbackStepResult result : savedResults) {
+                    if (undo && result.conflicted()) {
+                        continue;
+                    }
                     int index = 1;
                     if (!undo) {
                         statement.setInt(index++, result.changed() ? 1 : 0);
@@ -1046,6 +1060,19 @@ final class Database {
             }
             return null;
         }), false);
+    }
+
+    private int countUnresolvedUndoChanges(Connection databaseConnection, long jobId) throws SQLException {
+        try (PreparedStatement statement = databaseConnection.prepareStatement("""
+                SELECT COUNT(*)
+                FROM rollback_job_changes
+                WHERE job_id = ? AND before_data IS NOT NULL AND conflicted = 0 AND undone = 0
+                """)) {
+            statement.setLong(1, jobId);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? rows.getInt(1) : 0;
+            }
+        }
     }
 
     private void rejectOverlappingJob(Connection databaseConnection, String worldUuid, String worldName,
