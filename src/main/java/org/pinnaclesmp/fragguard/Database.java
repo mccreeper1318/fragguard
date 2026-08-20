@@ -57,6 +57,8 @@ final class Database {
     private volatile Thread worker;
     private volatile boolean running;
     private volatile boolean healthy = true;
+    private volatile boolean walCheckpointCompleted;
+    private volatile boolean workerStopped = true;
     private volatile String lastError = "";
     private volatile long lastWarningAt;
     private volatile Statement activeStatement;
@@ -84,6 +86,10 @@ final class Database {
         }
 
         CompletableFuture<Void> started = new CompletableFuture<>();
+        healthy = true;
+        lastError = "";
+        walCheckpointCompleted = false;
+        workerStopped = false;
         running = true;
         worker = new Thread(() -> runWorker(started), "FragGuard-Database");
         worker.setDaemon(true);
@@ -114,11 +120,21 @@ final class Database {
             databaseWorker.join(TimeUnit.SECONDS.toMillis(timeoutSeconds));
             if (databaseWorker.isAlive()) {
                 cancelActiveStatement();
+                databaseWorker.interrupt();
                 plugin.getLogger().warning("FragGuard database worker did not finish before the shutdown timeout.");
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    boolean workerStopped() {
+        Thread databaseWorker = worker;
+        return workerStopped && (databaseWorker == null || !databaseWorker.isAlive());
+    }
+
+    boolean walCheckpointCompleted() {
+        return walCheckpointCompleted;
     }
 
     void insertAsync(BlockChange change) {
@@ -511,13 +527,26 @@ final class Database {
                     // Shutdown interrupts this short wait so queued work can be drained immediately.
                 }
             }
+
+            checkpointWal(databaseConnection);
         } catch (Throwable exception) {
             healthy = false;
-            lastError = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            String reason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            int abandonedWrites = abandonQueuedWrites();
+            if (abandonedWrites > 0) {
+                droppedWrites.addAndGet(abandonedWrites);
+                reason += "; " + abandonedWrites + " queued write"
+                        + (abandonedWrites == 1 ? " was" : "s were") + " abandoned";
+            }
+            lastError = reason;
             if (!started.isDone()) {
                 started.completeExceptionally(exception);
             }
             plugin.getLogger().log(Level.SEVERE, "FragGuard database worker stopped unexpectedly", exception);
+            if (abandonedWrites > 0) {
+                plugin.getLogger().severe("FragGuard lost " + abandonedWrites
+                        + " queued block log write(s) when the database worker stopped.");
+            }
             DatabaseOperation<?> pending;
             while ((pending = operationQueue.poll()) != null) {
                 pending.future.completeExceptionally(exception);
@@ -525,6 +554,31 @@ final class Database {
         } finally {
             running = false;
             connection = null;
+            workerStopped = true;
+        }
+    }
+
+    private void checkpointWal(Connection databaseConnection) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet rows = statement.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+            if (!rows.next()) {
+                throw new SQLException("SQLite returned no WAL checkpoint result during shutdown.");
+            }
+            int busyConnections = rows.getInt(1);
+            if (busyConnections != 0) {
+                throw new SQLException("SQLite WAL checkpoint remained busy with " + busyConnections
+                        + " connection(s) during shutdown.");
+            }
+        }
+        walCheckpointCompleted = true;
+    }
+
+    private int abandonQueuedWrites() {
+        synchronized (coalescedChanges) {
+            int abandonedWrites = writeQueue.size();
+            writeQueue.clear();
+            coalescedChanges.clear();
+            return abandonedWrites;
         }
     }
 
