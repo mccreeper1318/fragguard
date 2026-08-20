@@ -12,7 +12,7 @@ record DatabaseHealth(
 ) {
     @Override
     public boolean healthy() {
-        return healthy && droppedWrites == 0;
+        return healthy && droppedWrites == 0 && lastError.isBlank();
     }
 
     boolean storageAvailable() {
