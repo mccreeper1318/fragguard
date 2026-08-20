@@ -298,7 +298,8 @@ class DatabaseTest {
         database.markUndoBatchAppliedAsync(job.id(), undoChanges.stream()
                 .map(change -> new RollbackStepResult(change.sequence(), true))
                 .toList()).join();
-        database.completeRollbackJobAsync(job.id(), true).join();
+        RollbackJob undone = database.completeRollbackJobAsync(job.id(), true).join();
+        assertEquals("UNDONE", undone.status());
         assertTrue(database.loadResumableJobsAsync().join().isEmpty());
         assertTrue(database.health().healthy());
     }
@@ -331,6 +332,47 @@ class DatabaseTest {
         assertFalse(recovered.applied(),
                 "the regression case deliberately simulates the missing applied marker");
         assertFalse(recovered.conflicted());
+    }
+
+    @Test
+    void undoConflictRemainsRetryableUntilItIsResolved() throws Exception {
+        database = startDatabase();
+        long snapshotTimestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 10, snapshotTimestamp - 1_000, snapshotTimestamp, false,
+                List.of(new RollbackTarget("world", 4, 70, 4,
+                        "minecraft:stone", "minecraft:dirt"))).join();
+
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeData("minecraft:dirt"))).join();
+        database.markRollbackBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(change.sequence(), true, false))).join();
+        database.completeRollbackJobAsync(job.id(), false).join();
+
+        database.beginUndoAsync(job.id()).join();
+        RollbackJobChange undoChange = database.loadRollbackChangesAsync(job.id(), true).join().get(0);
+        database.markUndoBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(undoChange.sequence(), false, true))).join();
+
+        RollbackJob incomplete = database.completeRollbackJobAsync(job.id(), true).join();
+        assertEquals("FAILED", incomplete.status(),
+                "an undo conflict must keep the job retryable instead of finalizing it as UNDONE");
+        assertTrue(incomplete.lastError().contains("1 unresolved conflict"));
+        assertEquals(0, incomplete.undoProcessedBlocks(),
+                "conflicted undo coordinates must not count as resolved progress");
+        assertEquals(1, database.loadRollbackChangesAsync(job.id(), true).join().size(),
+                "the unresolved coordinate must remain eligible for another undo attempt");
+
+        RollbackJob retry = database.beginUndoAsync(job.id()).join();
+        assertEquals("UNDOING", retry.status());
+        RollbackJobChange retryChange = database.loadRollbackChangesAsync(job.id(), true).join().get(0);
+        database.markUndoBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(retryChange.sequence(), true, false))).join();
+        RollbackJob completed = database.completeRollbackJobAsync(job.id(), true).join();
+        assertEquals("UNDONE", completed.status());
+        assertEquals(1, completed.undoProcessedBlocks());
+        assertTrue(database.loadRollbackChangesAsync(job.id(), true).join().isEmpty());
     }
 
     private Database startDatabase() throws Exception {
