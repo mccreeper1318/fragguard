@@ -114,6 +114,7 @@ class DatabaseTest {
         database.insertAsync(change(timestamp, 900L, 7, 64, 7,
                 "minecraft:stone", "minecraft:dirt"));
         database.lookupAsync("world", 7, 7, 1, 1, 15, 30).join();
+        assertEquals(0, database.health().coalescedWrites());
 
         database.insertAsync(change(timestamp + 1L, 900L, 7, 64, 7,
                 "minecraft:dirt", "minecraft:grass_block"));
@@ -122,6 +123,8 @@ class DatabaseTest {
         assertEquals(1, page.totalRows());
         assertEquals("minecraft:stone", page.rows().get(0).beforeData());
         assertEquals("minecraft:grass_block", page.rows().get(0).afterData());
+        assertEquals(1, database.health().coalescedWrites(),
+                "SQLite cross-flush upserts must contribute to /fg status coalesce metrics");
     }
 
     @Test
@@ -138,6 +141,7 @@ class DatabaseTest {
         LookupPage page = database.lookupAsync("world", 8, 8, 1, 1, 15, 30).join();
 
         assertEquals(0, page.totalRows());
+        assertEquals(1, database.health().coalescedWrites());
     }
 
     @Test
@@ -156,6 +160,7 @@ class DatabaseTest {
         LookupPage page = database.lookupAsync("world", 9, 9, 1, 1, 15, 30).join();
 
         assertEquals(2, page.totalRows());
+        assertEquals(0, database.health().coalescedWrites());
     }
 
     @Test
