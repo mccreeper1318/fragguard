@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -39,6 +40,7 @@ final class Database {
 
     private final JavaPlugin plugin;
     private final String jdbcUrl;
+    private final String coalesceSession = UUID.randomUUID().toString();
     private final ArrayBlockingQueue<PendingBlockChange> writeQueue;
     private final ArrayBlockingQueue<DatabaseOperation<?>> operationQueue;
     private final Map<CoalesceKey, PendingBlockChange> coalescedChanges = new HashMap<>();
@@ -48,6 +50,7 @@ final class Database {
     private final int writeCapacity;
     private final int operationCapacity;
     private final int batchSize;
+    private final int pressureFlushThreshold;
     private final int queryTimeoutSeconds;
 
     private volatile Thread worker;
@@ -65,7 +68,9 @@ final class Database {
         this.jdbcUrl = "jdbc:sqlite:" + databaseFile.getAbsolutePath();
         this.writeCapacity = Math.max(64, plugin.getConfig().getInt("database-write-queue-capacity", 20_000));
         this.operationCapacity = Math.max(8, plugin.getConfig().getInt("database-operation-queue-capacity", 256));
-        this.batchSize = Math.max(1, plugin.getConfig().getInt("database-write-batch-size", 500));
+        this.batchSize = Math.min(writeCapacity,
+                Math.max(1, plugin.getConfig().getInt("database-write-batch-size", 500)));
+        this.pressureFlushThreshold = Math.min(batchSize, Math.max(1, (writeCapacity * 3) / 4));
         this.queryTimeoutSeconds = Math.max(1, plugin.getConfig().getInt("database-query-timeout-seconds", 15));
         this.writeQueue = new ArrayBlockingQueue<>(writeCapacity);
         this.operationQueue = new ArrayBlockingQueue<>(operationCapacity);
@@ -377,7 +382,9 @@ final class Database {
                 }
 
                 PendingBlockChange first = writeQueue.peek();
-                if (first != null && (!running || plugin.getServer().getCurrentTick() != first.enqueuedTick)) {
+                if (first != null && (!running
+                        || writeQueue.size() >= pressureFlushThreshold
+                        || plugin.getServer().getCurrentTick() != first.enqueuedTick)) {
                     flushWriteBatch(false);
                     continue;
                 }
@@ -431,7 +438,9 @@ final class Database {
                         after_data TEXT NOT NULL,
                         world_uuid TEXT NOT NULL DEFAULT '',
                         chunk_x INTEGER NOT NULL DEFAULT 0,
-                        chunk_z INTEGER NOT NULL DEFAULT 0
+                        chunk_z INTEGER NOT NULL DEFAULT 0,
+                        coalesce_session TEXT,
+                        server_tick INTEGER
                     )
                     """);
         }
@@ -439,6 +448,8 @@ final class Database {
         addColumnIfMissing(databaseConnection, "block_changes", "world_uuid", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(databaseConnection, "block_changes", "chunk_x", "INTEGER NOT NULL DEFAULT 0");
         addColumnIfMissing(databaseConnection, "block_changes", "chunk_z", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(databaseConnection, "block_changes", "coalesce_session", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "server_tick", "INTEGER");
 
         try (Statement statement = databaseConnection.createStatement()) {
             statement.executeUpdate("""
@@ -450,6 +461,10 @@ final class Database {
             statement.executeUpdate("""
                     CREATE INDEX IF NOT EXISTS idx_fg_spatial_time
                     ON block_changes(world_uuid, chunk_x, chunk_z, happened_at)
+                    """);
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_fg_tick_coalesce
+                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
                     """);
             statement.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS rollback_jobs (
@@ -561,9 +576,11 @@ final class Database {
         }
 
         long currentTick = plugin.getServer().getCurrentTick();
-        if (!force && running && first.enqueuedTick == currentTick) {
+        boolean pressureFlush = writeQueue.size() >= pressureFlushThreshold;
+        if (!force && running && first.enqueuedTick == currentTick && !pressureFlush) {
             return;
         }
+        boolean allowCurrentTick = force || !running || pressureFlush;
 
         List<PendingBlockChange> batch = new ArrayList<>(Math.min(batchSize, writeQueue.size()));
         synchronized (coalescedChanges) {
@@ -572,7 +589,7 @@ final class Database {
                 if (pending == null) {
                     break;
                 }
-                if (!force && running && pending.enqueuedTick == currentTick) {
+                if (!allowCurrentTick && pending.enqueuedTick == currentTick) {
                     break;
                 }
                 pending = writeQueue.poll();
@@ -592,8 +609,13 @@ final class Database {
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
-                         before_data, after_data, world_uuid, chunk_x, chunk_z)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(world_uuid, x, y, z, coalesce_session, server_tick) DO UPDATE SET
+                            actor_uuid = excluded.actor_uuid,
+                            actor_name = excluded.actor_name,
+                            action = excluded.action,
+                            after_data = excluded.after_data
                         """)) {
                     for (PendingBlockChange pending : batch) {
                         BlockChange change = pending.change;
@@ -613,6 +635,26 @@ final class Database {
                         statement.setString(11, pending.worldUuid);
                         statement.setInt(12, change.x() >> 4);
                         statement.setInt(13, change.z() >> 4);
+                        statement.setString(14, coalesceSession);
+                        statement.setLong(15, pending.key.tick());
+                        statement.addBatch();
+                    }
+                    statement.executeBatch();
+                }
+
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        DELETE FROM block_changes
+                        WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?
+                          AND coalesce_session = ? AND server_tick = ?
+                          AND before_data = after_data
+                        """)) {
+                    for (PendingBlockChange pending : batch) {
+                        statement.setString(1, pending.worldUuid);
+                        statement.setInt(2, pending.key.x());
+                        statement.setInt(3, pending.key.y());
+                        statement.setInt(4, pending.key.z());
+                        statement.setString(5, coalesceSession);
+                        statement.setLong(6, pending.key.tick());
                         statement.addBatch();
                     }
                     statement.executeBatch();
