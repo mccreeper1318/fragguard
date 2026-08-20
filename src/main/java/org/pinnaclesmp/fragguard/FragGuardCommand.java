@@ -409,9 +409,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 String desiredData = undo ? change.beforeData() : change.targetData();
                 BlockData desired = Bukkit.createBlockData(Objects.requireNonNull(desiredData, "Missing saved block state"));
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
-                boolean changed = !block.getBlockData().matches(desired);
+                BlockData currentData = block.getBlockData();
+                boolean changed = !currentData.matches(desired);
                 if (changed) {
-                    block.setBlockData(desired, applyPhysics);
+                    database.insertAsync(RollbackAudit.create(
+                            job,
+                            block,
+                            currentData.getAsString(),
+                            desired.getAsString(),
+                            undo
+                    ));
+                    BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(desired, applyPhysics));
                 }
                 results.add(new RollbackStepResult(change.sequence(), changed));
             }
