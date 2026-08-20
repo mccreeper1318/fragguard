@@ -35,6 +35,7 @@ import java.util.logging.Level;
 final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z")
             .withZone(ZoneId.systemDefault());
+    private static final String OPERATION_QUEUE_FULL = "FragGuard's database operation queue is full.";
 
     private final FragGuardPlugin plugin;
     private final Database database;
@@ -400,6 +401,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                      int previousProgress) {
         boolean applyPhysics = plugin.getConfig().getBoolean("apply-physics-during-rollback", false);
         List<RollbackStepResult> results = new ArrayList<>(batch.size());
+        List<PreparedWorldChange> worldChanges = new ArrayList<>();
+        List<BlockChange> initialAudits = new ArrayList<>();
         try {
             for (RollbackJobChange change : batch) {
                 World world = Bukkit.getWorld(change.worldName());
@@ -409,25 +412,87 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 String desiredData = undo ? change.beforeData() : change.targetData();
                 BlockData desired = Bukkit.createBlockData(Objects.requireNonNull(desiredData, "Missing saved block state"));
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
-                BlockData currentData = block.getBlockData();
-                boolean changed = !currentData.matches(desired);
-                if (changed) {
-                    database.insertAsync(RollbackAudit.create(
-                            job,
-                            block,
-                            currentData.getAsString(),
-                            desired.getAsString(),
-                            undo
-                    ));
-                    BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(desired, applyPhysics));
-                }
+                String beforeData = block.getBlockData().getAsString();
+                boolean changed = !block.getBlockData().matches(desired);
                 results.add(new RollbackStepResult(change.sequence(), changed));
+                if (!changed) {
+                    continue;
+                }
+
+                worldChanges.add(new PreparedWorldChange(block, desired));
+                initialAudits.add(RollbackAudit.create(
+                        job,
+                        block,
+                        beforeData,
+                        desired.getAsString(),
+                        undo
+                ));
             }
         } catch (RuntimeException exception) {
             failJob(job, operator, exception);
             return;
         }
 
+        persistRequiredAudits(job, operator, initialAudits, () -> {
+            List<BlockChange> observedCorrections = new ArrayList<>();
+            try {
+                for (PreparedWorldChange worldChange : worldChanges) {
+                    Block block = worldChange.block();
+                    BlockData desired = worldChange.desired();
+                    if (applyPhysics) {
+                        block.setBlockData(desired, true);
+                        String actualData = block.getBlockData().getAsString();
+                        String desiredData = desired.getAsString();
+                        if (!desiredData.equals(actualData)) {
+                            observedCorrections.add(RollbackAudit.create(
+                                    job,
+                                    block,
+                                    desiredData,
+                                    actualData,
+                                    undo
+                            ));
+                        }
+                    } else {
+                        BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(desired, false));
+                    }
+                }
+            } catch (RuntimeException exception) {
+                failJob(job, operator, exception);
+                return;
+            }
+
+            persistRequiredAudits(job, operator, observedCorrections,
+                    () -> persistBatchResults(job, operator, changes, results,
+                            nextIndex, undo, previousProgress));
+        });
+    }
+
+    private void persistRequiredAudits(RollbackJob job, Player operator, List<BlockChange> audits,
+                                       Runnable afterPersisted) {
+        if (audits.isEmpty()) {
+            afterPersisted.run();
+            return;
+        }
+
+        database.insertRequiredAsync(audits).whenComplete((ignored, throwable) -> onServerThread(() -> {
+            if (throwable == null) {
+                afterPersisted.run();
+                return;
+            }
+
+            Throwable cause = unwrap(throwable);
+            if (cause instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
+                Bukkit.getScheduler().runTaskLater(plugin,
+                        () -> persistRequiredAudits(job, operator, audits, afterPersisted), 1L);
+                return;
+            }
+            failJob(job, operator, cause);
+        }));
+    }
+
+    private void persistBatchResults(RollbackJob job, Player operator, List<RollbackJobChange> changes,
+                                     List<RollbackStepResult> results, int nextIndex, boolean undo,
+                                     int previousProgress) {
         CompletableFuture<Void> persisted = undo
                 ? database.markUndoBatchAppliedAsync(job.id(), results)
                 : database.markRollbackBatchAppliedAsync(job.id(), results);
@@ -623,6 +688,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
     private String color(String message) {
         return ChatColor.translateAlternateColorCodes('&', message);
+    }
+
+    private record PreparedWorldChange(Block block, BlockData desired) {
     }
 
     private record RollbackPreview(
