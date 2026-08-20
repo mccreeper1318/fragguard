@@ -303,6 +303,36 @@ class DatabaseTest {
         assertTrue(database.health().healthy());
     }
 
+    @Test
+    void preservesPreparedCrashWindowMutationForUndoAfterResumeMarksItUnchanged() throws Exception {
+        database = startDatabase();
+        long snapshotTimestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 10, snapshotTimestamp - 1_000, snapshotTimestamp, false,
+                List.of(new RollbackTarget("world", 4, 70, 4,
+                        "minecraft:stone", "minecraft:dirt"))).join();
+
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeData("minecraft:dirt"))).join();
+
+        database.markRollbackBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(change.sequence(), false, false))).join();
+        database.completeRollbackJobAsync(job.id(), false).join();
+
+        RollbackJob completed = database.beginUndoAsync(job.id()).join();
+        assertEquals("UNDOING", completed.status());
+        List<RollbackJobChange> undoChanges = database.loadRollbackChangesAsync(job.id(), true).join();
+        assertEquals(1, undoChanges.size(),
+                "a prepared non-conflicted mutation must remain undoable even if applied=1 was never committed");
+        RollbackJobChange recovered = undoChanges.get(0);
+        assertEquals("minecraft:dirt", recovered.beforeData());
+        assertEquals("minecraft:stone", recovered.targetData());
+        assertFalse(recovered.applied(),
+                "the regression case deliberately simulates the missing applied marker");
+        assertFalse(recovered.conflicted());
+    }
+
     private Database startDatabase() throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);
