@@ -2,20 +2,26 @@
 
 ## 26.2-3-beta.2
 
+### Added
+
+- Added persisted same-tick coalescing keyed by server session and Paper tick, allowing later writes in the same tick to merge correctly even after an earlier batch has already been written to SQLite.
+- Added a nested, exception-safe logging suppression scope around programmatic rollback writes so rollback-triggered physics or future programmatic-change listeners cannot create duplicate ordinary history entries.
+- Added regression coverage for same-tick changes that cross wall-clock buckets, distinct server ticks inside the same 50 ms bucket, pressure draining without advancing the tick, coalescing across separate database flushes, cross-flush coalesce metrics, net no-op cleanup, and matching tick numbers across server restarts.
+- Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, and suppression restoration.
+
+### Changed
+
+- Preserved the original event tick for deferred next-tick block snapshots so unrelated changes from different ticks cannot be merged.
+- Restored pressure-driven database draining during the current server tick so large explosions or other bursty events do not turn the bounded queue capacity into a per-tick data-loss limit.
+- Rollback audit entries retain the initiating operator UUID/name, the exact before/after block data, and identify the originating rollback job in the stored/displayed actor label.
+
 ### Fixed
 
 - Fixed #27 by using the actual Paper server tick as the database coalescing key instead of 50 ms wall-clock buckets.
-- Preserved the original event tick for deferred next-tick block snapshots so unrelated changes from different ticks cannot be merged.
-- Restored pressure-driven database draining during the current server tick so large explosions or other bursty events do not turn the bounded queue capacity into a per-tick data-loss limit.
-- Added persisted same-tick coalescing keyed by server session and Paper tick, allowing later writes in the same tick to merge correctly even after an earlier batch has already been written to SQLite.
 - Counted SQLite cross-flush same-tick upserts in the `/fg status` coalesced-write metric so status reporting includes both in-memory and persisted coalescing.
 - Removed persisted same-tick net no-op rows when a coordinate returns to its original state after separate flushes.
-- Added regression coverage for same-tick changes that cross wall-clock buckets, distinct server ticks inside the same 50 ms bucket, pressure draining without advancing the tick, coalescing across separate database flushes, cross-flush coalesce metrics, net no-op cleanup, and matching tick numbers across server restarts.
 - Fixed release builds failing version validation by aligning the Gradle project base version with the `26.2-3` release line; prerelease workflows can now apply tags such as `26.2-3-beta.2` correctly.
 - Fixed #6 by recording every block actually changed by a rollback or undo as a `ROLLBACK` history entry before the programmatic world change is applied.
-- Rollback audit entries retain the initiating operator UUID/name, the exact before/after block data, and identify the originating rollback job in the stored/displayed actor label.
-- Added a nested, exception-safe logging suppression scope around programmatic rollback writes so rollback-triggered physics or future programmatic-change listeners cannot create duplicate ordinary history entries.
-- Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, and suppression restoration.
 
 ## 26.2-3-beta.1
 
