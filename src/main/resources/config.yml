@@ -11,6 +11,10 @@ database-write-batch-size: 500
 database-query-timeout-seconds: 15
 database-shutdown-timeout-seconds: 15
 
+# How quickly FragGuard notices and reports degraded logging to online operators.
+database-health-check-interval-seconds: 5
+database-operator-warning-interval-seconds: 60
+
 # What FragGuard should log.
 log-explosions: true
 # Includes fire spreading and blocks destroyed by fire.
