@@ -7,7 +7,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.File;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -75,13 +74,14 @@ class DatabaseShutdownTest {
         database.shutdown();
         DatabaseHealth after = database.health();
         StorageShutdownReport report = StorageShutdownSupport.finish(
-                new File(temporaryDirectory.toFile(), "fragguard.db"), before, after);
+                before, after, database.workerStopped(), database.walCheckpointCompleted());
 
         assertEquals(8, report.drainedWrites());
         assertEquals(0, report.remainingWrites());
         assertEquals(0, report.remainingOperations());
         assertEquals(0, report.lostDuringShutdown());
-        assertTrue(report.checkpoint().success(), report.checkpoint().error());
+        assertTrue(report.workerStopped(), "database worker must finish before clean shutdown is reported");
+        assertTrue(report.walCheckpointCompleted(), "database worker must checkpoint WAL after draining queues");
         assertTrue(report.clean());
 
         Class.forName("org.sqlite.JDBC");
