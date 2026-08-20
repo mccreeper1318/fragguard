@@ -5,16 +5,18 @@
 ### Added
 
 - Added persisted same-tick coalescing keyed by server session and Paper tick, allowing later writes in the same tick to merge correctly even after an earlier batch has already been written to SQLite.
-- Added a nested, exception-safe logging suppression scope around programmatic rollback writes so rollback-triggered physics or future programmatic-change listeners cannot create duplicate ordinary history entries.
+- Added a nested, exception-safe logging suppression scope for deterministic physics-disabled rollback writes so future programmatic-change listeners cannot create duplicate ordinary history entries.
 - Added read-only GitHub Actions build checks for every branch push, pull request, and manual dispatch; checks compile and test the plugin, verify the expected JAR contents/version, and upload the verified JAR plus SHA-256 checksum as a workflow artifact.
 - Added regression coverage for same-tick changes that cross wall-clock buckets, distinct server ticks inside the same 50 ms bucket, pressure draining without advancing the tick, coalescing across separate database flushes, cross-flush coalesce metrics, net no-op cleanup, and matching tick numbers across server restarts.
-- Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, and suppression restoration.
+- Added regression coverage for rollback audit attribution, job identification, block transitions, undo labeling, suppression restoration, required audit persistence outside the bounded gameplay queue, and separate requested/observed physics transitions.
 
 ### Changed
 
 - Preserved the original event tick for deferred next-tick block snapshots so unrelated changes from different ticks cannot be merged.
 - Restored pressure-driven database draining during the current server tick so large explosions or other bursty events do not turn the bounded queue capacity into a per-tick data-loss limit.
 - Rollback audit entries retain the initiating operator UUID/name, the exact before/after block data, and identify the originating rollback job in the stored/displayed actor label.
+- Rollback and undo batches now wait for required audit records to commit before changing blocks, retrying transient database-operation queue backpressure instead of allowing an unaudited world change.
+- Physics-enabled rollback writes now leave normal block listeners active and record a second reliable `ROLLBACK` transition whenever the block's observed state differs from the requested state before the job marks the batch processed.
 
 ### Fixed
 
@@ -24,6 +26,8 @@
 - Fixed release builds failing version validation by aligning the Gradle project base version with the `26.2-3` release line; prerelease workflows can now apply tags such as `26.2-3-beta.2` correctly.
 - Fixed GitHub Actions test execution by adding the JUnit Platform launcher to the test runtime classpath for JUnit 6.1.3.
 - Fixed #6 by recording every block actually changed by a rollback or undo as a `ROLLBACK` history entry before the programmatic world change is applied.
+- Fixed rollback audit loss when the bounded gameplay write queue is full by persisting rollback/undo audit batches through an acknowledged database-operation path that is committed before world mutation.
+- Fixed inaccurate physics-enabled rollback history by no longer suppressing listener-generated transitions and by auditing the observed post-physics state when it differs from the requested target.
 
 ## 26.2-3-beta.1
 
