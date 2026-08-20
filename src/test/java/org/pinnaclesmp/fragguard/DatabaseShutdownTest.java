@@ -40,6 +40,7 @@ class DatabaseShutdownTest {
         configuration.set("database-write-batch-size", 16);
         configuration.set("database-query-timeout-seconds", 5);
         configuration.set("database-shutdown-timeout-seconds", 5);
+        configuration.set("database-shutdown-cancel-timeout-seconds", 2);
         when(plugin.getDataFolder()).thenReturn(temporaryDirectory.toFile());
         when(plugin.getConfig()).thenReturn(configuration);
         when(plugin.getServer()).thenReturn(server);
@@ -68,18 +69,23 @@ class DatabaseShutdownTest {
         }
 
         DatabaseHealth before = database.health();
+        long completedBefore = database.completedWrites();
         assertEquals(8, before.queuedWrites(),
                 "same-tick writes below the pressure threshold should still be queued before shutdown");
 
         database.shutdown();
         DatabaseHealth after = database.health();
         StorageShutdownReport report = StorageShutdownSupport.finish(
-                before, after, database.workerStopped(), database.walCheckpointCompleted());
+                before, after,
+                completedBefore, database.completedWrites(),
+                database.workerStopped() ? 0 : database.inFlightWrites(),
+                database.workerStopped(), database.walCheckpointCompleted());
 
         assertEquals(8, report.drainedWrites());
         assertEquals(0, report.remainingWrites());
         assertEquals(0, report.remainingOperations());
         assertEquals(0, report.lostDuringShutdown());
+        assertEquals(0, report.unconfirmedWrites());
         assertTrue(report.workerStopped(), "database worker must finish before clean shutdown is reported");
         assertTrue(report.walCheckpointCompleted(), "database worker must checkpoint WAL after draining queues");
         assertTrue(report.clean());
@@ -92,6 +98,44 @@ class DatabaseShutdownTest {
             assertTrue(rows.next());
             assertEquals(8, rows.getInt(1), "all queued writes must be durable after shutdown returns");
         }
+    }
+
+    @Test
+    void abandonedWritesAreNotCountedAsDrained() {
+        DatabaseHealth before = new DatabaseHealth(8, 64, 0, 16,
+                0L, 0L, true, "");
+        DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
+                8L, 0L, false, "write failure");
+
+        StorageShutdownReport report = StorageShutdownSupport.finish(
+                before, after,
+                12L, 12L,
+                0, true, false);
+
+        assertEquals(0, report.drainedWrites(),
+                "abandoned queue entries must not be reported as successfully drained");
+        assertEquals(8, report.lostDuringShutdown());
+        assertFalse(report.clean());
+    }
+
+    @Test
+    void liveWorkerWriteBatchIsReportedAsUnconfirmed() {
+        DatabaseHealth before = new DatabaseHealth(5, 64, 0, 16,
+                0L, 0L, true, "");
+        DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
+                5L, 0L, false, "database worker did not stop");
+
+        StorageShutdownReport report = StorageShutdownSupport.finish(
+                before, after,
+                20L, 20L,
+                3, false, false);
+
+        assertEquals(0, report.drainedWrites());
+        assertEquals(5, report.lostDuringShutdown(),
+                "queued writes explicitly abandoned after cancellation must be counted as lost");
+        assertEquals(3, report.unconfirmedWrites(),
+                "an in-flight batch still owned by a live worker must never disappear from the shutdown report");
+        assertFalse(report.clean());
     }
 
     @Test
