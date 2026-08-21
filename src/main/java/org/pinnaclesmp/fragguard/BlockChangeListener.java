@@ -27,6 +27,7 @@ import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
 
 import java.util.LinkedHashMap;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -78,7 +79,9 @@ final class BlockChangeListener implements Listener {
                 player.getUniqueId().toString(),
                 player.getName(),
                 replacedState.getBlockData().getAsString(),
-                placedBlock.getBlockData().getAsString()
+                placedBlock.getBlockData().getAsString(),
+                BlockEntitySnapshot.capture(replacedState),
+                BlockEntitySnapshot.capture(placedBlock)
         );
     }
 
@@ -146,7 +149,7 @@ final class BlockChangeListener implements Listener {
         }
 
         Block burnedBlock = event.getBlock();
-        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureBefore(beforeStates, burnedBlock);
         logAfterServerAppliesChange(beforeStates, ChangeAction.FIRE_BURN, "Fire Burn");
     }
@@ -166,7 +169,7 @@ final class BlockChangeListener implements Listener {
         }
 
         Player player = event.getPlayer();
-        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureBefore(beforeStates, event.getBlock());
         captureBefore(beforeStates, event.getBlockClicked().getRelative(event.getBlockFace()));
         logAfterServerAppliesChange(
@@ -186,7 +189,7 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureLiquidBefore(beforeStates, event.getBlock());
         captureLiquidBefore(beforeStates, event.getBlockClicked());
         captureLiquidBefore(beforeStates, event.getBlockClicked().getRelative(event.getBlockFace()));
@@ -212,7 +215,7 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         event.blockList().forEach(block -> captureBefore(beforeStates, block));
 
         Entity entity = event.getEntity();
@@ -233,12 +236,14 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         event.blockList().forEach(block -> captureBefore(beforeStates, block));
 
         BlockState explodedState = event.getExplodedBlockState();
         if (explodedState != null && explodedState.getType() != Material.AIR) {
-            captureBefore(beforeStates, explodedState.getBlock());
+            beforeStates.putIfAbsent(positionOf(explodedState.getBlock()),
+                    new CapturedBlockState(explodedState.getBlockData().getAsString(),
+                            BlockEntitySnapshot.capture(explodedState)));
         }
 
         logAfterServerAppliesChange(beforeStates, ChangeAction.EXPLOSION, "Explosion: Block");
@@ -264,7 +269,9 @@ final class BlockChangeListener implements Listener {
                 SYSTEM_UUID,
                 "Fire Spread",
                 targetBlock.getBlockData().getAsString(),
-                event.getNewState().getBlockData().getAsString()
+                event.getNewState().getBlockData().getAsString(),
+                BlockEntitySnapshot.capture(targetBlock),
+                BlockEntitySnapshot.capture(event.getNewState())
         );
     }
 
@@ -282,7 +289,7 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureBefore(beforeStates, event.getToBlock());
         logAfterServerAppliesChange(beforeStates, ChangeAction.LIQUID_FLOW, readableEnum(sourceType.name()) + " Flow");
     }
@@ -316,7 +323,9 @@ final class BlockChangeListener implements Listener {
                 SYSTEM_UUID,
                 actorName,
                 broken.getBlockData().getAsString(),
-                AIR_DATA
+                AIR_DATA,
+                BlockEntitySnapshot.capture(broken),
+                null
         );
     }
 
@@ -329,7 +338,8 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Map<BlockPosition, String> beforeStates = capturePistonAffectedBlocks(event.getBlock(), event.getDirection(), event.getBlocks());
+        Map<BlockPosition, CapturedBlockState> beforeStates = capturePistonAffectedBlocks(
+                event.getBlock(), event.getDirection(), event.getBlocks());
         logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_EXTEND, "Piston Extend");
     }
 
@@ -342,12 +352,14 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Map<BlockPosition, String> beforeStates = capturePistonAffectedBlocks(event.getBlock(), event.getDirection(), event.getBlocks());
+        Map<BlockPosition, CapturedBlockState> beforeStates = capturePistonAffectedBlocks(
+                event.getBlock(), event.getDirection(), event.getBlocks());
         logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_RETRACT, "Piston Retract");
     }
 
-    private Map<BlockPosition, String> capturePistonAffectedBlocks(Block pistonBlock, org.bukkit.block.BlockFace direction, Iterable<Block> movedBlocks) {
-        Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+    private Map<BlockPosition, CapturedBlockState> capturePistonAffectedBlocks(
+            Block pistonBlock, org.bukkit.block.BlockFace direction, Iterable<Block> movedBlocks) {
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
 
         captureBefore(beforeStates, pistonBlock);
         captureBefore(beforeStates, pistonBlock.getRelative(direction));
@@ -362,11 +374,13 @@ final class BlockChangeListener implements Listener {
         return beforeStates;
     }
 
-    private void logAfterServerAppliesChange(Map<BlockPosition, String> beforeStates, ChangeAction action, String actorName) {
+    private void logAfterServerAppliesChange(Map<BlockPosition, CapturedBlockState> beforeStates,
+                                             ChangeAction action, String actorName) {
         logAfterServerAppliesChange(beforeStates, action, SYSTEM_UUID, actorName);
     }
 
-    private void logAfterServerAppliesChange(Map<BlockPosition, String> beforeStates, ChangeAction action, String actorUuid, String actorName) {
+    private void logAfterServerAppliesChange(Map<BlockPosition, CapturedBlockState> beforeStates,
+                                             ChangeAction action, String actorUuid, String actorName) {
         if (BlockLoggingSuppression.isSuppressed() || beforeStates.isEmpty()) {
             return;
         }
@@ -402,27 +416,30 @@ final class BlockChangeListener implements Listener {
     }
 
     private void writeCapturedChanges(
-            Map<BlockPosition, String> beforeStates,
+            Map<BlockPosition, CapturedBlockState> beforeStates,
             long happenedAt,
             long serverTick,
             ChangeAction action,
             String actorUuid,
             String actorName
     ) {
-        for (Map.Entry<BlockPosition, String> entry : beforeStates.entrySet()) {
+        for (Map.Entry<BlockPosition, CapturedBlockState> entry : beforeStates.entrySet()) {
             BlockPosition position = entry.getKey();
             World world = Bukkit.getWorld(position.worldName());
             if (world == null) {
                 continue;
             }
 
-            String beforeData = entry.getValue();
-            String afterData = world.getBlockAt(
+            CapturedBlockState before = entry.getValue();
+            Block afterBlock = world.getBlockAt(
                     position.x(),
                     position.y(),
                     position.z()
-            ).getBlockData().getAsString();
-            if (beforeData.equals(afterData)) {
+            );
+            String afterData = afterBlock.getBlockData().getAsString();
+            byte[] afterEntityData = BlockEntitySnapshot.capture(afterBlock);
+            if (before.blockData().equals(afterData)
+                    && Arrays.equals(before.entityData(), afterEntityData)) {
                 continue;
             }
 
@@ -436,14 +453,18 @@ final class BlockChangeListener implements Listener {
                     position.y(),
                     position.z(),
                     action,
-                    beforeData,
-                    afterData
+                    before.blockData(),
+                    afterData,
+                    before.entityData(),
+                    afterEntityData
             ));
         }
     }
 
-    private void logNow(Block block, ChangeAction action, String actorUuid, String actorName, String beforeData, String afterData) {
-        if (BlockLoggingSuppression.isSuppressed() || beforeData.equals(afterData)) {
+    private void logNow(Block block, ChangeAction action, String actorUuid, String actorName,
+                        String beforeData, String afterData, byte[] beforeEntityData, byte[] afterEntityData) {
+        if (BlockLoggingSuppression.isSuppressed()
+                || (beforeData.equals(afterData) && Arrays.equals(beforeEntityData, afterEntityData))) {
             return;
         }
 
@@ -457,20 +478,22 @@ final class BlockChangeListener implements Listener {
                 block.getZ(),
                 action,
                 beforeData,
-                afterData
+                afterData,
+                beforeEntityData,
+                afterEntityData
         ));
     }
 
-    private void captureLiquidBefore(Map<BlockPosition, String> beforeStates, Block block) {
+    private void captureLiquidBefore(Map<BlockPosition, CapturedBlockState> beforeStates, Block block) {
         if (isLiquid(block.getType())) {
             captureBefore(beforeStates, block);
         }
     }
 
-    private void captureBefore(Map<BlockPosition, String> beforeStates, Block block) {
+    private void captureBefore(Map<BlockPosition, CapturedBlockState> beforeStates, Block block) {
         beforeStates.putIfAbsent(
                 positionOf(block),
-                block.getBlockData().getAsString()
+                new CapturedBlockState(block.getBlockData().getAsString(), BlockEntitySnapshot.capture(block))
         );
     }
 
@@ -518,7 +541,7 @@ final class BlockChangeListener implements Listener {
         private final long serverTick;
         private final String actorUuid;
         private final String actorName;
-        private final Map<BlockPosition, String> beforeStates = new LinkedHashMap<>();
+        private final Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
 
         private PendingPlayerBreak(
                 long happenedAt,
@@ -534,5 +557,8 @@ final class BlockChangeListener implements Listener {
     }
 
     private record BlockPosition(String worldName, int x, int y, int z) {
+    }
+
+    private record CapturedBlockState(String blockData, byte[] entityData) {
     }
 }

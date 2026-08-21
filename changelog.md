@@ -11,6 +11,13 @@
 - Added regression coverage for durable per-slice rollback and undo physics corrections across low-TPS or exhausted-budget pauses, completed chunk-ticket release before cross-chunk TPS pauses, and active-ticket retention during same-chunk pauses.
 - Added explicit SQLite schema versioning through `PRAGMA user_version`, verified pre-migration `VACUUM INTO` backups, transactional schema upgrades, and documented database backup/restoration procedures.
 - Added regression coverage for stable action identifiers, unknown legacy actions, world renames, renamed resumable rollback jobs, retained migration backups, rejected future schema versions, failed atomic migrations, and unavailable backup locations.
+- Added compressed, format-versioned block-entity snapshots for double-sided signs, container inventories and books, banner patterns, player-head profiles, lecterns, decorated-pot inventories/sherds, and supported custom names.
+- Added SQLite schema version 2 and regression coverage for verified version-1 migration backups, entity-only history, same-tick snapshot coalescing, rollback planning, recovered jobs, force retries, and undo snapshots.
+- Added rollback and undo regression coverage for compatible chest inventories after physics normalizes their structural block state, including the resulting correction-audit snapshots.
+- Added block-entity snapshot regression coverage for the 16 MiB serialized-inventory boundary and oversized containers, lecterns, and decorated pots.
+- Added a configurable `rollback-max-snapshot-bytes-per-command` preview safeguard, defaulting to 64 MiB, with SQLite-backed aggregate snapshot-budget and operator-facing limit regression coverage.
+- Added regression coverage for saved rollback/recovery/undo snapshot-byte budgets, post-preview original inventories, legacy jobs without preview snapshots, and oversized skull-profile, banner-pattern, and sign-line collections.
+- Added SQLite-backed regression coverage for interrupted version-1 rollback jobs, missing prepared-row inventory snapshots, restart durability, repeated preparation, and subsequent undo restoration.
 
 ### Changed
 
@@ -20,6 +27,7 @@
 - Prepared and durably recorded rollback or undo audits in bounded 16-block slices immediately before applying each slice, with later slices remaining unaudited while work is deferred.
 - Persisted observed physics-correction audits immediately after each applied slice, before force retries or subsequent slices can pause, and released completed chunk tickets before evaluating TPS at chunk boundaries.
 - Persisted stable block-change action identifiers instead of Java enum names, migrated legacy action values and loaded-world UUIDs, matched history/rollback regions by stable world identity, and refreshed saved rollback world names after renames.
+- Captured block-entity data alongside structural block data, persisted before/after snapshots through gameplay and rollback audit history, and restored each block's structure before updating its saved block entity.
 
 ### Fixed
 
@@ -29,6 +37,14 @@
 - Fixed physics-enabled rollback or undo history retaining an incorrect requested block state if a later slice paused and the server restarted before its observed correction was persisted.
 - Fixed completed rollback chunks remaining forcibly loaded throughout low-TPS pauses before the next chunk began processing.
 - Fixed #14 by preventing world renames, changed or unknown action enums, unsupported database downgrades, and partially applied schema upgrades from orphaning history or breaking lookups and rollback recovery.
+- Fixed #15 by restoring sign text/colors/glow/wax, container contents including written books, banner designs, player-head textures, lectern books/pages, and decorated-pot items/sherds during rollback and undo.
+- Fixed the Beta 3 build failing banner regression coverage by avoiding Paper registry initialization for banners without patterns; patterned banners still resolve their designs through the data-driven registry.
+- Fixed physics-enabled rollback and undo discarding compatible block-entity contents when the server normalizes the requested block state, such as a single chest joining a neighboring double chest; correction audits now retain the restored contents.
+- Fixed oversized container, lectern, and decorated-pot inventories entering block history even though rollback could not restore them; snapshot capture now enforces the same 16 MiB inventory limit as restoration before history or world state can be changed.
+- Fixed rollback previews exhausting server memory when many component-heavy container snapshots fit under the block-count limit; SQLite snapshot lengths are now checked against the aggregate byte budget before their BLOBs are materialized.
+- Fixed saved rollback jobs, restart recovery, and undo exhausting server memory by loading unbounded original, target, and expected block-entity snapshots; all job loads now enforce the configured aggregate byte limit before copying SQLite BLOBs.
+- Fixed oversized player-head profile properties, banner patterns, and sign-line collections entering history even though rollback rejected those snapshots; capture now enforces the same 4,096-entry collection limit as restoration.
+- Fixed resumed version-1 rollback jobs discarding container inventories when their structural before-state was prepared before migration; missing original block-entity snapshots are now captured before mutation and retained for undo.
 
 ## 26.2-3-beta.2
 

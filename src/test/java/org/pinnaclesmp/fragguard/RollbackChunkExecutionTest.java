@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -139,6 +140,46 @@ class RollbackChunkExecutionTest {
     }
 
     @Test
+    void reportsRollbackPreviewSnapshotLimitsWithoutLoggingAStorageFailure() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        FragGuardCommand command = new FragGuardCommand(plugin, mock(Database.class));
+        Player operator = mock(Player.class);
+        Method reportFailure = FragGuardCommand.class.getDeclaredMethod(
+                "reportRollbackQueryFailure", Player.class, Throwable.class);
+        reportFailure.setAccessible(true);
+
+        reportFailure.invoke(command, operator,
+                new Database.RollbackSnapshotLimitExceededException(64L));
+
+        verify(operator).sendMessage(contains("64 bytes"));
+        verify(operator).sendMessage(contains("rollback-max-snapshot-bytes-per-command"));
+        verify(plugin, never()).getLogger();
+    }
+
+    @Test
+    void appliesConfiguredSnapshotByteBudgetToRollbackAndUndoJobLoads() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("rollback-max-snapshot-bytes-per-command", 123L);
+        when(plugin.getConfig()).thenReturn(configuration);
+        Database database = mock(Database.class);
+        when(database.loadRollbackChangesAsync(eq(41L), eq(false), eq(123L)))
+                .thenReturn(new CompletableFuture<>());
+        when(database.loadRollbackChangesAsync(eq(42L), eq(true), eq(123L)))
+                .thenReturn(new CompletableFuture<>());
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        Method executeJob = FragGuardCommand.class.getDeclaredMethod(
+                "executeJob", RollbackJob.class, Player.class, boolean.class);
+        executeJob.setAccessible(true);
+
+        executeJob.invoke(command, job(41L), null, false);
+        executeJob.invoke(command, job(42L), null, true);
+
+        verify(database).loadRollbackChangesAsync(41L, false, 123L);
+        verify(database).loadRollbackChangesAsync(42L, true, 123L);
+    }
+
+    @Test
     void releasesCompletedChunkBeforeLowTpsPausesTheNextChunk() throws Exception {
         assertChunkTicketBehaviorDuringLowTpsPause(true);
     }
@@ -176,6 +217,107 @@ class RollbackChunkExecutionTest {
     @Test
     void persistsRollbackPhysicsCorrectionsBeforeTheTickBudgetDefersTheNextSlice() throws Exception {
         assertOnlyTheActiveSliceIsAudited(false, false, true);
+    }
+
+    @Test
+    void restoresCompatibleRollbackInventoryAfterPhysicsNormalizesChestState() throws Exception {
+        assertCompatiblePhysicsCorrectionRestoresInventory(false);
+    }
+
+    @Test
+    void restoresCompatibleUndoInventoryAfterPhysicsNormalizesChestState() throws Exception {
+        assertCompatiblePhysicsCorrectionRestoresInventory(true);
+    }
+
+    private void assertCompatiblePhysicsCorrectionRestoresInventory(boolean undo) throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("rollback-minimum-tps", 0.0);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        configuration.set("apply-physics-during-rollback", true);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getTPS()).thenReturn(new double[]{20.0});
+        when(server.getCurrentTick()).thenReturn(100);
+
+        Database database = mock(Database.class);
+        when(database.prepareRollbackBatchAsync(eq(41L), anyList()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        List<List<BlockChange>> committedAudits = new ArrayList<>();
+        AtomicLong auditIds = new AtomicLong();
+        when(database.insertRequiredAsync(anyList())).thenAnswer(invocation -> {
+            List<BlockChange> audits = invocation.getArgument(0);
+            committedAudits.add(List.copyOf(audits));
+            return CompletableFuture.completedFuture(audits.stream()
+                    .map(ignored -> auditIds.incrementAndGet())
+                    .toList());
+        });
+
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+        Player operator = mock(Player.class);
+        when(operator.isOnline()).thenReturn(true);
+        World world = mock(World.class);
+        when(world.getName()).thenReturn("world");
+
+        Block block = mock(Block.class);
+        BlockData before = mock(BlockData.class);
+        BlockData desired = mock(BlockData.class);
+        BlockData corrected = mock(BlockData.class);
+        String desiredData = "minecraft:chest[facing=north,type=single,waterlogged=false]";
+        String correctedData = "minecraft:chest[facing=north,type=left,waterlogged=false]";
+        when(before.getAsString()).thenReturn("minecraft:air");
+        when(desired.getAsString()).thenReturn(desiredData);
+        when(corrected.getAsString()).thenReturn(correctedData);
+        AtomicReference<BlockData> actual = new AtomicReference<>(before);
+        when(block.getBlockData()).thenAnswer(ignored -> actual.get());
+        when(block.getWorld()).thenReturn(world);
+        when(block.getX()).thenReturn(2);
+        when(block.getY()).thenReturn(64);
+        when(block.getZ()).thenReturn(3);
+        doAnswer(ignored -> {
+            actual.set(corrected);
+            return null;
+        }).when(block).setBlockData(desired, true);
+
+        byte[] snapshot = new byte[]{9, 4, 2, 1};
+        RollbackJobChange change = new RollbackJobChange(0, "world", 2, 64, 3,
+                "minecraft:air", desiredData, false, false, false);
+        Object candidate = preparedChange(change, block, desired, "minecraft:air", null, snapshot);
+        AtomicBoolean entityRestored = new AtomicBoolean();
+
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return mock(BukkitTask.class);
+        });
+        Runnable completed = mock(Runnable.class);
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             MockedStatic<BlockEntitySnapshot> snapshots = mockStatic(BlockEntitySnapshot.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            snapshots.when(() -> BlockEntitySnapshot.capture(block))
+                    .thenAnswer(ignored -> entityRestored.get() ? snapshot : null);
+            snapshots.when(() -> BlockEntitySnapshot.restoreIfCompatible(block, snapshot))
+                    .thenAnswer(ignored -> {
+                        entityRestored.set(true);
+                        return true;
+                    });
+
+            persistAndApplyCandidates(command, job, operator, List.of(candidate), undo, completed);
+
+            assertTrue(entityRestored.get(), "compatible chest contents must survive physics normalization");
+            assertEquals(2, committedAudits.size());
+            BlockChange correction = committedAudits.get(1).get(0);
+            assertEquals(desiredData, correction.beforeData());
+            assertEquals(correctedData, correction.afterData());
+            assertArrayEquals(snapshot, correction.beforeEntityData());
+            assertArrayEquals(snapshot, correction.afterEntityData(),
+                    "the observed correction must capture the restored inventory");
+            verify(completed).run();
+        }
     }
 
     private void assertChunkTicketBehaviorDuringLowTpsPause(boolean crossesChunkBoundary) throws Exception {
@@ -398,6 +540,19 @@ class RollbackChunkExecutionTest {
                 RollbackJobChange.class, Block.class, BlockData.class, String.class);
         constructor.setAccessible(true);
         return constructor.newInstance(change, block, desired, beforeData);
+    }
+
+    private static Object preparedChange(RollbackJobChange change, Block block,
+                                         BlockData desired, String beforeData,
+                                         byte[] beforeEntityData, byte[] desiredEntityData) throws Exception {
+        Class<?> candidateClass = Class.forName(
+                "org.pinnaclesmp.fragguard.FragGuardCommand$PreparedWorldChange");
+        Constructor<?> constructor = candidateClass.getDeclaredConstructor(
+                RollbackJobChange.class, Block.class, BlockData.class,
+                String.class, byte[].class, byte[].class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(change, block, desired,
+                beforeData, beforeEntityData, desiredEntityData);
     }
 
     private static void persistAndApplyCandidates(FragGuardCommand command, RollbackJob job,

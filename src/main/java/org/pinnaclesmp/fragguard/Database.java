@@ -11,6 +11,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +26,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 1;
+    static final int SCHEMA_VERSION = 2;
+    static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
     private static final String AREA_FILTER = """
@@ -242,7 +244,8 @@ final class Database {
 
     CompletableFuture<List<Long>> insertRequiredAsync(List<BlockChange> changes) {
         List<RequiredBlockChange> requiredChanges = changes.stream()
-                .filter(change -> !change.beforeData().equals(change.afterData()))
+                .filter(change -> !sameState(change.beforeData(), change.beforeEntityData(),
+                        change.afterData(), change.afterEntityData()))
                 .map(change -> new RequiredBlockChange(resolveWorldUuid(change.worldName()), change))
                 .toList();
         if (requiredChanges.isEmpty()) {
@@ -254,8 +257,9 @@ final class Database {
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     INSERT INTO block_changes
                     (happened_at, actor_uuid, actor_name, world, x, y, z, action,
-                     before_data, after_data, world_uuid, chunk_x, chunk_z)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     before_data, after_data, world_uuid, chunk_x, chunk_z,
+                     before_entity_data, after_entity_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, Statement.RETURN_GENERATED_KEYS)) {
                 for (RequiredBlockChange required : requiredChanges) {
                     BlockChange change = required.change();
@@ -272,6 +276,8 @@ final class Database {
                     statement.setString(11, required.worldUuid());
                     statement.setInt(12, change.x() >> 4);
                     statement.setInt(13, change.z() >> 4);
+                    statement.setBytes(14, change.beforeEntityData());
+                    statement.setBytes(15, change.afterEntityData());
                     statement.executeUpdate();
                     try (ResultSet keys = statement.getGeneratedKeys()) {
                         if (!keys.next()) {
@@ -336,9 +342,18 @@ final class Database {
     CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
                                                                    int radius, long targetTimestamp,
                                                                    long snapshotTimestamp, int maxBlocks) {
+        return rollbackTargetsAsync(worldName, centerX, centerZ, radius, targetTimestamp,
+                snapshotTimestamp, maxBlocks, DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES);
+    }
+
+    CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
+                                                                   int radius, long targetTimestamp,
+                                                                   long snapshotTimestamp, int maxBlocks,
+                                                                   long maxSnapshotBytes) {
         String worldUuid = resolveWorldUuid(worldName);
         return submit(databaseConnection -> selectRollbackTargets(databaseConnection, worldUuid, worldName,
-                centerX, centerZ, radius, targetTimestamp, snapshotTimestamp, Math.max(1, maxBlocks)), true);
+                centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
+                Math.max(1, maxBlocks), Math.max(1L, maxSnapshotBytes)), true);
     }
 
     CompletableFuture<RollbackJob> createRollbackJobAsync(String actorUuid, String actorName, String worldName,
@@ -382,8 +397,9 @@ final class Database {
 
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     INSERT INTO rollback_job_changes
-                    (job_id, sequence, world, x, y, z, expected_data, target_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (job_id, sequence, world, x, y, z, expected_data, target_data,
+                     expected_entity_data, target_entity_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """)) {
                 for (int index = 0; index < savedTargets.size(); index++) {
                     RollbackTarget target = savedTargets.get(index);
@@ -395,6 +411,8 @@ final class Database {
                     statement.setInt(6, target.z());
                     statement.setString(7, target.expectedData());
                     statement.setString(8, target.blockData());
+                    statement.setBytes(9, target.expectedEntityData());
+                    statement.setBytes(10, target.targetEntityData());
                     statement.addBatch();
                     if ((index + 1) % batchSize == 0) {
                         statement.executeBatch();
@@ -422,18 +440,42 @@ final class Database {
     }
 
     CompletableFuture<List<RollbackJobChange>> loadRollbackChangesAsync(long jobId, boolean undo) {
+        return loadRollbackChangesAsync(jobId, undo, DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES);
+    }
+
+    CompletableFuture<List<RollbackJobChange>> loadRollbackChangesAsync(long jobId, boolean undo,
+                                                                         long maxSnapshotBytes) {
+        long maximumSnapshotBytes = Math.max(1L, maxSnapshotBytes);
         return submit(databaseConnection -> {
             String condition = undo
                     ? "before_data IS NOT NULL AND conflicted = 0 AND undone = 0"
                     : "processed = 0";
             String order = undo ? "DESC" : "ASC";
-            String sql = "SELECT * FROM rollback_job_changes WHERE job_id = ? AND " + condition
-                    + " ORDER BY sequence " + order;
+            String sql = """
+                    SELECT *,
+                           COALESCE(length(before_entity_data), 0) AS before_entity_bytes,
+                           COALESCE(length(target_entity_data), 0) AS target_entity_bytes,
+                           COALESCE(length(expected_entity_data), 0) AS expected_entity_bytes
+                    FROM rollback_job_changes
+                    WHERE job_id = ? AND %s
+                    ORDER BY sequence %s
+                    """.formatted(condition, order);
             List<RollbackJobChange> changes = new ArrayList<>();
+            long snapshotBytes = 0L;
             try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
                 statement.setLong(1, jobId);
                 try (ResultSet rows = statement.executeQuery()) {
                     while (rows.next()) {
+                        long beforeBytes = rows.getLong("before_entity_bytes");
+                        long targetBytes = rows.getLong("target_entity_bytes");
+                        long expectedBytes = rows.getLong("expected_entity_bytes");
+                        if (beforeBytes > maximumSnapshotBytes - snapshotBytes
+                                || targetBytes > maximumSnapshotBytes - snapshotBytes - beforeBytes
+                                || expectedBytes > maximumSnapshotBytes - snapshotBytes
+                                        - beforeBytes - targetBytes) {
+                            throw new RollbackJobSnapshotLimitExceededException(maximumSnapshotBytes, undo);
+                        }
+                        snapshotBytes += beforeBytes + targetBytes + expectedBytes;
                         String beforeData = rows.getString("before_data");
                         String expectedData = rows.getString("expected_data");
                         if (expectedData == null) {
@@ -443,7 +485,9 @@ final class Database {
                                 rows.getInt("x"), rows.getInt("y"), rows.getInt("z"),
                                 beforeData, rows.getString("target_data"), expectedData,
                                 rows.getBoolean("processed"), rows.getBoolean("applied"),
-                                rows.getBoolean("conflicted"), rows.getBoolean("undone")));
+                                rows.getBoolean("conflicted"), rows.getBoolean("undone"),
+                                rows.getBytes("before_entity_data"), rows.getBytes("target_entity_data"),
+                                rows.getBytes("expected_entity_data")));
                     }
                 }
             }
@@ -456,13 +500,15 @@ final class Database {
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     UPDATE rollback_job_changes
-                    SET before_data = COALESCE(before_data, ?)
+                    SET before_entity_data = COALESCE(before_entity_data, ?),
+                        before_data = COALESCE(before_data, ?)
                     WHERE job_id = ? AND sequence = ? AND processed = 0
                     """)) {
                 for (RollbackJobChange change : savedChanges) {
-                    statement.setString(1, Objects.requireNonNull(change.beforeData(), "Missing original block data"));
-                    statement.setLong(2, jobId);
-                    statement.setInt(3, change.sequence());
+                    statement.setBytes(1, change.beforeEntityData());
+                    statement.setString(2, Objects.requireNonNull(change.beforeData(), "Missing original block data"));
+                    statement.setLong(3, jobId);
+                    statement.setInt(4, change.sequence());
                     statement.addBatch();
                 }
                 statement.executeBatch();
@@ -477,13 +523,14 @@ final class Database {
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     UPDATE rollback_job_changes
-                    SET before_data = ?
+                    SET before_data = ?, before_entity_data = ?
                     WHERE job_id = ? AND sequence = ? AND processed = 0
                     """)) {
                 for (RollbackJobChange change : savedChanges) {
                     statement.setString(1, Objects.requireNonNull(change.beforeData(), "Missing original block data"));
-                    statement.setLong(2, jobId);
-                    statement.setInt(3, change.sequence());
+                    statement.setBytes(2, change.beforeEntityData());
+                    statement.setLong(3, jobId);
+                    statement.setInt(4, change.sequence());
                     statement.addBatch();
                 }
                 statement.executeBatch();
@@ -672,6 +719,7 @@ final class Database {
             inTransaction(databaseConnection, () -> {
                 switch (previousVersion) {
                     case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
+                    case 1 -> migrateBlockEntitySchema(databaseConnection);
                     default -> throw new SQLException("No FragGuard database migration exists for schema version "
                             + previousVersion + ".");
                 }
@@ -874,6 +922,14 @@ final class Database {
         migrateActionIdentifiers(databaseConnection);
     }
 
+    private void migrateBlockEntitySchema(Connection databaseConnection) throws SQLException {
+        addColumnIfMissing(databaseConnection, "block_changes", "before_entity_data", "BLOB");
+        addColumnIfMissing(databaseConnection, "block_changes", "after_entity_data", "BLOB");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "before_entity_data", "BLOB");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "target_entity_data", "BLOB");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "expected_entity_data", "BLOB");
+    }
+
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
             throws SQLException {
         try (PreparedStatement changes = databaseConnection.prepareStatement("""
@@ -1032,17 +1088,20 @@ final class Database {
                 try (PreparedStatement statement = connection.prepareStatement("""
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
-                         before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick,
+                         before_entity_data, after_entity_data)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(world_uuid, x, y, z, coalesce_session, server_tick) DO UPDATE SET
                             actor_uuid = excluded.actor_uuid,
                             actor_name = excluded.actor_name,
                             action = excluded.action,
-                            after_data = excluded.after_data
+                            after_data = excluded.after_data,
+                            after_entity_data = excluded.after_entity_data
                         """)) {
                     for (PendingBlockChange pending : batch) {
                         BlockChange change = pending.change;
-                        if (change.beforeData().equals(change.afterData())) {
+                        if (sameState(change.beforeData(), change.beforeEntityData(),
+                                change.afterData(), change.afterEntityData())) {
                             continue;
                         }
                         statement.setLong(1, change.happenedAt());
@@ -1060,6 +1119,8 @@ final class Database {
                         statement.setInt(13, change.z() >> 4);
                         statement.setString(14, coalesceSession);
                         statement.setLong(15, pending.key.tick());
+                        statement.setBytes(16, change.beforeEntityData());
+                        statement.setBytes(17, change.afterEntityData());
                         statement.addBatch();
                     }
                     statement.executeBatch();
@@ -1070,6 +1131,7 @@ final class Database {
                         WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?
                           AND coalesce_session = ? AND server_tick = ?
                           AND before_data = after_data
+                          AND before_entity_data IS after_entity_data
                         """)) {
                     for (PendingBlockChange pending : batch) {
                         statement.setString(1, pending.worldUuid);
@@ -1224,10 +1286,12 @@ final class Database {
     private List<RollbackTarget> selectRollbackTargets(Connection databaseConnection, String worldUuid,
                                                          String worldName, int centerX, int centerZ,
                                                          int radius, long targetTimestamp,
-                                                         long snapshotTimestamp, int maxBlocks) throws SQLException {
+                                                         long snapshotTimestamp, int maxBlocks,
+                                                         long maxSnapshotBytes) throws SQLException {
         String sql = """
                 WITH ranked AS (
-                    SELECT x, y, z, before_data, after_data, happened_at, id,
+                    SELECT x, y, z, before_data, after_data, before_entity_data, after_entity_data,
+                           happened_at, id,
                            ROW_NUMBER() OVER (
                                PARTITION BY x, y, z
                                ORDER BY happened_at ASC, id ASC
@@ -1241,18 +1305,22 @@ final class Database {
                       AND happened_at <= ?
                 ),
                 first_changes AS (
-                    SELECT x, y, z, before_data, happened_at, id
+                    SELECT x, y, z, before_data, before_entity_data, happened_at, id
                     FROM ranked
                     WHERE first_rank = 1
                 ),
                 last_changes AS (
-                    SELECT x, y, z, after_data
+                    SELECT x, y, z, after_data, after_entity_data
                     FROM ranked
                     WHERE last_rank = 1
                 )
                 SELECT first_changes.x, first_changes.y, first_changes.z,
                        first_changes.before_data AS target_data,
                        last_changes.after_data AS expected_data,
+                       COALESCE(length(first_changes.before_entity_data), 0) AS target_entity_bytes,
+                       COALESCE(length(last_changes.after_entity_data), 0) AS expected_entity_bytes,
+                       first_changes.before_entity_data AS target_entity_data,
+                       last_changes.after_entity_data AS expected_entity_data,
                        first_changes.happened_at, first_changes.id
                 FROM first_changes
                 JOIN last_changes USING (x, y, z)
@@ -1265,11 +1333,20 @@ final class Database {
             statement.setLong(index++, snapshotTimestamp);
             statement.setLong(index, (long) maxBlocks + 1L);
             List<RollbackTarget> targets = new ArrayList<>(Math.min(maxBlocks, 255) + 1);
+            long snapshotBytes = 0L;
             try (ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
+                    long targetBytes = resultSet.getLong("target_entity_bytes");
+                    long expectedBytes = resultSet.getLong("expected_entity_bytes");
+                    if (targetBytes > maxSnapshotBytes - snapshotBytes
+                            || expectedBytes > maxSnapshotBytes - snapshotBytes - targetBytes) {
+                        throw new RollbackSnapshotLimitExceededException(maxSnapshotBytes);
+                    }
+                    snapshotBytes += targetBytes + expectedBytes;
                     targets.add(new RollbackTarget(worldName, resultSet.getInt("x"), resultSet.getInt("y"),
                             resultSet.getInt("z"), Objects.requireNonNull(resultSet.getString("target_data")),
-                            Objects.requireNonNull(resultSet.getString("expected_data"))));
+                            Objects.requireNonNull(resultSet.getString("expected_data")),
+                            resultSet.getBytes("target_entity_data"), resultSet.getBytes("expected_entity_data")));
                 }
             }
             return targets;
@@ -1455,12 +1532,45 @@ final class Database {
 
     private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {
         return new BlockChange(previous.happenedAt(), serverTick, latest.actorUuid(), latest.actorName(), previous.worldName(),
-                previous.x(), previous.y(), previous.z(), latest.action(), previous.beforeData(), latest.afterData());
+                previous.x(), previous.y(), previous.z(), latest.action(), previous.beforeData(), latest.afterData(),
+                previous.beforeEntityData(), latest.afterEntityData());
+    }
+
+    private static boolean sameState(String firstData, byte[] firstEntityData,
+                                     String secondData, byte[] secondEntityData) {
+        return firstData.equals(secondData) && Arrays.equals(firstEntityData, secondEntityData);
     }
 
     private String resolveWorldUuid(String worldName) {
         World world = plugin.getServer().getWorld(worldName);
         return world == null ? worldName : world.getUID().toString();
+    }
+
+    static final class RollbackSnapshotLimitExceededException extends IllegalStateException {
+        private final long maximumBytes;
+
+        RollbackSnapshotLimitExceededException(long maximumBytes) {
+            super("Rollback preview block-entity snapshots exceed the " + maximumBytes + "-byte limit.");
+            this.maximumBytes = maximumBytes;
+        }
+
+        long maximumBytes() {
+            return maximumBytes;
+        }
+    }
+
+    static final class RollbackJobSnapshotLimitExceededException extends IllegalStateException {
+        private final long maximumBytes;
+
+        RollbackJobSnapshotLimitExceededException(long maximumBytes, boolean undo) {
+            super((undo ? "Undo" : "Rollback") + " job block-entity snapshots exceed the configured "
+                    + "rollback-max-snapshot-bytes-per-command limit of " + maximumBytes + " bytes.");
+            this.maximumBytes = maximumBytes;
+        }
+
+        long maximumBytes() {
+            return maximumBytes;
+        }
     }
 
     private record WorldIdentity(String uuid, String name) {
