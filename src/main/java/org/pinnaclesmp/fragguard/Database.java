@@ -111,11 +111,19 @@ final class Database {
         }
     }
 
-    void shutdown() {
-        running = false;
+    DatabaseShutdownSnapshot shutdown() {
+        DatabaseShutdownSnapshot snapshot;
+        synchronized (coalescedChanges) {
+            running = false;
+            snapshot = new DatabaseShutdownSnapshot(
+                    new DatabaseHealth(writeQueue.size(), writeCapacity, operationQueue.size(), operationCapacity,
+                            droppedWrites.get(), coalescedWrites.get(), healthy, lastError),
+                    completedWrites.get(), activeWriteBatchSize);
+        }
+
         Thread databaseWorker = worker;
         if (databaseWorker == null) {
-            return;
+            return snapshot;
         }
         databaseWorker.interrupt();
         try {
@@ -161,6 +169,7 @@ final class Database {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
         }
+        return snapshot;
     }
 
     long completedWrites() {
@@ -194,6 +203,12 @@ final class Database {
                 : change.serverTick();
         CoalesceKey key = new CoalesceKey(worldUuid, change.x(), change.y(), change.z(), serverTick);
         synchronized (coalescedChanges) {
+            if (!running) {
+                warnStorage("Cannot record block changes because FragGuard's database is not running.", null);
+                droppedWrites.incrementAndGet();
+                return;
+            }
+
             PendingBlockChange existing = coalescedChanges.get(key);
             if (existing != null) {
                 existing.change = merge(existing.change, change, serverTick);
@@ -772,6 +787,10 @@ final class Database {
 
         DatabaseOperation<T> operation;
         synchronized (coalescedChanges) {
+            if (!running) {
+                future.completeExceptionally(new IllegalStateException("FragGuard's database is not running."));
+                return future;
+            }
             operation = new DatabaseOperation<>(acceptedWriteSequence.get(), work, future, timedQuery);
             if (!operationQueue.offer(operation)) {
                 future.completeExceptionally(new IllegalStateException("FragGuard's database operation queue is full."));
@@ -831,12 +850,14 @@ final class Database {
                 batch.add(pending);
                 coalescedChanges.remove(pending.key, pending);
             }
+            if (!batch.isEmpty()) {
+                activeWriteBatchSize = batch.size();
+            }
         }
         if (batch.isEmpty()) {
             return;
         }
 
-        activeWriteBatchSize = batch.size();
         try {
             long persistedCoalesces = inTransaction(connection, () -> {
                 long existingRows = countPersistedCoalesceConflicts(connection, batch);
@@ -895,19 +916,27 @@ final class Database {
                 }
                 return existingRows;
             });
-            completedWrites.addAndGet(batch.size());
+            synchronized (coalescedChanges) {
+                completedWrites.addAndGet(batch.size());
+                activeWriteBatchSize = 0;
+            }
             coalescedWrites.addAndGet(persistedCoalesces);
             healthy = true;
             lastError = "";
         } catch (SQLException exception) {
-            droppedWrites.addAndGet(batch.size());
+            synchronized (coalescedChanges) {
+                droppedWrites.addAndGet(batch.size());
+                activeWriteBatchSize = 0;
+            }
             healthy = false;
             lastError = exception.getMessage();
             warnStorage("FragGuard could not persist " + batch.size()
                     + " queued block changes; check SQLite storage health.", exception);
             throw exception;
         } finally {
-            activeWriteBatchSize = 0;
+            synchronized (coalescedChanges) {
+                activeWriteBatchSize = 0;
+            }
         }
     }
 
