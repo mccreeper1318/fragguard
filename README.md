@@ -74,6 +74,28 @@ Rollback and undo progress is stored in SQLite. Interrupted jobs automatically r
 
 Shows database health, bounded write/control queue usage, coalesced same-tick changes, and dropped-write warnings. Block changes are written through one long-lived SQLite connection in transactional batches; lookups and rollback previews read all changes accepted before the query was submitted.
 
+## Database upgrades and recovery
+
+FragGuard records its SQLite schema version in `PRAGMA user_version`. Existing, unversioned databases are upgraded automatically when the plugin starts. Before changing an existing schema, FragGuard creates a consistent SQLite snapshot with `VACUUM INTO`, verifies it with `PRAGMA quick_check`, and saves it under:
+
+```text
+plugins/FragGuard/backups/fragguard.db.pre-migration-v0-to-v1-<timestamp>.bak
+```
+
+Every migration and its schema-version update run in a single transaction. If the backup cannot be created or verified, or if the migration fails, FragGuard refuses to start instead of continuing with a partially upgraded database. A newer database schema is also rejected rather than silently opened by an older FragGuard release.
+
+Before upgrading, stop the server and copy the entire `plugins/FragGuard` directory to a separate location. Do not copy only `fragguard.db` while the server is running: active SQLite changes can still be in `fragguard.db-wal`.
+
+To restore a pre-migration backup:
+
+1. Stop the Paper server completely.
+2. Preserve the current `plugins/FragGuard/fragguard.db` separately for investigation.
+3. Copy the selected `.bak` file to `plugins/FragGuard/fragguard.db`.
+4. Remove any stale `plugins/FragGuard/fragguard.db-wal` and `plugins/FragGuard/fragguard.db-shm` files.
+5. Install a FragGuard release that supports the restored schema and restart the server.
+
+World history and rollback jobs use the world's UUID as their identity while retaining readable world names. Renaming a world therefore preserves its history and resumable rollback jobs as long as the world's original UUID, including its `uid.dat`, is preserved. Block-change actions use stable storage identifiers; unrecognized actions remain in the database and appear as generic changes instead of making an entire lookup fail.
+
 ## Config
 
 `plugins/FragGuard/config.yml`

@@ -25,11 +25,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
+    static final int SCHEMA_VERSION = 1;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
     private static final String AREA_FILTER = """
             world_uuid IN (?, ?)
-            AND world = ?
+            AND (world_uuid = ? OR world = ?)
             AND happened_at %s ?
             AND chunk_x BETWEEN ? AND ?
             AND chunk_z BETWEEN ? AND ?
@@ -40,6 +41,7 @@ final class Database {
             """;
 
     private final JavaPlugin plugin;
+    private final File databaseFile;
     private final String jdbcUrl;
     private final String coalesceSession = UUID.randomUUID().toString();
     private final ArrayBlockingQueue<PendingBlockChange> writeQueue;
@@ -69,7 +71,7 @@ final class Database {
 
     Database(JavaPlugin plugin) {
         this.plugin = plugin;
-        File databaseFile = new File(plugin.getDataFolder(), "fragguard.db");
+        this.databaseFile = new File(plugin.getDataFolder(), "fragguard.db");
         this.jdbcUrl = "jdbc:sqlite:" + databaseFile.getAbsolutePath();
         this.writeCapacity = Math.max(64, plugin.getConfig().getInt("database-write-queue-capacity", 20_000));
         this.operationCapacity = Math.max(8, plugin.getConfig().getInt("database-operation-queue-capacity", 256));
@@ -87,6 +89,9 @@ final class Database {
             throw new SQLException("Could not create FragGuard's data directory");
         }
 
+        List<WorldIdentity> loadedWorlds = plugin.getServer().getWorlds().stream()
+                .map(world -> new WorldIdentity(world.getUID().toString(), world.getName()))
+                .toList();
         CompletableFuture<Void> started = new CompletableFuture<>();
         healthy = true;
         lastError = "";
@@ -94,7 +99,7 @@ final class Database {
         workerStopped = false;
         activeWriteBatchSize = 0;
         running = true;
-        worker = new Thread(() -> runWorker(started), "FragGuard-Database");
+        worker = new Thread(() -> runWorker(started, loadedWorlds), "FragGuard-Database");
         worker.setDaemon(true);
         worker.start();
 
@@ -261,7 +266,7 @@ final class Database {
                     statement.setInt(5, change.x());
                     statement.setInt(6, change.y());
                     statement.setInt(7, change.z());
-                    statement.setString(8, change.action().name());
+                    statement.setString(8, change.action().storageId());
                     statement.setString(9, change.beforeData());
                     statement.setString(10, change.afterData());
                     statement.setString(11, required.worldUuid());
@@ -551,10 +556,10 @@ final class Database {
         }), false);
     }
 
-    private void runWorker(CompletableFuture<Void> started) {
+    private void runWorker(CompletableFuture<Void> started, List<WorldIdentity> loadedWorlds) {
         try (Connection databaseConnection = DriverManager.getConnection(jdbcUrl)) {
             connection = databaseConnection;
-            initializeSchema(databaseConnection);
+            initializeSchema(databaseConnection, loadedWorlds);
             started.complete(null);
 
             while (running || !writeQueue.isEmpty() || !operationQueue.isEmpty()) {
@@ -640,12 +645,115 @@ final class Database {
         }
     }
 
-    private void initializeSchema(Connection databaseConnection) throws SQLException {
+    private void initializeSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.execute("PRAGMA busy_timeout=5000");
+        }
+
+        int schemaVersion = readSchemaVersion(databaseConnection);
+        if (schemaVersion > SCHEMA_VERSION) {
+            throw new SQLException("FragGuard database schema version " + schemaVersion
+                    + " is newer than the supported version " + SCHEMA_VERSION
+                    + ". Upgrade FragGuard instead of opening this database with an older plugin.");
+        }
+
+        if (schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection)) {
+            createMigrationBackup(databaseConnection, schemaVersion);
+        }
+
         try (Statement statement = databaseConnection.createStatement()) {
             statement.execute("PRAGMA journal_mode=WAL");
             statement.execute("PRAGMA synchronous=NORMAL");
             statement.execute("PRAGMA foreign_keys=ON");
-            statement.execute("PRAGMA busy_timeout=5000");
+        }
+
+        while (schemaVersion < SCHEMA_VERSION) {
+            int previousVersion = schemaVersion;
+            inTransaction(databaseConnection, () -> {
+                switch (previousVersion) {
+                    case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
+                    default -> throw new SQLException("No FragGuard database migration exists for schema version "
+                            + previousVersion + ".");
+                }
+                try (Statement statement = databaseConnection.createStatement()) {
+                    statement.execute("PRAGMA user_version=" + (previousVersion + 1));
+                }
+                return null;
+            });
+            schemaVersion++;
+            plugin.getLogger().info("Migrated FragGuard's SQLite schema from version " + previousVersion
+                    + " to version " + schemaVersion + ".");
+        }
+
+        inTransaction(databaseConnection, () -> {
+            refreshRollbackWorldNames(databaseConnection, loadedWorlds);
+            return null;
+        });
+    }
+
+    private int readSchemaVersion(Connection databaseConnection) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+            if (!version.next()) {
+                throw new SQLException("SQLite did not return FragGuard's database schema version.");
+            }
+            return version.getInt(1);
+        }
+    }
+
+    private boolean hasExistingSchema(Connection databaseConnection) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet tables = statement.executeQuery("""
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'table'
+                       AND name IN ('block_changes', 'rollback_jobs', 'rollback_job_changes')
+                     LIMIT 1
+                     """)) {
+            return tables.next();
+        }
+    }
+
+    private void createMigrationBackup(Connection databaseConnection, int previousVersion) throws SQLException {
+        File backupDirectory = new File(plugin.getDataFolder(), "backups");
+        if (!backupDirectory.isDirectory() && !backupDirectory.mkdirs()) {
+            throw new SQLException("Cannot safely migrate FragGuard's database because the backup directory "
+                    + backupDirectory.getAbsolutePath() + " could not be created.");
+        }
+
+        String prefix = databaseFile.getName() + ".pre-migration-v" + previousVersion
+                + "-to-v" + SCHEMA_VERSION + "-" + System.currentTimeMillis();
+        File backupFile = new File(backupDirectory, prefix + ".bak");
+        for (int attempt = 1; backupFile.exists(); attempt++) {
+            backupFile = new File(backupDirectory, prefix + "-" + attempt + ".bak");
+        }
+
+        try (PreparedStatement statement = databaseConnection.prepareStatement("VACUUM INTO ?")) {
+            statement.setString(1, backupFile.getAbsolutePath());
+            statement.execute();
+        } catch (SQLException exception) {
+            throw new SQLException("Cannot safely migrate FragGuard's database because the SQLite backup at "
+                    + backupFile.getAbsolutePath() + " could not be created.", exception);
+        }
+
+        try (Connection backupConnection = DriverManager.getConnection(
+                "jdbc:sqlite:" + backupFile.getAbsolutePath());
+             Statement statement = backupConnection.createStatement();
+             ResultSet check = statement.executeQuery("PRAGMA quick_check")) {
+            if (!check.next() || !"ok".equalsIgnoreCase(check.getString(1))) {
+                throw new SQLException("The pre-migration SQLite backup did not pass its integrity check.");
+            }
+        } catch (SQLException exception) {
+            throw new SQLException("Cannot safely migrate FragGuard's database because the backup at "
+                    + backupFile.getAbsolutePath() + " could not be verified.", exception);
+        }
+
+        plugin.getLogger().info("Created and verified FragGuard's pre-migration database backup: "
+                + backupFile.getAbsolutePath());
+    }
+
+    private void migrateUnversionedSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
+            throws SQLException {
+        try (Statement statement = databaseConnection.createStatement()) {
             statement.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS block_changes (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -760,6 +868,66 @@ final class Database {
                     SET expected_data = before_data
                     WHERE expected_data IS NULL AND before_data IS NOT NULL
                     """);
+        }
+
+        migrateWorldIdentities(databaseConnection, loadedWorlds);
+        migrateActionIdentifiers(databaseConnection);
+    }
+
+    private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
+            throws SQLException {
+        try (PreparedStatement changes = databaseConnection.prepareStatement("""
+                     UPDATE block_changes SET world_uuid = ?
+                     WHERE world = ? AND (world_uuid = '' OR world_uuid = world)
+                     """);
+             PreparedStatement jobs = databaseConnection.prepareStatement("""
+                     UPDATE rollback_jobs SET world_uuid = ?
+                     WHERE world = ? AND (world_uuid = '' OR world_uuid = world)
+                     """)) {
+            for (WorldIdentity world : loadedWorlds) {
+                changes.setString(1, world.uuid());
+                changes.setString(2, world.name());
+                changes.executeUpdate();
+
+                jobs.setString(1, world.uuid());
+                jobs.setString(2, world.name());
+                jobs.executeUpdate();
+            }
+        }
+    }
+
+    private void migrateActionIdentifiers(Connection databaseConnection) throws SQLException {
+        try (PreparedStatement statement = databaseConnection.prepareStatement(
+                "UPDATE block_changes SET action = ? WHERE action = ?")) {
+            for (ChangeAction action : ChangeAction.values()) {
+                statement.setString(1, action.storageId());
+                statement.setString(2, action.legacyStorageId());
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    private void refreshRollbackWorldNames(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
+            throws SQLException {
+        try (PreparedStatement jobs = databaseConnection.prepareStatement(
+                     "UPDATE rollback_jobs SET world = ? WHERE world_uuid = ? AND world <> ?");
+             PreparedStatement changes = databaseConnection.prepareStatement("""
+                     UPDATE rollback_job_changes SET world = ?
+                     WHERE world <> ?
+                       AND job_id IN (SELECT id FROM rollback_jobs WHERE world_uuid = ?)
+                     """)) {
+            for (WorldIdentity world : loadedWorlds) {
+                jobs.setString(1, world.name());
+                jobs.setString(2, world.uuid());
+                jobs.setString(3, world.name());
+                jobs.executeUpdate();
+
+                changes.setString(1, world.name());
+                changes.setString(2, world.name());
+                changes.setString(3, world.uuid());
+                changes.executeUpdate();
+            }
         }
     }
 
@@ -884,7 +1052,7 @@ final class Database {
                         statement.setInt(5, change.x());
                         statement.setInt(6, change.y());
                         statement.setInt(7, change.z());
-                        statement.setString(8, change.action().name());
+                        statement.setString(8, change.action().storageId());
                         statement.setString(9, change.beforeData());
                         statement.setString(10, change.afterData());
                         statement.setString(11, pending.worldUuid);
@@ -1045,7 +1213,7 @@ final class Database {
                 while (resultSet.next()) {
                     rows.add(new LookupRow(resultSet.getLong("happened_at"), resultSet.getString("actor_name"),
                             resultSet.getString("world"), resultSet.getInt("x"), resultSet.getInt("y"),
-                            resultSet.getInt("z"), ChangeAction.valueOf(resultSet.getString("action")),
+                            resultSet.getInt("z"), ChangeAction.fromStorageId(resultSet.getString("action")),
                             resultSet.getString("before_data"), resultSet.getString("after_data")));
                 }
             }
@@ -1124,6 +1292,7 @@ final class Database {
         int index = 1;
         statement.setString(index++, worldUuid);
         statement.setString(index++, worldName);
+        statement.setString(index++, worldUuid);
         statement.setString(index++, worldName);
         statement.setLong(index++, timestamp);
         statement.setLong(index++, Math.floorDiv(minX, 16L));
@@ -1210,13 +1379,14 @@ final class Database {
         try (PreparedStatement statement = databaseConnection.prepareStatement("""
                 SELECT id, center_x, center_z, radius
                 FROM rollback_jobs
-                WHERE world_uuid IN (?, ?) AND world = ?
+                WHERE world_uuid IN (?, ?) AND (world_uuid = ? OR world = ?)
                   AND status IN ('RUNNING', 'UNDOING') AND id <> ?
                 """)) {
             statement.setString(1, worldUuid);
             statement.setString(2, worldName);
-            statement.setString(3, worldName);
-            statement.setLong(4, excludedJobId);
+            statement.setString(3, worldUuid);
+            statement.setString(4, worldName);
+            statement.setLong(5, excludedJobId);
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
                     long dx = (long) rows.getInt("center_x") - centerX;
@@ -1291,6 +1461,9 @@ final class Database {
     private String resolveWorldUuid(String worldName) {
         World world = plugin.getServer().getWorld(worldName);
         return world == null ? worldName : world.getUID().toString();
+    }
+
+    private record WorldIdentity(String uuid, String name) {
     }
 
     private void cancelActiveStatement() {
