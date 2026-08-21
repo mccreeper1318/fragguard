@@ -121,6 +121,26 @@ class DatabaseShutdownTest {
     }
 
     @Test
+    void priorSessionWriteLossPreventsCleanShutdown() {
+        DatabaseHealth beforeHealth = new DatabaseHealth(0, 64, 0, 16,
+                4L, 0L, true, "");
+        DatabaseShutdownSnapshot before = new DatabaseShutdownSnapshot(beforeHealth, 20L, 0);
+        DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
+                4L, 0L, true, "");
+
+        StorageShutdownReport report = StorageShutdownSupport.finish(
+                before, after,
+                20L,
+                0, true, true);
+
+        assertEquals(0, report.lostDuringShutdown(),
+                "losses that happened before shutdown should not be mislabeled as shutdown-time losses");
+        assertEquals(4, report.totalDroppedWrites());
+        assertFalse(report.clean(),
+                "any confirmed write loss earlier in the session must prevent a clean shutdown report");
+    }
+
+    @Test
     void abandonedWritesAreNotCountedAsDrained() {
         DatabaseHealth beforeHealth = new DatabaseHealth(8, 64, 0, 16,
                 0L, 0L, true, "");
