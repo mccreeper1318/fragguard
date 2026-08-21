@@ -103,6 +103,51 @@ class BlockEntitySnapshotTest {
     }
 
     @Test
+    void restoresSerializedInventoriesAtTheMaximumSupportedSize() {
+        TileStateInventoryHolder source = mock(TileStateInventoryHolder.class);
+        Inventory sourceInventory = mock(Inventory.class);
+        ItemStack[] contents = new ItemStack[]{mock(ItemStack.class)};
+        when(source.getSnapshotInventory()).thenReturn(sourceInventory);
+        when(sourceInventory.getContents()).thenReturn(contents);
+
+        TileStateInventoryHolder target = mock(TileStateInventoryHolder.class);
+        Inventory targetInventory = mock(Inventory.class);
+        when(target.getSnapshotInventory()).thenReturn(targetInventory);
+        byte[] serializedContents = new byte[16 * 1024 * 1024];
+
+        try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+            itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents)).thenReturn(serializedContents);
+            itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedContents)).thenReturn(contents);
+
+            BlockEntitySnapshot.restore(block(target), BlockEntitySnapshot.capture(source));
+        }
+
+        verify(targetInventory).setContents(contents);
+        verify(target).update(true, false);
+    }
+
+    @Test
+    void rejectsOversizedInventoriesBeforeCapturingAnUnrestorableSnapshot() {
+        byte[] oversizedContents = new byte[16 * 1024 * 1024 + 1];
+
+        for (TileStateInventoryHolder source : List.of(
+                mock(TileStateInventoryHolder.class), mock(Lectern.class), mock(DecoratedPot.class))) {
+            DecoratedPotInventory sourceInventory = mock(DecoratedPotInventory.class);
+            ItemStack[] contents = new ItemStack[]{mock(ItemStack.class)};
+            when(source.getSnapshotInventory()).thenReturn(sourceInventory);
+            when(sourceInventory.getContents()).thenReturn(contents);
+
+            try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents)).thenReturn(oversizedContents);
+
+                IllegalStateException failure = assertThrows(IllegalStateException.class,
+                        () -> BlockEntitySnapshot.capture(source));
+                assertEquals("Invalid serialized inventory length: 16777217", failure.getCause().getMessage());
+            }
+        }
+    }
+
+    @Test
     void restoresCompatibleInventoryAfterPhysicsNormalizesItsBlockState() {
         TileStateInventoryHolder source = mock(TileStateInventoryHolder.class);
         Inventory sourceInventory = mock(Inventory.class);

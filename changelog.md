@@ -14,6 +14,7 @@
 - Added compressed, format-versioned block-entity snapshots for double-sided signs, container inventories and books, banner patterns, player-head profiles, lecterns, decorated-pot inventories/sherds, and supported custom names.
 - Added SQLite schema version 2 and regression coverage for verified version-1 migration backups, entity-only history, same-tick snapshot coalescing, rollback planning, recovered jobs, force retries, and undo snapshots.
 - Added rollback and undo regression coverage for compatible chest inventories after physics normalizes their structural block state, including the resulting correction-audit snapshots.
+- Added block-entity snapshot regression coverage for the 16 MiB serialized-inventory boundary and oversized containers, lecterns, and decorated pots.
 
 ### Changed
 
@@ -36,6 +37,7 @@
 - Fixed #15 by restoring sign text/colors/glow/wax, container contents including written books, banner designs, player-head textures, lectern books/pages, and decorated-pot items/sherds during rollback and undo.
 - Fixed the Beta 3 build failing banner regression coverage by avoiding Paper registry initialization for banners without patterns; patterned banners still resolve their designs through the data-driven registry.
 - Fixed physics-enabled rollback and undo discarding compatible block-entity contents when the server normalizes the requested block state, such as a single chest joining a neighboring double chest; correction audits now retain the restored contents.
+- Fixed oversized container, lectern, and decorated-pot inventories entering block history even though rollback could not restore them; snapshot capture now enforces the same 16 MiB inventory limit as restoration before history or world state can be changed.
 
 ## 26.2-3-beta.2
 

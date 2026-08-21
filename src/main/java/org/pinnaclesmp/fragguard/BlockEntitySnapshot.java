@@ -260,20 +260,25 @@ final class BlockEntitySnapshot {
 
     private static void writeInventory(DataOutputStream output, TileStateInventoryHolder holder) throws IOException {
         byte[] items = ItemStack.serializeItemsAsBytes(holder.getSnapshotInventory().getContents());
+        validateInventoryLength(items.length);
         output.writeInt(items.length);
         output.write(items);
     }
 
     private static void readInventory(DataInputStream input, TileStateInventoryHolder holder) throws IOException {
         int length = input.readInt();
-        if (length < 0 || length > MAX_ITEM_BYTES) {
-            throw new IOException("Invalid serialized inventory length: " + length);
-        }
+        validateInventoryLength(length);
         byte[] items = input.readNBytes(length);
         if (items.length != length) {
             throw new IOException("Incomplete serialized inventory");
         }
         holder.getSnapshotInventory().setContents(ItemStack.deserializeItemsFromBytes(items));
+    }
+
+    private static void validateInventoryLength(int length) throws IOException {
+        if (length < 0 || length > MAX_ITEM_BYTES) {
+            throw new IOException("Invalid serialized inventory length: " + length);
+        }
     }
 
     private static void writeComponent(DataOutputStream output, Component component) throws IOException {
