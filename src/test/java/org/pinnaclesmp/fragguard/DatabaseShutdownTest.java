@@ -68,19 +68,18 @@ class DatabaseShutdownTest {
             ));
         }
 
-        DatabaseHealth before = database.health();
-        long completedBefore = database.completedWrites();
-        assertEquals(8, before.queuedWrites(),
-                "same-tick writes below the pressure threshold should still be queued before shutdown");
+        DatabaseShutdownSnapshot before = database.shutdown();
+        assertEquals(8, before.outstandingWrites(),
+                "the atomic shutdown snapshot must account for every accepted write before draining begins");
 
-        database.shutdown();
         DatabaseHealth after = database.health();
         StorageShutdownReport report = StorageShutdownSupport.finish(
                 before, after,
-                completedBefore, database.completedWrites(),
+                database.completedWrites(),
                 database.workerStopped() ? 0 : database.inFlightWrites(),
                 database.workerStopped(), database.walCheckpointCompleted());
 
+        assertEquals(8, report.queuedWritesAtStart());
         assertEquals(8, report.drainedWrites());
         assertEquals(0, report.remainingWrites());
         assertEquals(0, report.remainingOperations());
@@ -102,15 +101,36 @@ class DatabaseShutdownTest {
     }
 
     @Test
-    void abandonedWritesAreNotCountedAsDrained() {
-        DatabaseHealth before = new DatabaseHealth(8, 64, 0, 16,
+    void claimedBatchRemainsPartOfAtomicShutdownOutstandingCount() {
+        DatabaseHealth beforeHealth = new DatabaseHealth(0, 64, 0, 16,
                 0L, 0L, true, "");
+        DatabaseShutdownSnapshot before = new DatabaseShutdownSnapshot(beforeHealth, 12L, 8);
+        DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
+                0L, 0L, true, "");
+
+        StorageShutdownReport report = StorageShutdownSupport.finish(
+                before, after,
+                20L,
+                0, true, true);
+
+        assertEquals(8, report.queuedWritesAtStart(),
+                "a batch already claimed by the worker must remain in the shutdown-start outstanding count");
+        assertEquals(8, report.drainedWrites());
+        assertTrue(report.clean(),
+                "a claimed batch that completes after the snapshot should produce consistent clean accounting");
+    }
+
+    @Test
+    void abandonedWritesAreNotCountedAsDrained() {
+        DatabaseHealth beforeHealth = new DatabaseHealth(8, 64, 0, 16,
+                0L, 0L, true, "");
+        DatabaseShutdownSnapshot before = new DatabaseShutdownSnapshot(beforeHealth, 12L, 0);
         DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
                 8L, 0L, false, "write failure");
 
         StorageShutdownReport report = StorageShutdownSupport.finish(
                 before, after,
-                12L, 12L,
+                12L,
                 0, true, false);
 
         assertEquals(0, report.drainedWrites(),
@@ -121,14 +141,15 @@ class DatabaseShutdownTest {
 
     @Test
     void liveWorkerWriteBatchIsReportedAsUnconfirmed() {
-        DatabaseHealth before = new DatabaseHealth(5, 64, 0, 16,
+        DatabaseHealth beforeHealth = new DatabaseHealth(5, 64, 0, 16,
                 0L, 0L, true, "");
+        DatabaseShutdownSnapshot before = new DatabaseShutdownSnapshot(beforeHealth, 20L, 0);
         DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
                 5L, 0L, false, "database worker did not stop");
 
         StorageShutdownReport report = StorageShutdownSupport.finish(
                 before, after,
-                20L, 20L,
+                20L,
                 3, false, false);
 
         assertEquals(0, report.drainedWrites());
@@ -143,14 +164,15 @@ class DatabaseShutdownTest {
 
     @Test
     void liveWorkerOperationIsIncludedInRemainingOperations() {
-        DatabaseHealth before = new DatabaseHealth(0, 64, 0, 16,
+        DatabaseHealth beforeHealth = new DatabaseHealth(0, 64, 0, 16,
                 0L, 0L, true, "");
+        DatabaseShutdownSnapshot before = new DatabaseShutdownSnapshot(beforeHealth, 40L, 0);
         DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
                 0L, 0L, false, "database worker did not stop");
 
         StorageShutdownReport report = StorageShutdownSupport.finish(
                 before, after,
-                40L, 40L,
+                40L,
                 0, false, false);
 
         assertEquals(1, report.unconfirmedOperations(),
