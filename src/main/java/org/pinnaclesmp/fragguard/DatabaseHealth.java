@@ -10,4 +10,16 @@ record DatabaseHealth(
         boolean healthy,
         String lastError
 ) {
+    @Override
+    public boolean healthy() {
+        return healthy && droppedWrites == 0 && lastError.isBlank();
+    }
+
+    boolean storageAvailable() {
+        return healthy;
+    }
+
+    boolean degraded() {
+        return !healthy();
+    }
 }

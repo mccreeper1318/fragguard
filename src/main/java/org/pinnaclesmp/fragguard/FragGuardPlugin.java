@@ -1,7 +1,9 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.command.PluginCommand;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.sql.SQLException;
@@ -11,6 +13,8 @@ import java.util.logging.Level;
 
 public final class FragGuardPlugin extends JavaPlugin {
     private Database database;
+    private boolean storageWarningActive;
+    private long lastStorageWarningAt;
 
     @Override
     public void onEnable() {
@@ -34,13 +38,43 @@ public final class FragGuardPlugin extends JavaPlugin {
         commandExecutor.resumeInterruptedJobs();
 
         scheduleCleanup();
+        scheduleStorageHealthMonitor();
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");
     }
 
     @Override
     public void onDisable() {
-        if (database != null) {
-            database.shutdown();
+        if (database == null) {
+            return;
+        }
+
+        DatabaseShutdownSnapshot before = database.shutdown();
+        DatabaseHealth after = database.health();
+        long completedWritesAfter = database.completedWrites();
+        int unconfirmedWrites = database.workerStopped() ? 0 : database.inFlightWrites();
+        StorageShutdownReport report = StorageShutdownSupport.finish(
+                before, after,
+                completedWritesAfter,
+                unconfirmedWrites,
+                database.workerStopped(), database.walCheckpointCompleted());
+
+        String summary = "FragGuard storage shutdown: queued=" + report.queuedWritesAtStart()
+                + ", drained=" + report.drainedWrites()
+                + ", remaining=" + report.remainingWrites()
+                + ", remaining operations=" + report.remainingOperations()
+                + ", unconfirmed active operations=" + report.unconfirmedOperations()
+                + ", lost during shutdown=" + report.lostDuringShutdown()
+                + ", unconfirmed in-flight writes=" + report.unconfirmedWrites()
+                + ", total dropped this session=" + report.totalDroppedWrites()
+                + ", worker stopped=" + report.workerStopped()
+                + ", WAL checkpoint=" + (report.walCheckpointCompleted() ? "complete" : "FAILED");
+        if (report.clean()) {
+            getLogger().info(summary);
+        } else {
+            getLogger().warning(summary);
+            if (!after.lastError().isBlank()) {
+                getLogger().warning("FragGuard final storage error: " + after.lastError());
+            }
         }
     }
 
@@ -59,5 +93,45 @@ public final class FragGuardPlugin extends JavaPlugin {
         });
 
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, 20L * 30L, ticks);
+    }
+
+    private void scheduleStorageHealthMonitor() {
+        long checkSeconds = Math.max(1L, getConfig().getLong("database-health-check-interval-seconds", 5L));
+        long ticks = checkSeconds * 20L;
+        Bukkit.getScheduler().runTaskTimer(this, this::checkStorageHealth, ticks, ticks);
+    }
+
+    private void checkStorageHealth() {
+        if (database == null) {
+            return;
+        }
+
+        DatabaseHealth health = database.health();
+        if (!health.degraded()) {
+            storageWarningActive = false;
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long repeatMillis = TimeUnit.SECONDS.toMillis(Math.max(5L,
+                getConfig().getLong("database-operator-warning-interval-seconds", 60L)));
+        if (!StorageWarningThrottle.shouldWarn(storageWarningActive, now, lastStorageWarningAt, repeatMillis)) {
+            return;
+        }
+
+        storageWarningActive = true;
+        lastStorageWarningAt = now;
+
+        String availability = health.storageAvailable() ? "DEGRADED" : "UNAVAILABLE";
+        String message = "FragGuard logging is " + availability
+                + ". Dropped writes: " + health.droppedWrites()
+                + "; queued writes: " + health.queuedWrites() + "/" + health.writeCapacity()
+                + (health.lastError().isBlank() ? "." : "; last error: " + health.lastError());
+        getLogger().warning(message);
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.isOp() || player.hasPermission("fragguard.admin")) {
+                player.sendMessage(ChatColor.RED + "[FragGuard] " + message);
+            }
+        }
     }
 }

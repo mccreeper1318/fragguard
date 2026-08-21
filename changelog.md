@@ -12,6 +12,11 @@
 - Added regression coverage for snapshot-bounded rollback planning, expected live-state capture, conflict decisions, force decisions, stale audit retraction, and overlap rejection.
 - Added regression coverage for crash-window rollback mutations whose world change succeeded before the batch's `applied` progress marker was committed.
 - Added regression coverage for stale undo coordinates remaining unresolved and retryable until a later undo attempt succeeds.
+- Added shutdown regression coverage proving queued current-tick logs drain to SQLite before close and the database worker completes its WAL checkpoint after the drain.
+- Added shutdown accounting regression coverage ensuring abandoned writes are not reported as successfully drained, still-running in-flight write batches are surfaced as unconfirmed, and a live worker with work already removed from the operation queue cannot report zero remaining operations.
+- Added regression coverage for degraded-storage warning throttling so the first operator alert is immediate while repeated alerts honor the configured interval.
+- Added regression coverage for atomic pre-shutdown write accounting, including batches already claimed by the database worker when shutdown begins.
+- Added regression coverage ensuring write loss earlier in the server session still prevents shutdown from being reported as clean even when no additional writes are lost during disable.
 
 ### Changed
 
@@ -23,6 +28,12 @@
 - Rollback plans now persist an upper snapshot timestamp and the expected state of each target coordinate; normal rollbacks skip and count conflicting newer changes, while an explicit `force` option revalidates and retries against the latest live state before overwriting it.
 - Stale rollback audit rows are retracted when live-state revalidation fails, and `/fg undo` now operates only on coordinates the rollback actually changed or durably prepared for mutation before an interrupted progress commit; force retries completed by another actor are marked conflicting and excluded.
 - Undo conflicts now remain unresolved instead of being marked `undone`; an incomplete undo attempt stays retryable and reports the number of coordinates that still need another `/fg undo <job-id>` attempt.
+- Shutdown now reports queued, drained, remaining, and lost writes; after all accepted work drains, the database worker runs `wal_checkpoint(TRUNCATE)` before closing its SQLite connection and warns if the worker or checkpoint does not complete.
+- Shutdown cancellation now waits through a configurable second grace period after cancelling the active SQLite statement; if the worker still does not stop, queued writes are explicitly abandoned/count as lost, pending database operations are failed, and any active write batch is reported as unconfirmed.
+- Shutdown `drained` reporting is now derived from successfully completed write batches instead of queue-depth shrinkage, so failed or abandoned writes cannot be presented as persisted.
+- If the database worker is still alive after the cancellation grace period with no active write batch, shutdown conservatively accounts for one unconfirmed active database operation in the remaining-operation total so dequeued work cannot disappear from the report.
+- Shutdown now stops write/operation admission and captures queued, in-flight, completed, and dropped write accounting in one database snapshot before draining; batch claim/completion transitions use the same accounting lock so a write cannot appear queued in one counter snapshot and completed in another.
+- Any confirmed dropped log or unavailable SQLite worker now keeps storage visibly degraded for the session; the first operator warning is immediate and all repeated warnings obey `database-operator-warning-interval-seconds` even while the dropped-write count continues increasing.
 
 ### Fixed
 
@@ -39,6 +50,13 @@
 - Fixed crash-window rollback mutations being permanently omitted from `/fg undo` when the world change succeeded but shutdown or failure occurred before the batch could commit `applied = 1`; durably prepared, non-conflicted rows remain undo-recoverable even when that progress marker is missing.
 - Fixed externally completed force retries being incorrectly eligible for `/fg undo`; when another actor reaches the rollback target after a stale force audit is retracted, FragGuard now records the retry as conflicted/non-applied so the saved pre-retry state cannot later overwrite that external change.
 - Fixed stale undo coordinates being silently finalized as `undone = 1`; revalidation conflicts now stay recoverable, prevent the job from falsely becoming `UNDONE`, and are reported with a retry instruction.
+- Fixed #9 by making shutdown durability observable: FragGuard drains accepted bounded-queue work before close, checkpoints the WAL on the database worker, explicitly counts still-queued logs as dropped if the worker fails, reports incomplete shutdown state, preserves degraded health after known log loss/database failure, and notifies online operators when logging is unhealthy.
+- Fixed the shutdown timeout path returning immediately after cancellation while accepted writes were still owned by a live worker; FragGuard now waits for cancellation and explicitly accounts for queued losses plus any in-flight writes whose durability remains unconfirmed.
+- Fixed abandoned shutdown writes being counted as both `drained` and `lost`; only write batches that actually complete successfully contribute to the drained count.
+- Fixed long non-timed database operations disappearing from shutdown accounting after they were removed from `operationQueue`; a still-running worker now contributes an unconfirmed active operation to the remaining-operation count unless it is known to be processing an in-flight write batch.
+- Fixed degraded-storage warnings bypassing their configured repeat interval whenever `droppedWrites` increased; repeated operator alerts are now rate-limited by the configured interval regardless of how quickly losses accumulate.
+- Fixed pre-shutdown counters being captured from different moments while the database worker was concurrently completing a batch; shutdown now returns one atomic accounting snapshot so `queued`, `drained`, `remaining`, and clean-status reporting stay internally consistent.
+- Fixed prior session write loss being hidden by an otherwise successful shutdown; `totalDroppedWrites > 0` now always prevents the shutdown report from being classified as clean, ensuring `onDisable()` emits a warning even when the worker later caught up and no additional writes were lost during shutdown.
 
 ## 26.2-3-beta.1
 
