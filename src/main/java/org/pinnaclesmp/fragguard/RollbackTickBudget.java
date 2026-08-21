@@ -8,6 +8,22 @@ final class RollbackTickBudget {
     private boolean active;
 
     boolean begin(int tick, long nowNanos, long budgetNanos) {
+        prepare(tick, budgetNanos);
+        if (usedNanos >= maximumNanos) {
+            return false;
+        }
+        sliceStartedAt = nowNanos;
+        active = true;
+        return true;
+    }
+
+    void beginCommitted(int tick, long nowNanos, long budgetNanos) {
+        prepare(tick, budgetNanos);
+        sliceStartedAt = nowNanos;
+        active = true;
+    }
+
+    private void prepare(int tick, long budgetNanos) {
         if (active) {
             throw new IllegalStateException("A rollback work slice is already active.");
         }
@@ -16,12 +32,6 @@ final class RollbackTickBudget {
             usedNanos = 0L;
         }
         maximumNanos = Math.max(1L, budgetNanos);
-        if (usedNanos >= maximumNanos) {
-            return false;
-        }
-        sliceStartedAt = nowNanos;
-        active = true;
-        return true;
     }
 
     boolean exhausted(long nowNanos) {

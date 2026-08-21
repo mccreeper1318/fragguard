@@ -38,6 +38,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             .withZone(ZoneId.systemDefault());
     private static final String OPERATION_QUEUE_FULL = "FragGuard's database operation queue is full.";
     private static final int MAX_FORCE_REVALIDATION_RETRIES = 8;
+    private static final int MAX_AUDITED_CHANGES_PER_SLICE = 16;
 
     private final FragGuardPlugin plugin;
     private final Database database;
@@ -539,14 +540,18 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return false;
         }
 
-        double maximumMillis = Math.max(0.1,
-                Math.min(50.0, plugin.getConfig().getDouble("rollback-max-millis-per-tick", 4.0)));
-        long budgetNanos = Math.max(1L, (long) (maximumMillis * 1_000_000.0));
-        if (!rollbackTickBudget.begin(plugin.getServer().getCurrentTick(), System.nanoTime(), budgetNanos)) {
+        if (!rollbackTickBudget.begin(plugin.getServer().getCurrentTick(),
+                System.nanoTime(), maximumWorkNanos())) {
             retryJobLater(job, retry, 1L);
             return false;
         }
         return true;
+    }
+
+    private long maximumWorkNanos() {
+        double maximumMillis = Math.max(0.1,
+                Math.min(50.0, plugin.getConfig().getDouble("rollback-max-millis-per-tick", 4.0)));
+        return Math.max(1L, (long) (maximumMillis * 1_000_000.0));
     }
 
     private void retryJobLater(RollbackJob job, Runnable retry, long ticks) {
@@ -635,16 +640,43 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                            List<BlockChange> observedCorrections,
                                            boolean undo, boolean replaceBeforeData,
                                            int forceAttempt, Runnable afterApplied) {
-        if (candidates.isEmpty()) {
+        persistAndApplyCandidateSlice(job, operator, candidates, results, observedCorrections,
+                undo, replaceBeforeData, forceAttempt, afterApplied, 0);
+    }
+
+    private void persistAndApplyCandidateSlice(RollbackJob job, Player operator,
+                                               List<PreparedWorldChange> candidates,
+                                               Map<Integer, RollbackStepResult> results,
+                                               List<BlockChange> observedCorrections,
+                                               boolean undo, boolean replaceBeforeData,
+                                               int forceAttempt, Runnable afterApplied,
+                                               int startIndex) {
+        if (startIndex >= candidates.size()) {
             afterApplied.run();
             return;
+        }
+
+        Runnable retry = () -> persistAndApplyCandidateSlice(job, operator, candidates,
+                results, observedCorrections, undo, replaceBeforeData,
+                forceAttempt, afterApplied, startIndex);
+        if (!beginWorkSlice(job, operator, undo, retry)) {
+            return;
+        }
+
+        int endIndex;
+        List<PreparedWorldChange> slice;
+        try {
+            endIndex = Math.min(startIndex + MAX_AUDITED_CHANGES_PER_SLICE, candidates.size());
+            slice = List.copyOf(candidates.subList(startIndex, endIndex));
+        } finally {
+            rollbackTickBudget.end(System.nanoTime());
         }
 
         CompletableFuture<Void> prepared;
         if (undo) {
             prepared = CompletableFuture.completedFuture(null);
         } else {
-            List<RollbackJobChange> preparedChanges = candidates.stream()
+            List<RollbackJobChange> preparedChanges = slice.stream()
                     .map(candidate -> candidate.change().withBeforeData(candidate.beforeData()))
                     .toList();
             prepared = replaceBeforeData
@@ -658,7 +690,30 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 return;
             }
 
-            List<BlockChange> audits = candidates.stream()
+            persistPreparedCandidateSlice(job, operator, candidates, slice, results,
+                    observedCorrections, undo, replaceBeforeData, forceAttempt,
+                    afterApplied, endIndex);
+        }));
+    }
+
+    private void persistPreparedCandidateSlice(RollbackJob job, Player operator,
+                                               List<PreparedWorldChange> candidates,
+                                               List<PreparedWorldChange> slice,
+                                               Map<Integer, RollbackStepResult> results,
+                                               List<BlockChange> observedCorrections,
+                                               boolean undo, boolean replaceBeforeData,
+                                               int forceAttempt, Runnable afterApplied,
+                                               int nextIndex) {
+        Runnable retry = () -> persistPreparedCandidateSlice(job, operator, candidates,
+                slice, results, observedCorrections, undo, replaceBeforeData,
+                forceAttempt, afterApplied, nextIndex);
+        if (!beginWorkSlice(job, operator, undo, retry)) {
+            return;
+        }
+
+        List<BlockChange> audits;
+        try {
+            audits = slice.stream()
                     .map(candidate -> RollbackAudit.create(
                             job,
                             candidate.block(),
@@ -667,10 +722,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                             undo
                     ))
                     .toList();
-            persistRequiredAudits(job, operator, audits, auditIds -> applyPersistedCandidates(
-                    job, operator, candidates, auditIds, results, observedCorrections,
-                    undo, forceAttempt, afterApplied));
-        }));
+        } finally {
+            rollbackTickBudget.end(System.nanoTime());
+        }
+
+        persistRequiredAudits(job, operator, audits, auditIds -> applyPersistedCandidates(
+                job, operator, slice, auditIds, results, observedCorrections,
+                undo, forceAttempt, () -> persistAndApplyCandidateSlice(
+                        job, operator, candidates, results, observedCorrections,
+                        undo, replaceBeforeData, forceAttempt, afterApplied, nextIndex)));
     }
 
     private void applyPersistedCandidates(RollbackJob job, Player operator,
@@ -686,33 +746,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        applyPersistedCandidatesSlice(job, operator, candidates, auditIds, results, observedCorrections,
-                undo, forceAttempt, afterApplied, 0, new ArrayList<>(), new ArrayList<>());
-    }
-
-    private void applyPersistedCandidatesSlice(RollbackJob job, Player operator,
-                                               List<PreparedWorldChange> candidates, List<Long> auditIds,
-                                               Map<Integer, RollbackStepResult> results,
-                                               List<BlockChange> observedCorrections, boolean undo,
-                                               int forceAttempt, Runnable afterApplied, int startIndex,
-                                               List<Long> staleAuditIds,
-                                               List<RollbackJobChange> forceRetries) {
-        Runnable retry = () -> applyPersistedCandidatesSlice(job, operator, candidates, auditIds,
-                results, observedCorrections, undo, forceAttempt, afterApplied,
-                startIndex, staleAuditIds, forceRetries);
-        if (!beginWorkSlice(job, operator, undo, retry)) {
-            return;
-        }
-
+        // An acknowledged audit must never survive a budget/TPS pause before its block is mutated.
+        rollbackTickBudget.beginCommitted(plugin.getServer().getCurrentTick(),
+                System.nanoTime(), maximumWorkNanos());
         boolean applyPhysics = plugin.getConfig().getBoolean("apply-physics-during-rollback", false);
-        int index = startIndex;
+        List<Long> staleAuditIds = new ArrayList<>();
+        List<RollbackJobChange> forceRetries = new ArrayList<>();
+        int index = 0;
         RuntimeException failure = null;
         try {
             while (index < candidates.size()) {
-                if (index > startIndex && rollbackTickBudget.exhausted(System.nanoTime())) {
-                    break;
-                }
-
                 PreparedWorldChange candidate = candidates.get(index);
                 long auditId = auditIds.get(index);
                 Block block = candidate.block();
@@ -763,14 +806,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             deleteRequiredAudits(job, operator, staleAuditIds, () ->
                     persistRequiredAudits(job, operator, observedCorrections,
                             ignored -> failJob(job, operator, finalFailure)));
-            return;
-        }
-
-        if (index < candidates.size()) {
-            int nextIndex = index;
-            retryJobLater(job, () -> applyPersistedCandidatesSlice(job, operator, candidates, auditIds,
-                    results, observedCorrections, undo, forceAttempt, afterApplied,
-                    nextIndex, staleAuditIds, forceRetries), 1L);
             return;
         }
 

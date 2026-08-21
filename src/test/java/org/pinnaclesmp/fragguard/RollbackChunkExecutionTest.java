@@ -4,24 +4,39 @@ import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Server;
 import org.bukkit.World;
+import org.bukkit.block.Block;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitScheduler;
+import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -123,6 +138,138 @@ class RollbackChunkExecutionTest {
         }
     }
 
+    @Test
+    void persistsOnlyTheActiveRollbackSliceBeforeLowTpsDefersLaterCandidates() throws Exception {
+        assertOnlyTheActiveSliceIsAudited(false, true);
+    }
+
+    @Test
+    void persistsOnlyTheActiveUndoSliceBeforeLowTpsDefersLaterCandidates() throws Exception {
+        assertOnlyTheActiveSliceIsAudited(true, true);
+    }
+
+    @Test
+    void persistsOnlyTheActiveRollbackSliceBeforeTheTickBudgetDefersLaterCandidates() throws Exception {
+        assertOnlyTheActiveSliceIsAudited(false, false);
+    }
+
+    private void assertOnlyTheActiveSliceIsAudited(boolean undo, boolean lowTpsPause) throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("rollback-minimum-tps", 18.0);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        AtomicReference<Double> currentTps = new AtomicReference<>(20.0);
+        AtomicInteger currentTick = new AtomicInteger(100);
+        when(server.getTPS()).thenAnswer(ignored -> new double[]{currentTps.get()});
+        when(server.getCurrentTick()).thenAnswer(ignored -> currentTick.get());
+
+        Database database = mock(Database.class);
+        when(database.prepareRollbackBatchAsync(eq(41L), anyList()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        List<List<BlockChange>> committedAudits = new ArrayList<>();
+        AtomicLong auditIds = new AtomicLong();
+        when(database.insertRequiredAsync(anyList())).thenAnswer(invocation -> {
+            List<BlockChange> audits = invocation.getArgument(0);
+            committedAudits.add(List.copyOf(audits));
+            return CompletableFuture.completedFuture(audits.stream()
+                    .map(ignored -> auditIds.incrementAndGet())
+                    .toList());
+        });
+
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+        Player operator = mock(Player.class);
+        when(operator.isOnline()).thenReturn(true);
+        World world = mock(World.class);
+        when(world.getName()).thenReturn("world");
+        List<Object> candidates = new ArrayList<>();
+        List<AtomicReference<BlockData>> actualStates = new ArrayList<>();
+        String initialData = undo ? "minecraft:dirt" : "minecraft:stone";
+        String desiredData = undo ? "minecraft:stone" : "minecraft:dirt";
+        for (int index = 0; index < 17; index++) {
+            Block block = mock(Block.class);
+            BlockData before = mock(BlockData.class);
+            BlockData desired = mock(BlockData.class);
+            when(before.getAsString()).thenReturn(initialData);
+            when(desired.getAsString()).thenReturn(desiredData);
+            AtomicReference<BlockData> actual = new AtomicReference<>(before);
+            actualStates.add(actual);
+            when(block.getBlockData()).thenAnswer(ignored -> actual.get());
+            when(block.getWorld()).thenReturn(world);
+            when(block.getX()).thenReturn(index);
+            when(block.getY()).thenReturn(64);
+            when(block.getZ()).thenReturn(0);
+            int changeIndex = index;
+            doAnswer(invocation -> {
+                actual.set(invocation.getArgument(0));
+                if (changeIndex == 15) {
+                    if (lowTpsPause) {
+                        currentTps.set(17.0);
+                    } else {
+                        long exhaustedAt = System.nanoTime() + 60_000_000L;
+                        while (System.nanoTime() < exhaustedAt) {
+                            Thread.onSpinWait();
+                        }
+                    }
+                }
+                return null;
+            }).when(block).setBlockData(eq(desired), eq(false));
+
+            RollbackJobChange change = new RollbackJobChange(index, "world", index, 64, 0,
+                    "minecraft:stone", "minecraft:dirt", false, false, false);
+            candidates.add(preparedChange(change, block, desired, initialData));
+        }
+
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return mock(BukkitTask.class);
+        });
+        List<Runnable> postponed = new ArrayList<>();
+        List<Long> delays = new ArrayList<>();
+        when(scheduler.runTaskLater(eq(plugin), any(Runnable.class), anyLong())).thenAnswer(invocation -> {
+            postponed.add(invocation.getArgument(1));
+            delays.add(invocation.getArgument(2));
+            return mock(BukkitTask.class);
+        });
+        Runnable completed = mock(Runnable.class);
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+
+            persistAndApplyCandidates(command, job, operator, candidates, undo, completed);
+
+            assertEquals(1, committedAudits.size(),
+                    "the paused second slice must not already appear in rollback history");
+            assertEquals(16, committedAudits.get(0).size());
+            assertTrue(committedAudits.get(0).stream().allMatch(change -> change.x() < 16));
+            assertEquals(initialData, actualStates.get(16).get().getAsString(),
+                    "the deferred block must remain unchanged while its slice is paused");
+            assertEquals(1, postponed.size());
+            assertEquals(lowTpsPause ? 20L : 1L, delays.get(0));
+            verify(completed, never()).run();
+
+            currentTick.incrementAndGet();
+            currentTps.set(20.0);
+            postponed.get(0).run();
+
+            assertEquals(2, committedAudits.size());
+            assertEquals(1, committedAudits.get(1).size());
+            assertEquals(16, committedAudits.get(1).get(0).x());
+            assertEquals(desiredData, actualStates.get(16).get().getAsString());
+            verify(completed).run();
+            if (undo) {
+                verify(database, never()).prepareRollbackBatchAsync(eq(41L), anyList());
+            } else {
+                verify(database, times(2)).prepareRollbackBatchAsync(eq(41L), anyList());
+            }
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static void markExecuting(FragGuardCommand command, RollbackJob job) throws Exception {
         Field field = FragGuardCommand.class.getDeclaredField("executingJobs");
@@ -151,6 +298,28 @@ class RollbackChunkExecutionTest {
                 RollbackJob.class, Player.class, boolean.class, Runnable.class);
         method.setAccessible(true);
         return (boolean) method.invoke(command, job, operator, false, resume);
+    }
+
+    private static Object preparedChange(RollbackJobChange change, Block block,
+                                         BlockData desired, String beforeData) throws Exception {
+        Class<?> candidateClass = Class.forName(
+                "org.pinnaclesmp.fragguard.FragGuardCommand$PreparedWorldChange");
+        Constructor<?> constructor = candidateClass.getDeclaredConstructor(
+                RollbackJobChange.class, Block.class, BlockData.class, String.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(change, block, desired, beforeData);
+    }
+
+    private static void persistAndApplyCandidates(FragGuardCommand command, RollbackJob job,
+                                                   Player operator, List<Object> candidates,
+                                                   boolean undo, Runnable completed) throws Exception {
+        Method method = FragGuardCommand.class.getDeclaredMethod("persistAndApplyCandidates",
+                RollbackJob.class, Player.class, List.class, Map.class, List.class,
+                boolean.class, boolean.class, int.class, Runnable.class);
+        method.setAccessible(true);
+        method.invoke(command, job, operator, candidates,
+                new HashMap<Integer, RollbackStepResult>(), new ArrayList<BlockChange>(),
+                undo, false, 0, completed);
     }
 
     private static RollbackJob job(long id) {
