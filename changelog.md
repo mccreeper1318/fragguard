@@ -1,5 +1,22 @@
 # FG Changelog
 
+## 26.3-3-beta.3
+
+### Added
+
+- Added configurable `rollback-max-millis-per-tick`, `rollback-minimum-tps`, and `rollback-max-chunks-per-command` safeguards for rollback and undo execution.
+- Added regression coverage for chunk grouping, negative chunk boundaries, separate-world chunk identities, preview chunk counting, asynchronous no-generation loads, shared chunk tickets, TPS pause/resume, per-tick budget sharing, and next-tick budget resets.
+
+### Changed
+
+- Grouped rollback and undo changes by chunk, asynchronously loaded only existing chunks without generating new terrain, and held reference-counted plugin chunk tickets only while their active chunk is being processed.
+- Applied a shared millisecond-per-tick work budget across block-state preparation, world mutations, and force-mode retries while retaining the configured maximum blocks per batch.
+- Automatically paused rollback and undo jobs when server TPS falls below the configured threshold, resumed them after recovery, and rejected previews or saved jobs that exceed the maximum affected chunk count.
+
+### Fixed
+
+- Fixed #8 by preventing large rollback and undo jobs from synchronously loading many chunks or monopolizing the server thread with fixed-size block batches.
+
 ## 26.2-3-beta.2
 
 ### Added

@@ -32,8 +32,15 @@ max-lookup-radius: 150
 # Rollback safety settings.
 # Increase these if you trust your server hardware and know the radius can be large.
 max-rollback-radius: 100
+# Retain a hard block cap as a secondary safeguard alongside the time budget.
 rollback-blocks-per-tick: 500
+# Maximum combined rollback/undo work on the main thread during one server tick.
+rollback-max-millis-per-tick: 4.0
+# Pause rollback/undo work while the server's recent TPS falls below this value; 0 disables pausing.
+rollback-minimum-tps: 18.0
 rollback-max-blocks-per-command: 50000
+# Reject previews, execution, and recovery jobs that span more than this many existing chunks.
+rollback-max-chunks-per-command: 256
 # Preview tokens expire before a rollback can be confirmed.
 rollback-confirmation-timeout-seconds: 60
 
