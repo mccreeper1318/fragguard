@@ -15,6 +15,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
@@ -71,6 +72,141 @@ class DatabaseTest {
         assertEquals(ChangeAction.BREAK, ChangeAction.fromStorageId("BREAK"));
         assertEquals(ChangeAction.BREAK, ChangeAction.fromStorageId("block.break"));
         assertEquals(ChangeAction.UNKNOWN, ChangeAction.fromStorageId("future.block.action"));
+    }
+
+    @Test
+    void migratesVersionOneDatabaseAndRetainsVerifiedPreUpgradeBackup() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:chest", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("ALTER TABLE block_changes DROP COLUMN before_entity_data");
+            statement.executeUpdate("ALTER TABLE block_changes DROP COLUMN after_entity_data");
+            statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN before_entity_data");
+            statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN target_entity_data");
+            statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN expected_entity_data");
+            statement.execute("PRAGMA user_version=1");
+        }
+
+        database = startDatabase();
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(2, version.getInt(1));
+            }
+            try (ResultSet history = statement.executeQuery(
+                    "SELECT before_entity_data, after_entity_data FROM block_changes")) {
+                assertTrue(history.next());
+                assertNull(history.getBytes("before_entity_data"));
+                assertNull(history.getBytes("after_entity_data"));
+            }
+        }
+
+        Path backup = onlyMigrationBackup();
+        assertTrue(backup.getFileName().toString().startsWith("fragguard.db.pre-migration-v1-to-v2-"));
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + backup);
+             Statement statement = connection.createStatement();
+             ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+            assertTrue(version.next());
+            assertEquals(1, version.getInt(1));
+        }
+    }
+
+    @Test
+    void persistsBlockEntityOnlyChangesAndCoalescesSnapshotsAcrossFlushes() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        byte[] original = new byte[]{1, 2, 3};
+        byte[] intermediate = new byte[]{4, 5, 6};
+        byte[] latest = new byte[]{7, 8, 9};
+
+        database.insertAsync(new BlockChange(timestamp, 750L, ACTOR_UUID.toString(), "Builder", "world",
+                2, 64, 2, ChangeAction.BREAK, "minecraft:chest", "minecraft:chest", original, intermediate));
+        assertEquals(1, database.lookupAsync("world", 2, 2, 1, 1, 10, 30).join().totalRows());
+
+        database.insertAsync(new BlockChange(timestamp + 1L, 750L, ACTOR_UUID.toString(), "Builder", "world",
+                2, 64, 2, ChangeAction.BREAK, "minecraft:chest", "minecraft:chest", intermediate, latest));
+        assertEquals(1, database.lookupAsync("world", 2, 2, 1, 1, 10, 30).join().totalRows());
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet row = statement.executeQuery(
+                     "SELECT before_entity_data, after_entity_data FROM block_changes")) {
+            assertTrue(row.next());
+            assertTrue(Arrays.equals(original, row.getBytes("before_entity_data")));
+            assertTrue(Arrays.equals(latest, row.getBytes("after_entity_data")));
+        }
+
+        database.insertAsync(new BlockChange(timestamp + 2L, 750L, ACTOR_UUID.toString(), "Builder", "world",
+                2, 64, 2, ChangeAction.BREAK, "minecraft:chest", "minecraft:chest", latest, original));
+        assertEquals(0, database.lookupAsync("world", 2, 2, 1, 1, 10, 30).join().totalRows(),
+                "a same-tick entity-only change returning to its original snapshot is a net no-op");
+    }
+
+    @Test
+    void plansEarliestAndLatestBlockEntitySnapshotsAcrossHistory() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        byte[] original = new byte[]{10, 11};
+        byte[] intermediate = new byte[]{12, 13};
+        byte[] latest = new byte[]{14, 15};
+        database.insertRequiredAsync(List.of(
+                new BlockChange(timestamp - 2_000L, ACTOR_UUID.toString(), "Builder", "world",
+                        3, 64, 3, ChangeAction.BREAK, "minecraft:chest", "minecraft:chest",
+                        original, intermediate),
+                new BlockChange(timestamp - 1_000L, ACTOR_UUID.toString(), "Builder", "world",
+                        3, 64, 3, ChangeAction.BREAK, "minecraft:chest", "minecraft:chest",
+                        intermediate, latest)
+        )).join();
+
+        List<RollbackTarget> targets = database.rollbackTargetsAsync("world", 3, 3, 1,
+                timestamp - 3_000L, timestamp, 10).join();
+        assertEquals(1, targets.size());
+        assertTrue(Arrays.equals(original, targets.get(0).targetEntityData()));
+        assertTrue(Arrays.equals(latest, targets.get(0).expectedEntityData()));
+    }
+
+    @Test
+    void preservesRollbackSnapshotsAcrossPreparationReplacementRecoveryAndUndo() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        byte[] target = new byte[]{21, 22};
+        byte[] expected = new byte[]{23, 24};
+        byte[] original = new byte[]{25, 26};
+        byte[] replacement = new byte[]{27, 28};
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 5, timestamp - 1_000L, timestamp, true,
+                List.of(new RollbackTarget("world", 4, 64, 4, "minecraft:chest", "minecraft:chest",
+                        target, expected))).join();
+
+        RollbackJobChange saved = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertTrue(Arrays.equals(target, saved.targetEntityData()));
+        assertTrue(Arrays.equals(expected, saved.expectedEntityData()));
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(saved.withBeforeState("minecraft:chest", original))).join();
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(saved.withBeforeState("minecraft:chest", expected))).join();
+        RollbackJobChange prepared = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertTrue(Arrays.equals(original, prepared.beforeEntityData()),
+                "repeated preparation must retain the first durable undo snapshot");
+
+        database.replaceRollbackBeforeDataAsync(job.id(),
+                List.of(saved.withBeforeState("minecraft:chest", replacement))).join();
+        database.shutdown();
+        database = startDatabase();
+        RollbackJobChange recovered = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertTrue(Arrays.equals(replacement, recovered.beforeEntityData()));
+        assertTrue(Arrays.equals(target, recovered.targetEntityData()));
+        assertTrue(Arrays.equals(expected, recovered.expectedEntityData()));
+
+        database.markRollbackBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(saved.sequence(), true, false))).join();
+        database.completeRollbackJobAsync(job.id(), false).join();
+        database.beginUndoAsync(job.id()).join();
+        RollbackJobChange undo = database.loadRollbackChangesAsync(job.id(), true).join().get(0);
+        assertTrue(Arrays.equals(replacement, undo.beforeEntityData()),
+                "undo must restore the same inventory or text snapshot captured before rollback");
     }
 
     @Test
@@ -645,8 +781,9 @@ class DatabaseTest {
         try (var backups = Files.list(temporaryDirectory.resolve("backups"))) {
             List<Path> files = backups.toList();
             assertEquals(1, files.size());
-            assertTrue(files.get(0).getFileName().toString()
-                    .startsWith("fragguard.db.pre-migration-v0-to-v1-"));
+            String filename = files.get(0).getFileName().toString();
+            assertTrue(filename.startsWith("fragguard.db.pre-migration-v"));
+            assertTrue(filename.contains("-to-v" + Database.SCHEMA_VERSION + "-"));
             return files.get(0);
         }
     }

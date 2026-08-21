@@ -593,27 +593,30 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 BlockData desired = Bukkit.createBlockData(Objects.requireNonNull(desiredData, "Missing saved block state"));
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
                 String actualData = block.getBlockData().getAsString();
+                byte[] actualEntityData = BlockEntitySnapshot.capture(block);
+                byte[] desiredEntityData = undo ? change.beforeEntityData() : change.targetEntityData();
                 String normalizedDesired = desired.getAsString();
                 preparedBatch.add(change);
 
                 if (undo) {
-                    if (actualData.equals(normalizedDesired)) {
+                    if (matchesState(actualData, actualEntityData, normalizedDesired, desiredEntityData)) {
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, false));
                     } else {
-                        candidates.add(new PreparedWorldChange(change, block, desired, actualData));
+                        candidates.add(new PreparedWorldChange(change, block, desired, actualData,
+                                actualEntityData, desiredEntityData));
                     }
                     continue;
                 }
 
                 String expectedData = Objects.requireNonNullElse(change.expectedData(), actualData);
-                RollbackStateGuard.Decision decision = RollbackStateGuard.decide(
-                        actualData, expectedData, normalizedDesired, job.force());
-                switch (decision) {
-                    case ALREADY_TARGET -> results.put(change.sequence(),
-                            new RollbackStepResult(change.sequence(), false, false));
-                    case CONFLICT -> results.put(change.sequence(),
-                            new RollbackStepResult(change.sequence(), false, true));
-                    case APPLY -> candidates.add(new PreparedWorldChange(change, block, desired, actualData));
+                if (matchesState(actualData, actualEntityData, normalizedDesired, desiredEntityData)) {
+                    results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, false));
+                } else if (!job.force()
+                        && !matchesState(actualData, actualEntityData, expectedData, change.expectedEntityData())) {
+                    results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
+                } else {
+                    candidates.add(new PreparedWorldChange(change, block, desired, actualData,
+                            actualEntityData, desiredEntityData));
                 }
             }
         } catch (RuntimeException exception) {
@@ -682,7 +685,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             prepared = CompletableFuture.completedFuture(null);
         } else {
             List<RollbackJobChange> preparedChanges = slice.stream()
-                    .map(candidate -> candidate.change().withBeforeData(candidate.beforeData()))
+                    .map(candidate -> candidate.change().withBeforeState(
+                            candidate.beforeData(), candidate.beforeEntityData()))
                     .toList();
             prepared = replaceBeforeData
                     ? database.replaceRollbackBeforeDataAsync(job.id(), preparedChanges)
@@ -724,6 +728,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                             candidate.block(),
                             candidate.beforeData(),
                             candidate.desired().getAsString(),
+                            candidate.beforeEntityData(),
+                            candidate.desiredEntityData(),
                             undo
                     ))
                     .toList();
@@ -765,7 +771,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 long auditId = auditIds.get(index);
                 Block block = candidate.block();
                 String actualData = block.getBlockData().getAsString();
-                if (!RollbackStateGuard.stillMatchesAudit(actualData, candidate.beforeData())) {
+                byte[] actualEntityData = BlockEntitySnapshot.capture(block);
+                if (!matchesState(actualData, actualEntityData,
+                        candidate.beforeData(), candidate.beforeEntityData())) {
                     staleAuditIds.add(auditId);
                     if (!undo && job.force()) {
                         forceRetries.add(candidate.change());
@@ -777,21 +785,33 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     continue;
                 }
 
+                String desiredData = candidate.desired().getAsString();
                 if (applyPhysics) {
-                    block.setBlockData(candidate.desired(), true);
+                    if (!actualData.equals(desiredData)) {
+                        block.setBlockData(candidate.desired(), true);
+                    }
                     String resultingData = block.getBlockData().getAsString();
-                    String desiredData = candidate.desired().getAsString();
+                    if (desiredData.equals(resultingData)) {
+                        BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
+                    }
                     if (!desiredData.equals(resultingData)) {
                         observedCorrections.add(RollbackAudit.create(
                                 job,
                                 block,
                                 desiredData,
                                 resultingData,
+                                candidate.desiredEntityData(),
+                                BlockEntitySnapshot.capture(block),
                                 undo
                         ));
                     }
                 } else {
-                    BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(candidate.desired(), false));
+                    BlockLoggingSuppression.runSuppressed(() -> {
+                        if (!actualData.equals(desiredData)) {
+                            block.setBlockData(candidate.desired(), false);
+                        }
+                        BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
+                    });
                 }
                 results.put(candidate.change().sequence(),
                         new RollbackStepResult(candidate.change().sequence(), true, false));
@@ -883,11 +903,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         Objects.requireNonNull(change.targetData(), "Missing saved block state"));
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
                 String actualData = block.getBlockData().getAsString();
-                if (actualData.equals(desired.getAsString())) {
+                byte[] actualEntityData = BlockEntitySnapshot.capture(block);
+                if (matchesState(actualData, actualEntityData,
+                        desired.getAsString(), change.targetEntityData())) {
                     // The stale force attempt never mutated this coordinate; another actor completed it.
                     results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                 } else {
-                    retryCandidates.add(new PreparedWorldChange(change, block, desired, actualData));
+                    retryCandidates.add(new PreparedWorldChange(change, block, desired, actualData,
+                            actualEntityData, change.targetEntityData()));
                 }
                 index++;
             }
@@ -1168,12 +1191,23 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         return ChatColor.translateAlternateColorCodes('&', message);
     }
 
+    private static boolean matchesState(String actualData, byte[] actualEntityData,
+                                        String expectedData, byte[] expectedEntityData) {
+        return actualData.equals(expectedData)
+                && (expectedEntityData == null || Arrays.equals(actualEntityData, expectedEntityData));
+    }
+
     private record PreparedWorldChange(
             RollbackJobChange change,
             Block block,
             BlockData desired,
-            String beforeData
+            String beforeData,
+            byte[] beforeEntityData,
+            byte[] desiredEntityData
     ) {
+        private PreparedWorldChange(RollbackJobChange change, Block block, BlockData desired, String beforeData) {
+            this(change, block, desired, beforeData, null, null);
+        }
     }
 
     private record RollbackPreview(

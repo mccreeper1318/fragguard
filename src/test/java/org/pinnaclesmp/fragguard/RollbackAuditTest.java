@@ -4,6 +4,7 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -70,6 +71,13 @@ class RollbackAuditTest {
         );
         assertEquals("Admin [rollback #73 undo]", undo.actorName());
         assertEquals(ChangeAction.ROLLBACK, undo.action());
+
+        byte[] beforeEntityData = new byte[]{1, 2, 3};
+        byte[] afterEntityData = new byte[]{4, 5, 6};
+        BlockChange entityAudit = RollbackAudit.create(job, block,
+                "minecraft:chest", "minecraft:chest", beforeEntityData, afterEntityData, false);
+        assertTrue(Arrays.equals(beforeEntityData, entityAudit.beforeEntityData()));
+        assertTrue(Arrays.equals(afterEntityData, entityAudit.afterEntityData()));
     }
 
     @Test

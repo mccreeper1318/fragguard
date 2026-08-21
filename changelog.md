@@ -11,6 +11,8 @@
 - Added regression coverage for durable per-slice rollback and undo physics corrections across low-TPS or exhausted-budget pauses, completed chunk-ticket release before cross-chunk TPS pauses, and active-ticket retention during same-chunk pauses.
 - Added explicit SQLite schema versioning through `PRAGMA user_version`, verified pre-migration `VACUUM INTO` backups, transactional schema upgrades, and documented database backup/restoration procedures.
 - Added regression coverage for stable action identifiers, unknown legacy actions, world renames, renamed resumable rollback jobs, retained migration backups, rejected future schema versions, failed atomic migrations, and unavailable backup locations.
+- Added compressed, format-versioned block-entity snapshots for double-sided signs, container inventories and books, banner patterns, player-head profiles, lecterns, decorated-pot inventories/sherds, and supported custom names.
+- Added SQLite schema version 2 and regression coverage for verified version-1 migration backups, entity-only history, same-tick snapshot coalescing, rollback planning, recovered jobs, force retries, and undo snapshots.
 
 ### Changed
 
@@ -20,6 +22,7 @@
 - Prepared and durably recorded rollback or undo audits in bounded 16-block slices immediately before applying each slice, with later slices remaining unaudited while work is deferred.
 - Persisted observed physics-correction audits immediately after each applied slice, before force retries or subsequent slices can pause, and released completed chunk tickets before evaluating TPS at chunk boundaries.
 - Persisted stable block-change action identifiers instead of Java enum names, migrated legacy action values and loaded-world UUIDs, matched history/rollback regions by stable world identity, and refreshed saved rollback world names after renames.
+- Captured block-entity data alongside structural block data, persisted before/after snapshots through gameplay and rollback audit history, and restored each block's structure before updating its saved block entity.
 
 ### Fixed
 
@@ -29,6 +32,7 @@
 - Fixed physics-enabled rollback or undo history retaining an incorrect requested block state if a later slice paused and the server restarted before its observed correction was persisted.
 - Fixed completed rollback chunks remaining forcibly loaded throughout low-TPS pauses before the next chunk began processing.
 - Fixed #14 by preventing world renames, changed or unknown action enums, unsupported database downgrades, and partially applied schema upgrades from orphaning history or breaking lookups and rollback recovery.
+- Fixed #15 by restoring sign text/colors/glow/wax, container contents including written books, banner designs, player-head textures, lectern books/pages, and decorated-pot items/sherds during rollback and undo.
 
 ## 26.2-3-beta.2
 
