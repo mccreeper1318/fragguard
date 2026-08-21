@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class RollbackChunkPlanTest {
     @Test
-    void groupsChangesByChunkWithoutChangingTheOrderWithinEachChunk() {
+    void preservesSequenceWhenRollbackRevisitsAnEarlierChunk() {
         RollbackJobChange firstChunkFirst = change(1, "world", 0, 15);
         RollbackJobChange secondChunk = change(2, "world", 16, 0);
         RollbackJobChange firstChunkSecond = change(3, "world", 15, 0);
@@ -18,9 +18,29 @@ class RollbackChunkPlanTest {
                 firstChunkFirst, secondChunk, firstChunkSecond, negativeChunk));
 
         assertEquals(3, plan.chunkCount());
-        assertEquals(List.of(firstChunkFirst, firstChunkSecond, secondChunk, negativeChunk), plan.changes());
+        assertEquals(List.of(firstChunkFirst, secondChunk, firstChunkSecond, negativeChunk), plan.changes());
         assertEquals(new RollbackChunkPlan.ChunkKey("world", -1, -1),
                 RollbackChunkPlan.ChunkKey.from(negativeChunk));
+    }
+
+    @Test
+    void undoPreservesTheExactReverseOfInterleavedChunkExecution() {
+        RollbackJobChange firstChunkFirst = change(1, "world", 15, 0);
+        RollbackJobChange secondChunk = change(2, "world", 16, 0);
+        RollbackJobChange firstChunkSecond = change(3, "world", 14, 0);
+
+        RollbackChunkPlan.Plan rollback = RollbackChunkPlan.group(List.of(
+                firstChunkFirst, secondChunk, firstChunkSecond));
+        RollbackChunkPlan.Plan undo = RollbackChunkPlan.group(List.of(
+                firstChunkSecond, secondChunk, firstChunkFirst));
+
+        assertEquals(2, rollback.chunkCount(), "revisiting a chunk must not count it twice");
+        assertEquals(2, undo.chunkCount());
+        assertEquals(List.of(1, 2, 3),
+                rollback.changes().stream().map(RollbackJobChange::sequence).toList());
+        assertEquals(List.of(3, 2, 1),
+                undo.changes().stream().map(RollbackJobChange::sequence).toList(),
+                "physics-dependent undo must reverse the actual rollback order across chunk boundaries");
     }
 
     @Test

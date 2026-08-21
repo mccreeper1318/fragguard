@@ -6,16 +6,18 @@
 
 - Added configurable `rollback-max-millis-per-tick`, `rollback-minimum-tps`, and `rollback-max-chunks-per-command` safeguards for rollback and undo execution.
 - Added regression coverage for chunk grouping, negative chunk boundaries, separate-world chunk identities, preview chunk counting, asynchronous no-generation loads, shared chunk tickets, TPS pause/resume, per-tick budget sharing, and next-tick budget resets.
+- Added rollback-planner and SQLite-backed regression coverage for interleaved chunk sequences, repeated chunk visits, and undo execution in the exact reverse persisted order.
 
 ### Changed
 
-- Grouped rollback and undo changes by chunk, asynchronously loaded only existing chunks without generating new terrain, and held reference-counted plugin chunk tickets only while their active chunk is being processed.
+- Processed rollback and undo changes in consecutive same-chunk batches without reordering their persisted sequence, asynchronously loaded only existing chunks without generating new terrain, and held reference-counted plugin chunk tickets only while their active chunk is being processed.
 - Applied a shared millisecond-per-tick work budget across block-state preparation, world mutations, and force-mode retries while retaining the configured maximum blocks per batch.
 - Automatically paused rollback and undo jobs when server TPS falls below the configured threshold, resumed them after recovery, and rejected previews or saved jobs that exceed the maximum affected chunk count.
 
 ### Fixed
 
 - Fixed #8 by preventing large rollback and undo jobs from synchronously loading many chunks or monopolizing the server thread with fixed-size block batches.
+- Fixed interleaved chunk visits being globally regrouped out of sequence, which caused physics-enabled rollbacks and undo operations to update cross-chunk neighbors in the wrong order.
 
 ## 26.2-3-beta.2
 

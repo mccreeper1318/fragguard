@@ -305,6 +305,43 @@ class DatabaseTest {
     }
 
     @Test
+    void preservesInterleavedChunkSequenceForRollbackAndReverseUndo() throws Exception {
+        database = startDatabase();
+        long snapshotTimestamp = System.currentTimeMillis();
+        List<RollbackTarget> targets = List.of(
+                new RollbackTarget("world", 15, 70, 0, "minecraft:stone", "minecraft:air"),
+                new RollbackTarget("world", 16, 70, 0, "minecraft:oak_log", "minecraft:air"),
+                new RollbackTarget("world", 14, 70, 0, "minecraft:oak_planks", "minecraft:air")
+        );
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                15, 0, 10, snapshotTimestamp - 1_000, snapshotTimestamp, false, targets).join();
+
+        RollbackChunkPlan.Plan rollback = RollbackChunkPlan.group(
+                database.loadRollbackChangesAsync(job.id(), false).join());
+        assertEquals(2, rollback.chunkCount());
+        assertEquals(List.of(0, 1, 2),
+                rollback.changes().stream().map(RollbackJobChange::sequence).toList(),
+                "revisiting the first chunk must not move its later coordinate ahead of the boundary block");
+
+        List<RollbackJobChange> prepared = rollback.changes().stream()
+                .map(change -> change.withBeforeData("minecraft:air"))
+                .toList();
+        database.prepareRollbackBatchAsync(job.id(), prepared).join();
+        database.markRollbackBatchAppliedAsync(job.id(), rollback.changes().stream()
+                .map(change -> new RollbackStepResult(change.sequence(), true, false))
+                .toList()).join();
+        database.completeRollbackJobAsync(job.id(), false).join();
+        database.beginUndoAsync(job.id()).join();
+
+        RollbackChunkPlan.Plan undo = RollbackChunkPlan.group(
+                database.loadRollbackChangesAsync(job.id(), true).join());
+        assertEquals(2, undo.chunkCount());
+        assertEquals(List.of(2, 1, 0),
+                undo.changes().stream().map(RollbackJobChange::sequence).toList(),
+                "undo must preserve the exact reverse rollback order for physics across chunk boundaries");
+    }
+
+    @Test
     void preservesPreparedCrashWindowMutationForUndoAfterResumeMarksItUnchanged() throws Exception {
         database = startDatabase();
         long snapshotTimestamp = System.currentTimeMillis();

@@ -64,7 +64,7 @@ Confirmation tokens are tied to the operator and expire after 60 seconds by defa
 /fg undo <job-id>
 ```
 
-Rollback and undo progress is stored in SQLite. Interrupted jobs automatically resume after a server restart, and overlapping jobs in the same world are rejected. Changes are grouped by chunk, existing chunks load asynchronously without generating terrain, and temporary chunk tickets prevent an active chunk from unloading during audit persistence. Main-thread work respects both a per-tick time budget and block cap, and pauses automatically while server TPS is below the configured minimum.
+Rollback and undo progress is stored in SQLite. Interrupted jobs automatically resume after a server restart, and overlapping jobs in the same world are rejected. Changes are processed in consecutive same-chunk batches without changing saved sequence order, existing chunks load asynchronously without generating terrain, and temporary chunk tickets prevent an active chunk from unloading during audit persistence. Main-thread work respects both a per-tick time budget and block cap, and pauses automatically while server TPS is below the configured minimum.
 
 ### Storage status
 
@@ -131,7 +131,7 @@ Put that JAR into your server's `plugins` folder and restart the Paper server.
 - Fire-burn and bucket-source logging was added after the first version. Old damage that happened before installing this update cannot be rolled back unless it was already logged.
 - Rollback previews are capped inside SQLite at the configured maximum plus one, and use indexed world/chunk coordinates instead of loading an entire region's history.
 - Rollback previews and recovered jobs enforce both block-count and chunk-count limits before execution.
-- Rollbacks and undo operations load existing chunks asynchronously, hold only their active chunk with a plugin ticket, and apply durable batches within a configurable shared per-tick time budget.
+- Rollbacks and undo operations load existing chunks asynchronously, hold only their active chunk with a plugin ticket, and apply consecutive same-chunk batches in saved sequence order within a configurable shared per-tick time budget.
 - Rollback and undo work pauses when recent server TPS falls below `rollback-minimum-tps`; set the threshold to `0` to disable automatic pausing.
 
 

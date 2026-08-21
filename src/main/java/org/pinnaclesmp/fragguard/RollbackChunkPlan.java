@@ -1,25 +1,21 @@
 package org.pinnaclesmp.fragguard;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 final class RollbackChunkPlan {
     private RollbackChunkPlan() {
     }
 
     static Plan group(List<RollbackJobChange> changes) {
-        Map<ChunkKey, List<RollbackJobChange>> chunks = new LinkedHashMap<>();
+        Set<ChunkKey> chunks = new HashSet<>();
         for (RollbackJobChange change : changes) {
-            chunks.computeIfAbsent(ChunkKey.from(change), ignored -> new ArrayList<>()).add(change);
+            chunks.add(ChunkKey.from(change));
         }
 
-        List<RollbackJobChange> grouped = new ArrayList<>(changes.size());
-        for (List<RollbackJobChange> chunkChanges : chunks.values()) {
-            grouped.addAll(chunkChanges);
-        }
-        return new Plan(List.copyOf(grouped), chunks.size());
+        // The executor groups only consecutive chunk runs so saved sequence order survives chunk revisits.
+        return new Plan(List.copyOf(changes), chunks.size());
     }
 
     static int countTargetChunks(List<RollbackTarget> targets) {
