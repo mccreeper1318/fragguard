@@ -48,15 +48,13 @@ public final class FragGuardPlugin extends JavaPlugin {
             return;
         }
 
-        DatabaseHealth before = database.health();
-        long completedWritesBefore = database.completedWrites();
-        database.shutdown();
+        DatabaseShutdownSnapshot before = database.shutdown();
         DatabaseHealth after = database.health();
         long completedWritesAfter = database.completedWrites();
         int unconfirmedWrites = database.workerStopped() ? 0 : database.inFlightWrites();
         StorageShutdownReport report = StorageShutdownSupport.finish(
                 before, after,
-                completedWritesBefore, completedWritesAfter,
+                completedWritesAfter,
                 unconfirmedWrites,
                 database.workerStopped(), database.walCheckpointCompleted());
 
