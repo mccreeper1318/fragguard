@@ -15,6 +15,7 @@
 - Added shutdown regression coverage proving queued current-tick logs drain to SQLite before close and the database worker completes its WAL checkpoint after the drain.
 - Added shutdown accounting regression coverage ensuring abandoned writes are not reported as successfully drained, still-running in-flight write batches are surfaced as unconfirmed, and a live worker with work already removed from the operation queue cannot report zero remaining operations.
 - Added regression coverage for degraded-storage warning throttling so the first operator alert is immediate while repeated alerts honor the configured interval.
+- Added regression coverage for atomic pre-shutdown write accounting, including batches already claimed by the database worker when shutdown begins.
 
 ### Changed
 
@@ -30,6 +31,7 @@
 - Shutdown cancellation now waits through a configurable second grace period after cancelling the active SQLite statement; if the worker still does not stop, queued writes are explicitly abandoned/count as lost, pending database operations are failed, and any active write batch is reported as unconfirmed.
 - Shutdown `drained` reporting is now derived from successfully completed write batches instead of queue-depth shrinkage, so failed or abandoned writes cannot be presented as persisted.
 - If the database worker is still alive after the cancellation grace period with no active write batch, shutdown conservatively accounts for one unconfirmed active database operation in the remaining-operation total so dequeued work cannot disappear from the report.
+- Shutdown now stops write/operation admission and captures queued, in-flight, completed, and dropped write accounting in one database snapshot before draining; batch claim/completion transitions use the same accounting lock so a write cannot appear queued in one counter snapshot and completed in another.
 - Any confirmed dropped log or unavailable SQLite worker now keeps storage visibly degraded for the session; the first operator warning is immediate and all repeated warnings obey `database-operator-warning-interval-seconds` even while the dropped-write count continues increasing.
 
 ### Fixed
@@ -52,6 +54,7 @@
 - Fixed abandoned shutdown writes being counted as both `drained` and `lost`; only write batches that actually complete successfully contribute to the drained count.
 - Fixed long non-timed database operations disappearing from shutdown accounting after they were removed from `operationQueue`; a still-running worker now contributes an unconfirmed active operation to the remaining-operation count unless it is known to be processing an in-flight write batch.
 - Fixed degraded-storage warnings bypassing their configured repeat interval whenever `droppedWrites` increased; repeated operator alerts are now rate-limited by the configured interval regardless of how quickly losses accumulate.
+- Fixed pre-shutdown counters being captured from different moments while the database worker was concurrently completing a batch; shutdown now returns one atomic accounting snapshot so `queued`, `drained`, `remaining`, and clean-status reporting stay internally consistent.
 
 ## 26.2-3-beta.1
 
