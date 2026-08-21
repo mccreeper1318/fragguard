@@ -4,17 +4,18 @@ final class StorageShutdownSupport {
     private StorageShutdownSupport() {
     }
 
-    static StorageShutdownReport finish(DatabaseHealth before, DatabaseHealth after,
-                                        long completedWritesBefore, long completedWritesAfter,
+    static StorageShutdownReport finish(DatabaseShutdownSnapshot before, DatabaseHealth after,
+                                        long completedWritesAfter,
                                         int unconfirmedWrites,
                                         boolean workerStopped, boolean walCheckpointCompleted) {
-        long drainedWrites = Math.max(0L, completedWritesAfter - completedWritesBefore);
-        long lostDuringShutdown = Math.max(0L, after.droppedWrites() - before.droppedWrites());
+        DatabaseHealth beforeHealth = before.health();
+        long drainedWrites = Math.max(0L, completedWritesAfter - before.completedWrites());
+        long lostDuringShutdown = Math.max(0L, after.droppedWrites() - beforeHealth.droppedWrites());
         int safeUnconfirmedWrites = Math.max(0, unconfirmedWrites);
         int unconfirmedOperations = !workerStopped && safeUnconfirmedWrites == 0 ? 1 : 0;
         int remainingOperations = after.queuedOperations() + unconfirmedOperations;
         return new StorageShutdownReport(
-                before.queuedWrites(),
+                before.outstandingWrites(),
                 drainedWrites,
                 after.queuedWrites(),
                 remainingOperations,
