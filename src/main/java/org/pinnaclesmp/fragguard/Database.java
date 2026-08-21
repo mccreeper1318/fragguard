@@ -27,6 +27,7 @@ import java.util.logging.Level;
 
 final class Database {
     static final int SCHEMA_VERSION = 2;
+    static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
     private static final String AREA_FILTER = """
@@ -341,9 +342,18 @@ final class Database {
     CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
                                                                    int radius, long targetTimestamp,
                                                                    long snapshotTimestamp, int maxBlocks) {
+        return rollbackTargetsAsync(worldName, centerX, centerZ, radius, targetTimestamp,
+                snapshotTimestamp, maxBlocks, DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES);
+    }
+
+    CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
+                                                                   int radius, long targetTimestamp,
+                                                                   long snapshotTimestamp, int maxBlocks,
+                                                                   long maxSnapshotBytes) {
         String worldUuid = resolveWorldUuid(worldName);
         return submit(databaseConnection -> selectRollbackTargets(databaseConnection, worldUuid, worldName,
-                centerX, centerZ, radius, targetTimestamp, snapshotTimestamp, Math.max(1, maxBlocks)), true);
+                centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
+                Math.max(1, maxBlocks), Math.max(1L, maxSnapshotBytes)), true);
     }
 
     CompletableFuture<RollbackJob> createRollbackJobAsync(String actorUuid, String actorName, String worldName,
@@ -1252,7 +1262,8 @@ final class Database {
     private List<RollbackTarget> selectRollbackTargets(Connection databaseConnection, String worldUuid,
                                                          String worldName, int centerX, int centerZ,
                                                          int radius, long targetTimestamp,
-                                                         long snapshotTimestamp, int maxBlocks) throws SQLException {
+                                                         long snapshotTimestamp, int maxBlocks,
+                                                         long maxSnapshotBytes) throws SQLException {
         String sql = """
                 WITH ranked AS (
                     SELECT x, y, z, before_data, after_data, before_entity_data, after_entity_data,
@@ -1282,6 +1293,8 @@ final class Database {
                 SELECT first_changes.x, first_changes.y, first_changes.z,
                        first_changes.before_data AS target_data,
                        last_changes.after_data AS expected_data,
+                       COALESCE(length(first_changes.before_entity_data), 0) AS target_entity_bytes,
+                       COALESCE(length(last_changes.after_entity_data), 0) AS expected_entity_bytes,
                        first_changes.before_entity_data AS target_entity_data,
                        last_changes.after_entity_data AS expected_entity_data,
                        first_changes.happened_at, first_changes.id
@@ -1296,8 +1309,16 @@ final class Database {
             statement.setLong(index++, snapshotTimestamp);
             statement.setLong(index, (long) maxBlocks + 1L);
             List<RollbackTarget> targets = new ArrayList<>(Math.min(maxBlocks, 255) + 1);
+            long snapshotBytes = 0L;
             try (ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
+                    long targetBytes = resultSet.getLong("target_entity_bytes");
+                    long expectedBytes = resultSet.getLong("expected_entity_bytes");
+                    if (targetBytes > maxSnapshotBytes - snapshotBytes
+                            || expectedBytes > maxSnapshotBytes - snapshotBytes - targetBytes) {
+                        throw new RollbackSnapshotLimitExceededException(maxSnapshotBytes);
+                    }
+                    snapshotBytes += targetBytes + expectedBytes;
                     targets.add(new RollbackTarget(worldName, resultSet.getInt("x"), resultSet.getInt("y"),
                             resultSet.getInt("z"), Objects.requireNonNull(resultSet.getString("target_data")),
                             Objects.requireNonNull(resultSet.getString("expected_data")),
@@ -1499,6 +1520,19 @@ final class Database {
     private String resolveWorldUuid(String worldName) {
         World world = plugin.getServer().getWorld(worldName);
         return world == null ? worldName : world.getUID().toString();
+    }
+
+    static final class RollbackSnapshotLimitExceededException extends IllegalStateException {
+        private final long maximumBytes;
+
+        RollbackSnapshotLimitExceededException(long maximumBytes) {
+            super("Rollback preview block-entity snapshots exceed the " + maximumBytes + "-byte limit.");
+            this.maximumBytes = maximumBytes;
+        }
+
+        long maximumBytes() {
+            return maximumBytes;
+        }
     }
 
     private record WorldIdentity(String uuid, String name) {

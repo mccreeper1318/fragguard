@@ -39,6 +39,8 @@ rollback-max-millis-per-tick: 4.0
 # Pause rollback/undo work while the server's recent TPS falls below this value; 0 disables pausing.
 rollback-minimum-tps: 18.0
 rollback-max-blocks-per-command: 50000
+# Maximum combined saved/expected block-entity snapshot bytes retained by one rollback preview (64 MiB).
+rollback-max-snapshot-bytes-per-command: 67108864
 # Reject previews, execution, and recovery jobs that span more than this many existing chunks.
 rollback-max-chunks-per-command: 256
 # Preview tokens expire before a rollback can be confirmed.

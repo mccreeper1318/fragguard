@@ -15,6 +15,7 @@
 - Added SQLite schema version 2 and regression coverage for verified version-1 migration backups, entity-only history, same-tick snapshot coalescing, rollback planning, recovered jobs, force retries, and undo snapshots.
 - Added rollback and undo regression coverage for compatible chest inventories after physics normalizes their structural block state, including the resulting correction-audit snapshots.
 - Added block-entity snapshot regression coverage for the 16 MiB serialized-inventory boundary and oversized containers, lecterns, and decorated pots.
+- Added a configurable `rollback-max-snapshot-bytes-per-command` preview safeguard, defaulting to 64 MiB, with SQLite-backed aggregate snapshot-budget and operator-facing limit regression coverage.
 
 ### Changed
 
@@ -38,6 +39,7 @@
 - Fixed the Beta 3 build failing banner regression coverage by avoiding Paper registry initialization for banners without patterns; patterned banners still resolve their designs through the data-driven registry.
 - Fixed physics-enabled rollback and undo discarding compatible block-entity contents when the server normalizes the requested block state, such as a single chest joining a neighboring double chest; correction audits now retain the restored contents.
 - Fixed oversized container, lectern, and decorated-pot inventories entering block history even though rollback could not restore them; snapshot capture now enforces the same 16 MiB inventory limit as restoration before history or world state can be changed.
+- Fixed rollback previews exhausting server memory when many component-heavy container snapshots fit under the block-count limit; SQLite snapshot lengths are now checked against the aggregate byte budget before their BLOBs are materialized.
 
 ## 26.2-3-beta.2
 

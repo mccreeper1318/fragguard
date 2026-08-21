@@ -140,6 +140,23 @@ class RollbackChunkExecutionTest {
     }
 
     @Test
+    void reportsRollbackPreviewSnapshotLimitsWithoutLoggingAStorageFailure() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        FragGuardCommand command = new FragGuardCommand(plugin, mock(Database.class));
+        Player operator = mock(Player.class);
+        Method reportFailure = FragGuardCommand.class.getDeclaredMethod(
+                "reportRollbackQueryFailure", Player.class, Throwable.class);
+        reportFailure.setAccessible(true);
+
+        reportFailure.invoke(command, operator,
+                new Database.RollbackSnapshotLimitExceededException(64L));
+
+        verify(operator).sendMessage(contains("64 bytes"));
+        verify(operator).sendMessage(contains("rollback-max-snapshot-bytes-per-command"));
+        verify(plugin, never()).getLogger();
+    }
+
+    @Test
     void releasesCompletedChunkBeforeLowTpsPausesTheNextChunk() throws Exception {
         assertChunkTicketBehaviorDuringLowTpsPause(true);
     }

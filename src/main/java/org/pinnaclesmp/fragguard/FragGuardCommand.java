@@ -208,23 +208,35 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(color("&7Finding changes to rollback in radius &f" + radius + "&7 back to &f"
                 + DATE_FORMAT.format(Instant.ofEpochMilli(targetTimestamp)) + "&7..."));
         int maxBlocks = Math.max(1, plugin.getConfig().getInt("rollback-max-blocks-per-command", 50_000));
+        long maxSnapshotBytes = Math.max(1L, plugin.getConfig().getLong(
+                "rollback-max-snapshot-bytes-per-command", Database.DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES));
         CompletableFuture<List<RollbackTarget>> query = database.rollbackTargetsAsync(
-                worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp, maxBlocks);
+                worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
+                maxBlocks, maxSnapshotBytes);
         reportQueryProgress(player, query);
         query.whenComplete((targets, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
             if (throwable != null) {
-                Throwable cause = unwrap(throwable);
-                if (cause instanceof TimeoutException) {
-                    player.sendMessage(color("&cRollback preview timed out. Reduce the radius or time range and try again."));
-                } else {
-                    plugin.getLogger().log(Level.WARNING, "FragGuard rollback query failed", cause);
-                    player.sendMessage(color("&cRollback query failed. Check console for details."));
-                }
+                reportRollbackQueryFailure(player, throwable);
                 return;
             }
             previewRollback(player, targets, centerX, centerZ, radius, targetTimestamp,
                     snapshotTimestamp, force, maxBlocks);
         }));
+    }
+
+    private void reportRollbackQueryFailure(Player player, Throwable throwable) {
+        Throwable cause = unwrap(throwable);
+        if (cause instanceof TimeoutException) {
+            player.sendMessage(color("&cRollback preview timed out. Reduce the radius or time range and try again."));
+        } else if (cause instanceof Database.RollbackSnapshotLimitExceededException limit) {
+            player.sendMessage(color("&cRollback preview exceeds the configured block-entity snapshot limit of "
+                    + limit.maximumBytes() + " bytes."));
+            player.sendMessage(color("&7Reduce the radius or time range, or raise "
+                    + "&frollback-max-snapshot-bytes-per-command&7 in config.yml."));
+        } else {
+            plugin.getLogger().log(Level.WARNING, "FragGuard rollback query failed", cause);
+            player.sendMessage(color("&cRollback query failed. Check console for details."));
+        }
     }
 
     private void previewRollback(Player player, List<RollbackTarget> targets, int centerX, int centerZ,

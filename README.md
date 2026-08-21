@@ -122,6 +122,7 @@ rollback-blocks-per-tick: 500
 rollback-max-millis-per-tick: 4.0
 rollback-minimum-tps: 18.0
 rollback-max-blocks-per-command: 50000
+rollback-max-snapshot-bytes-per-command: 67108864
 rollback-max-chunks-per-command: 256
 rollback-confirmation-timeout-seconds: 60
 apply-physics-during-rollback: false
@@ -153,7 +154,8 @@ Put that JAR into your server's `plugins` folder and restart the Paper server.
 - Explosion, fire burn, bucket, liquid, and piston handlers record the before-state during the event and the after-state on the next server tick so the saved log matches what the server actually changed.
 - Fire-burn and bucket-source logging was added after the first version. Old damage that happened before installing this update cannot be rolled back unless it was already logged.
 - Rollback previews are capped inside SQLite at the configured maximum plus one, and use indexed world/chunk coordinates instead of loading an entire region's history.
-- Rollback previews and recovered jobs enforce both block-count and chunk-count limits before execution.
+- Rollback previews enforce block-count, chunk-count, and aggregate block-entity snapshot-byte limits before execution; the snapshot budget defaults to 64 MiB and is checked before SQLite BLOBs are copied into server memory.
+- Recovered rollback jobs continue to enforce the configured chunk-count limit before execution.
 - Rollbacks and undo operations load existing chunks asynchronously, hold only their active chunk with a plugin ticket, and apply consecutive same-chunk batches in saved sequence order within a configurable shared per-tick time budget.
 - Rollback and undo work pauses when recent server TPS falls below `rollback-minimum-tps`; set the threshold to `0` to disable automatic pausing.
 

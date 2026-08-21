@@ -168,6 +168,65 @@ class DatabaseTest {
     }
 
     @Test
+    void acceptsRollbackPreviewSnapshotsAtTheConfiguredAggregateByteBoundary() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        byte[] firstTarget = new byte[]{1, 2, 3};
+        byte[] firstExpected = new byte[]{4, 5};
+        byte[] secondExpected = new byte[]{6, 7, 8};
+        database.insertRequiredAsync(List.of(
+                new BlockChange(timestamp - 2_000L, ACTOR_UUID.toString(), "Builder", "world",
+                        0, 64, 0, ChangeAction.BREAK, "minecraft:chest", "minecraft:air",
+                        firstTarget, firstExpected),
+                new BlockChange(timestamp - 1_000L, ACTOR_UUID.toString(), "Builder", "world",
+                        1, 64, 0, ChangeAction.BREAK, "minecraft:stone", "minecraft:chest",
+                        null, secondExpected)
+        )).join();
+
+        List<RollbackTarget> targets = database.rollbackTargetsAsync("world", 0, 0, 3,
+                timestamp - 3_000L, timestamp, 10, 8L).join();
+
+        assertEquals(2, targets.size());
+        assertTrue(Arrays.equals(firstTarget, targets.get(0).targetEntityData()));
+        assertTrue(Arrays.equals(firstExpected, targets.get(0).expectedEntityData()));
+        assertNull(targets.get(1).targetEntityData());
+        assertTrue(Arrays.equals(secondExpected, targets.get(1).expectedEntityData()));
+    }
+
+    @Test
+    void rejectsOversizedRollbackPreviewSnapshotsWithoutDegradingDatabaseHealth() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        database.insertRequiredAsync(List.of(
+                new BlockChange(timestamp - 2_000L, ACTOR_UUID.toString(), "Builder", "world",
+                        0, 64, 0, ChangeAction.BREAK, "minecraft:chest", "minecraft:air",
+                        new byte[]{1, 2, 3}, new byte[]{4, 5, 6}),
+                new BlockChange(timestamp - 1_000L, ACTOR_UUID.toString(), "Builder", "world",
+                        1, 64, 0, ChangeAction.BREAK, "minecraft:chest", "minecraft:air",
+                        new byte[]{7, 8, 9}, new byte[]{10, 11, 12})
+        )).join();
+
+        CompletionException firstBlock = assertThrows(CompletionException.class,
+                () -> database.rollbackTargetsAsync("world", 0, 0, 3,
+                        timestamp - 3_000L, timestamp, 10, 5L).join());
+        assertTrue(firstBlock.getCause() instanceof Database.RollbackSnapshotLimitExceededException);
+
+        CompletionException combinedBlocks = assertThrows(CompletionException.class,
+                () -> database.rollbackTargetsAsync("world", 0, 0, 3,
+                        timestamp - 3_000L, timestamp, 10, 11L).join());
+        assertTrue(combinedBlocks.getCause() instanceof Database.RollbackSnapshotLimitExceededException);
+        Database.RollbackSnapshotLimitExceededException limit =
+                (Database.RollbackSnapshotLimitExceededException) combinedBlocks.getCause();
+        assertEquals(11L, limit.maximumBytes());
+        assertTrue(database.health().healthy(),
+                "an expected preview safety limit must not mark SQLite storage unhealthy");
+
+        assertEquals(2, database.rollbackTargetsAsync("world", 0, 0, 3,
+                timestamp - 3_000L, timestamp, 10, 12L).join().size(),
+                "the database worker must remain usable after rejecting an oversized preview");
+    }
+
+    @Test
     void preservesRollbackSnapshotsAcrossPreparationReplacementRecoveryAndUndo() throws Exception {
         database = startDatabase();
         long timestamp = System.currentTimeMillis();
