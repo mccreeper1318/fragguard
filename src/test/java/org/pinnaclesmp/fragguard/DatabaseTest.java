@@ -116,6 +116,64 @@ class DatabaseTest {
     }
 
     @Test
+    void capturesMissingEntitySnapshotForMigratedPreparedRowsAndPreservesItForUndo() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 5, timestamp - 1_000L, timestamp, false,
+                List.of(new RollbackTarget("world", 4, 64, 4,
+                        "minecraft:air", "minecraft:chest"))).join();
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeData("minecraft:chest"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("ALTER TABLE block_changes DROP COLUMN before_entity_data");
+            statement.executeUpdate("ALTER TABLE block_changes DROP COLUMN after_entity_data");
+            statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN before_entity_data");
+            statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN target_entity_data");
+            statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN expected_entity_data");
+            statement.execute("PRAGMA user_version=1");
+        }
+
+        database = startDatabase();
+        assertEquals(1, database.loadResumableJobsAsync().join().size());
+        RollbackJobChange migrated = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertEquals("minecraft:chest", migrated.beforeData());
+        assertTrue(migrated.beforeEntityData() == null,
+                "version-1 jobs could persist the structural before-state but had no snapshot column");
+
+        byte[] originalInventory = new byte[]{31, 32, 33, 34};
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(migrated.withBeforeState("minecraft:chest", originalInventory))).join();
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(migrated.withBeforeState("minecraft:barrel", new byte[]{41, 42}))).join();
+
+        RollbackJobChange prepared = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertEquals("minecraft:chest", prepared.beforeData(),
+                "resumed preparation must retain the original durable structural before-state");
+        assertTrue(Arrays.equals(originalInventory, prepared.beforeEntityData()),
+                "a migrated prepared row must capture its missing inventory without replacing it later");
+
+        database.shutdown();
+        database = startDatabase();
+        RollbackJobChange recovered = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertTrue(Arrays.equals(originalInventory, recovered.beforeEntityData()),
+                "the captured inventory must be durable before the resumed rollback mutates the block");
+
+        database.markRollbackBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(change.sequence(), true, false))).join();
+        database.completeRollbackJobAsync(job.id(), false).join();
+        database.beginUndoAsync(job.id()).join();
+        RollbackJobChange undo = database.loadRollbackChangesAsync(job.id(), true).join().get(0);
+        assertEquals("minecraft:chest", undo.beforeData());
+        assertTrue(Arrays.equals(originalInventory, undo.beforeEntityData()),
+                "undo must restore the inventory captured while resuming the legacy rollback");
+    }
+
+    @Test
     void persistsBlockEntityOnlyChangesAndCoalescesSnapshotsAcrossFlushes() throws Exception {
         database = startDatabase();
         long timestamp = System.currentTimeMillis();

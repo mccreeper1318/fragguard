@@ -500,7 +500,7 @@ final class Database {
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     UPDATE rollback_job_changes
-                    SET before_entity_data = CASE WHEN before_data IS NULL THEN ? ELSE before_entity_data END,
+                    SET before_entity_data = COALESCE(before_entity_data, ?),
                         before_data = COALESCE(before_data, ?)
                     WHERE job_id = ? AND sequence = ? AND processed = 0
                     """)) {
