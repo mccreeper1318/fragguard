@@ -33,6 +33,7 @@
 - Fixed completed rollback chunks remaining forcibly loaded throughout low-TPS pauses before the next chunk began processing.
 - Fixed #14 by preventing world renames, changed or unknown action enums, unsupported database downgrades, and partially applied schema upgrades from orphaning history or breaking lookups and rollback recovery.
 - Fixed #15 by restoring sign text/colors/glow/wax, container contents including written books, banner designs, player-head textures, lectern books/pages, and decorated-pot items/sherds during rollback and undo.
+- Fixed the Beta 3 build failing banner regression coverage by avoiding Paper registry initialization for banners without patterns; patterned banners still resolve their designs through the data-driven registry.
 
 ## 26.2-3-beta.2
 

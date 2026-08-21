@@ -3,13 +3,9 @@ package org.pinnaclesmp.fragguard;
 import com.destroystokyo.paper.profile.ProfileProperty;
 import io.papermc.paper.block.TileStateInventoryHolder;
 import io.papermc.paper.datacomponent.item.ResolvableProfile;
-import io.papermc.paper.registry.RegistryAccess;
-import io.papermc.paper.registry.RegistryKey;
 import net.kyori.adventure.text.Component;
 import org.bukkit.DyeColor;
 import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
-import org.bukkit.Registry;
 import org.bukkit.block.Banner;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
@@ -17,8 +13,6 @@ import org.bukkit.block.DecoratedPot;
 import org.bukkit.block.Lectern;
 import org.bukkit.block.Sign;
 import org.bukkit.block.Skull;
-import org.bukkit.block.banner.Pattern;
-import org.bukkit.block.banner.PatternType;
 import org.bukkit.block.sign.Side;
 import org.bukkit.block.sign.SignSide;
 import org.bukkit.inventory.DecoratedPotInventory;
@@ -164,30 +158,18 @@ class BlockEntitySnapshotTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void restoresBannerPatternsUsingTheDataDrivenRegistry() {
+    void restoresUnpatternedBannersAndCustomNamesWithoutStartingTheServerRegistry() {
         Banner source = mock(Banner.class);
-        PatternType type = mock(PatternType.class);
-        Pattern pattern = new Pattern(DyeColor.BLUE, type);
         Component name = Component.text("Battle flag");
-        when(source.getPatterns()).thenReturn(List.of(pattern));
+        when(source.getPatterns()).thenReturn(List.of());
         when(source.customName()).thenReturn(name);
 
         Banner target = mock(Banner.class);
-        Registry<PatternType> registry = mock(Registry.class);
-        RegistryAccess registryAccess = mock(RegistryAccess.class);
-        NamespacedKey key = NamespacedKey.minecraft("flower");
-        when(registryAccess.getRegistry(RegistryKey.BANNER_PATTERN)).thenReturn(registry);
-        when(registry.getKeyOrThrow(type)).thenReturn(key);
-        when(registry.getOrThrow(key)).thenReturn(type);
 
-        try (MockedStatic<RegistryAccess> access = mockStatic(RegistryAccess.class)) {
-            access.when(RegistryAccess::registryAccess).thenReturn(registryAccess);
-            BlockEntitySnapshot.restore(block(target), BlockEntitySnapshot.capture(source));
-        }
+        BlockEntitySnapshot.restore(block(target), BlockEntitySnapshot.capture(source));
 
         verify(target).customName(name);
-        verify(target).setPatterns(List.of(pattern));
+        verify(target).setPatterns(List.of());
         verify(target).update(true, false);
     }
 

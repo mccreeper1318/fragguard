@@ -175,9 +175,13 @@ final class BlockEntitySnapshot {
     }
 
     private static void writeBanner(DataOutputStream output, Banner banner) throws IOException {
-        Registry<PatternType> registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BANNER_PATTERN);
         List<Pattern> patterns = banner.getPatterns();
         output.writeInt(patterns.size());
+        if (patterns.isEmpty()) {
+            return;
+        }
+
+        Registry<PatternType> registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BANNER_PATTERN);
         for (Pattern pattern : patterns) {
             output.writeUTF(pattern.getColor().name());
             output.writeUTF(registry.getKeyOrThrow(pattern.getPattern()).toString());
@@ -185,9 +189,14 @@ final class BlockEntitySnapshot {
     }
 
     private static void readBanner(DataInputStream input, Banner banner) throws IOException {
-        Registry<PatternType> registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BANNER_PATTERN);
         int count = readCollectionSize(input, "banner patterns");
         List<Pattern> patterns = new ArrayList<>(count);
+        if (count == 0) {
+            banner.setPatterns(patterns);
+            return;
+        }
+
+        Registry<PatternType> registry = RegistryAccess.registryAccess().getRegistry(RegistryKey.BANNER_PATTERN);
         for (int index = 0; index < count; index++) {
             DyeColor color = DyeColor.valueOf(input.readUTF());
             NamespacedKey key = NamespacedKey.fromString(input.readUTF());
