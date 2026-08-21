@@ -13,7 +13,8 @@
 - Added regression coverage for crash-window rollback mutations whose world change succeeded before the batch's `applied` progress marker was committed.
 - Added regression coverage for stale undo coordinates remaining unresolved and retryable until a later undo attempt succeeds.
 - Added shutdown regression coverage proving queued current-tick logs drain to SQLite before close and the database worker completes its WAL checkpoint after the drain.
-- Added shutdown accounting regression coverage ensuring abandoned writes are not reported as successfully drained and still-running in-flight write batches are surfaced as unconfirmed.
+- Added shutdown accounting regression coverage ensuring abandoned writes are not reported as successfully drained, still-running in-flight write batches are surfaced as unconfirmed, and a live worker with work already removed from the operation queue cannot report zero remaining operations.
+- Added regression coverage for degraded-storage warning throttling so the first operator alert is immediate while repeated alerts honor the configured interval.
 
 ### Changed
 
@@ -28,7 +29,8 @@
 - Shutdown now reports queued, drained, remaining, and lost writes; after all accepted work drains, the database worker runs `wal_checkpoint(TRUNCATE)` before closing its SQLite connection and warns if the worker or checkpoint does not complete.
 - Shutdown cancellation now waits through a configurable second grace period after cancelling the active SQLite statement; if the worker still does not stop, queued writes are explicitly abandoned/count as lost, pending database operations are failed, and any active write batch is reported as unconfirmed.
 - Shutdown `drained` reporting is now derived from successfully completed write batches instead of queue-depth shrinkage, so failed or abandoned writes cannot be presented as persisted.
-- Any confirmed dropped log or unavailable SQLite worker now keeps storage visibly degraded for the session, with configurable repeated warnings sent to online operators.
+- If the database worker is still alive after the cancellation grace period with no active write batch, shutdown conservatively accounts for one unconfirmed active database operation in the remaining-operation total so dequeued work cannot disappear from the report.
+- Any confirmed dropped log or unavailable SQLite worker now keeps storage visibly degraded for the session; the first operator warning is immediate and all repeated warnings obey `database-operator-warning-interval-seconds` even while the dropped-write count continues increasing.
 
 ### Fixed
 
@@ -48,6 +50,8 @@
 - Fixed #9 by making shutdown durability observable: FragGuard drains accepted bounded-queue work before close, checkpoints the WAL on the database worker, explicitly counts still-queued logs as dropped if the worker fails, reports incomplete shutdown state, preserves degraded health after known log loss/database failure, and notifies online operators when logging is unhealthy.
 - Fixed the shutdown timeout path returning immediately after cancellation while accepted writes were still owned by a live worker; FragGuard now waits for cancellation and explicitly accounts for queued losses plus any in-flight writes whose durability remains unconfirmed.
 - Fixed abandoned shutdown writes being counted as both `drained` and `lost`; only write batches that actually complete successfully contribute to the drained count.
+- Fixed long non-timed database operations disappearing from shutdown accounting after they were removed from `operationQueue`; a still-running worker now contributes an unconfirmed active operation to the remaining-operation count unless it is known to be processing an in-flight write batch.
+- Fixed degraded-storage warnings bypassing their configured repeat interval whenever `droppedWrites` increased; repeated operator alerts are now rate-limited by the configured interval regardless of how quickly losses accumulate.
 
 ## 26.2-3-beta.1
 
