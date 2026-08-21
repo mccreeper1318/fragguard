@@ -16,6 +16,7 @@
 - Added shutdown accounting regression coverage ensuring abandoned writes are not reported as successfully drained, still-running in-flight write batches are surfaced as unconfirmed, and a live worker with work already removed from the operation queue cannot report zero remaining operations.
 - Added regression coverage for degraded-storage warning throttling so the first operator alert is immediate while repeated alerts honor the configured interval.
 - Added regression coverage for atomic pre-shutdown write accounting, including batches already claimed by the database worker when shutdown begins.
+- Added regression coverage ensuring write loss earlier in the server session still prevents shutdown from being reported as clean even when no additional writes are lost during disable.
 
 ### Changed
 
@@ -55,6 +56,7 @@
 - Fixed long non-timed database operations disappearing from shutdown accounting after they were removed from `operationQueue`; a still-running worker now contributes an unconfirmed active operation to the remaining-operation count unless it is known to be processing an in-flight write batch.
 - Fixed degraded-storage warnings bypassing their configured repeat interval whenever `droppedWrites` increased; repeated operator alerts are now rate-limited by the configured interval regardless of how quickly losses accumulate.
 - Fixed pre-shutdown counters being captured from different moments while the database worker was concurrently completing a batch; shutdown now returns one atomic accounting snapshot so `queued`, `drained`, `remaining`, and clean-status reporting stay internally consistent.
+- Fixed prior session write loss being hidden by an otherwise successful shutdown; `totalDroppedWrites > 0` now always prevents the shutdown report from being classified as clean, ensuring `onDisable()` emits a warning even when the worker later caught up and no additional writes were lost during shutdown.
 
 ## 26.2-3-beta.1
 
