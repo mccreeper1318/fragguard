@@ -25,6 +25,7 @@ import org.mockito.MockedStatic;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.zip.GZIPOutputStream;
@@ -260,6 +261,45 @@ class BlockEntitySnapshotTest {
         verify(target).customName(name);
         verify(target).setPatterns(List.of());
         verify(target).update(true, false);
+    }
+
+    @Test
+    void rejectsOversizedBannerPatternCollectionsBeforeAccessingTheRegistry() {
+        Banner source = mock(Banner.class);
+        when(source.getPatterns()).thenReturn(Collections.nCopies(4_097, null));
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> BlockEntitySnapshot.capture(source));
+
+        assertEquals("Invalid banner patterns count: 4097", failure.getCause().getMessage());
+    }
+
+    @Test
+    void rejectsOversizedPlayerHeadProfileCollectionsDuringCapture() {
+        ProfileProperty property = new ProfileProperty("textures", "base64-skin", "mojang-signature");
+        ResolvableProfile profile = mock(ResolvableProfile.class);
+        when(profile.properties()).thenReturn(Collections.nCopies(4_097, property));
+        Skull source = mock(Skull.class);
+        when(source.getProfile()).thenReturn(profile);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> BlockEntitySnapshot.capture(source));
+
+        assertEquals("Invalid skull profile properties count: 4097", failure.getCause().getMessage());
+    }
+
+    @Test
+    void rejectsOversizedSignLineCollectionsDuringCapture() {
+        Sign source = mock(Sign.class);
+        SignSide front = mock(SignSide.class);
+        when(source.getSide(Side.FRONT)).thenReturn(front);
+        when(front.getColor()).thenReturn(DyeColor.WHITE);
+        when(front.lines()).thenReturn(Collections.nCopies(4_097, Component.empty()));
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> BlockEntitySnapshot.capture(source));
+
+        assertEquals("Invalid sign lines count: 4097", failure.getCause().getMessage());
     }
 
     @Test

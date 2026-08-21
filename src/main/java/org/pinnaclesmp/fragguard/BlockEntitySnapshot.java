@@ -31,6 +31,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -163,7 +164,7 @@ final class BlockEntitySnapshot {
             output.writeUTF(face.getColor().name());
             output.writeBoolean(face.isGlowingText());
             List<Component> lines = face.lines();
-            output.writeInt(lines.size());
+            writeCollectionSize(output, lines.size(), "sign lines");
             for (Component line : lines) {
                 writeComponent(output, line);
             }
@@ -188,7 +189,7 @@ final class BlockEntitySnapshot {
 
     private static void writeBanner(DataOutputStream output, Banner banner) throws IOException {
         List<Pattern> patterns = banner.getPatterns();
-        output.writeInt(patterns.size());
+        writeCollectionSize(output, patterns.size(), "banner patterns");
         if (patterns.isEmpty()) {
             return;
         }
@@ -228,12 +229,14 @@ final class BlockEntitySnapshot {
         }
         writeNullableString(output, profile.uuid() == null ? null : profile.uuid().toString());
         writeNullableString(output, profile.name());
-        List<ProfileProperty> properties = profile.properties().stream()
+        Collection<ProfileProperty> profileProperties = profile.properties();
+        validateCollectionSize(profileProperties.size(), "skull profile properties");
+        List<ProfileProperty> properties = profileProperties.stream()
                 .sorted(Comparator.comparing(ProfileProperty::getName)
                         .thenComparing(ProfileProperty::getValue)
                         .thenComparing(property -> Objects.toString(property.getSignature(), "")))
                 .toList();
-        output.writeInt(properties.size());
+        writeCollectionSize(output, properties.size(), "skull profile properties");
         for (ProfileProperty property : properties) {
             output.writeUTF(property.getName());
             output.writeUTF(property.getValue());
@@ -301,12 +304,22 @@ final class BlockEntitySnapshot {
         return input.readBoolean() ? input.readUTF() : null;
     }
 
+    private static void writeCollectionSize(DataOutputStream output, int count,
+                                            String description) throws IOException {
+        validateCollectionSize(count, description);
+        output.writeInt(count);
+    }
+
     private static int readCollectionSize(DataInputStream input, String description) throws IOException {
         int count = input.readInt();
+        validateCollectionSize(count, description);
+        return count;
+    }
+
+    private static void validateCollectionSize(int count, String description) throws IOException {
         if (count < 0 || count > MAX_COLLECTION_SIZE) {
             throw new IOException("Invalid " + description + " count: " + count);
         }
-        return count;
     }
 
     private enum Kind {

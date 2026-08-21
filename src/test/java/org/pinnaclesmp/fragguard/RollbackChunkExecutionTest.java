@@ -157,6 +157,29 @@ class RollbackChunkExecutionTest {
     }
 
     @Test
+    void appliesConfiguredSnapshotByteBudgetToRollbackAndUndoJobLoads() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("rollback-max-snapshot-bytes-per-command", 123L);
+        when(plugin.getConfig()).thenReturn(configuration);
+        Database database = mock(Database.class);
+        when(database.loadRollbackChangesAsync(eq(41L), eq(false), eq(123L)))
+                .thenReturn(new CompletableFuture<>());
+        when(database.loadRollbackChangesAsync(eq(42L), eq(true), eq(123L)))
+                .thenReturn(new CompletableFuture<>());
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        Method executeJob = FragGuardCommand.class.getDeclaredMethod(
+                "executeJob", RollbackJob.class, Player.class, boolean.class);
+        executeJob.setAccessible(true);
+
+        executeJob.invoke(command, job(41L), null, false);
+        executeJob.invoke(command, job(42L), null, true);
+
+        verify(database).loadRollbackChangesAsync(41L, false, 123L);
+        verify(database).loadRollbackChangesAsync(42L, true, 123L);
+    }
+
+    @Test
     void releasesCompletedChunkBeforeLowTpsPausesTheNextChunk() throws Exception {
         assertChunkTicketBehaviorDuringLowTpsPause(true);
     }

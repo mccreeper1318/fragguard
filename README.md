@@ -155,7 +155,7 @@ Put that JAR into your server's `plugins` folder and restart the Paper server.
 - Fire-burn and bucket-source logging was added after the first version. Old damage that happened before installing this update cannot be rolled back unless it was already logged.
 - Rollback previews are capped inside SQLite at the configured maximum plus one, and use indexed world/chunk coordinates instead of loading an entire region's history.
 - Rollback previews enforce block-count, chunk-count, and aggregate block-entity snapshot-byte limits before execution; the snapshot budget defaults to 64 MiB and is checked before SQLite BLOBs are copied into server memory.
-- Recovered rollback jobs continue to enforce the configured chunk-count limit before execution.
+- Saved rollback jobs, restart recovery, and undo apply the same snapshot-byte budget to original, target, and expected entity data before loading their changes; recovered jobs also enforce the configured chunk-count limit.
 - Rollbacks and undo operations load existing chunks asynchronously, hold only their active chunk with a plugin ticket, and apply consecutive same-chunk batches in saved sequence order within a configurable shared per-tick time budget.
 - Rollback and undo work pauses when recent server TPS falls below `rollback-minimum-tps`; set the threshold to `0` to disable automatic pausing.
 

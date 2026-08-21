@@ -227,6 +227,68 @@ class DatabaseTest {
     }
 
     @Test
+    void boundsSavedRollbackJobsIncludingSnapshotsCapturedAfterTheirPreview() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                0, 0, 5, timestamp - 1_000L, timestamp, true, List.of(
+                        new RollbackTarget("world", 0, 64, 0, "minecraft:chest", "minecraft:chest",
+                                new byte[]{1, 2, 3}, new byte[]{4, 5}),
+                        new RollbackTarget("world", 1, 64, 0, "minecraft:chest", "minecraft:chest",
+                                null, null)
+                )).join();
+        List<RollbackJobChange> saved = database.loadRollbackChangesAsync(job.id(), false).join();
+        database.prepareRollbackBatchAsync(job.id(), List.of(
+                saved.get(0).withBeforeState("minecraft:chest", new byte[]{6, 7, 8, 9}),
+                saved.get(1).withBeforeState("minecraft:chest", new byte[]{10, 11, 12, 13, 14})
+        )).join();
+
+        CompletionException failure = assertThrows(CompletionException.class,
+                () -> database.loadRollbackChangesAsync(job.id(), false, 13L).join());
+        assertTrue(failure.getCause() instanceof Database.RollbackJobSnapshotLimitExceededException);
+        Database.RollbackJobSnapshotLimitExceededException limit =
+                (Database.RollbackJobSnapshotLimitExceededException) failure.getCause();
+        assertEquals(13L, limit.maximumBytes());
+        assertTrue(limit.getMessage().contains("rollback-max-snapshot-bytes-per-command"));
+        assertTrue(database.health().healthy(),
+                "an expected job snapshot safety limit must not mark SQLite storage unhealthy");
+
+        List<RollbackJobChange> recovered = database.loadRollbackChangesAsync(job.id(), false, 14L).join();
+        assertEquals(2, recovered.size());
+        assertTrue(Arrays.equals(new byte[]{6, 7, 8, 9}, recovered.get(0).beforeEntityData()));
+        assertTrue(Arrays.equals(new byte[]{10, 11, 12, 13, 14}, recovered.get(1).beforeEntityData()),
+                "legacy targets without preview snapshots must still count their original inventories");
+    }
+
+    @Test
+    void boundsUndoJobLoadsIncludingOriginalSnapshotsMissingFromLegacyPreviews() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                0, 0, 5, timestamp - 1_000L, timestamp, false,
+                List.of(new RollbackTarget("world", 0, 64, 0,
+                        "minecraft:chest", "minecraft:chest", null, null))).join();
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        byte[] original = new byte[]{1, 2, 3, 4, 5, 6};
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeState("minecraft:chest", original))).join();
+        database.markRollbackBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(change.sequence(), true, false))).join();
+        database.completeRollbackJobAsync(job.id(), false).join();
+        database.beginUndoAsync(job.id()).join();
+
+        CompletionException failure = assertThrows(CompletionException.class,
+                () -> database.loadRollbackChangesAsync(job.id(), true, 5L).join());
+        assertTrue(failure.getCause() instanceof Database.RollbackJobSnapshotLimitExceededException);
+        assertTrue(failure.getCause().getMessage().startsWith("Undo job"));
+        assertTrue(database.health().healthy());
+
+        List<RollbackJobChange> undo = database.loadRollbackChangesAsync(job.id(), true, 6L).join();
+        assertEquals(1, undo.size());
+        assertTrue(Arrays.equals(original, undo.get(0).beforeEntityData()));
+    }
+
+    @Test
     void preservesRollbackSnapshotsAcrossPreparationReplacementRecoveryAndUndo() throws Exception {
         database = startDatabase();
         long timestamp = System.currentTimeMillis();

@@ -440,18 +440,42 @@ final class Database {
     }
 
     CompletableFuture<List<RollbackJobChange>> loadRollbackChangesAsync(long jobId, boolean undo) {
+        return loadRollbackChangesAsync(jobId, undo, DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES);
+    }
+
+    CompletableFuture<List<RollbackJobChange>> loadRollbackChangesAsync(long jobId, boolean undo,
+                                                                         long maxSnapshotBytes) {
+        long maximumSnapshotBytes = Math.max(1L, maxSnapshotBytes);
         return submit(databaseConnection -> {
             String condition = undo
                     ? "before_data IS NOT NULL AND conflicted = 0 AND undone = 0"
                     : "processed = 0";
             String order = undo ? "DESC" : "ASC";
-            String sql = "SELECT * FROM rollback_job_changes WHERE job_id = ? AND " + condition
-                    + " ORDER BY sequence " + order;
+            String sql = """
+                    SELECT *,
+                           COALESCE(length(before_entity_data), 0) AS before_entity_bytes,
+                           COALESCE(length(target_entity_data), 0) AS target_entity_bytes,
+                           COALESCE(length(expected_entity_data), 0) AS expected_entity_bytes
+                    FROM rollback_job_changes
+                    WHERE job_id = ? AND %s
+                    ORDER BY sequence %s
+                    """.formatted(condition, order);
             List<RollbackJobChange> changes = new ArrayList<>();
+            long snapshotBytes = 0L;
             try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
                 statement.setLong(1, jobId);
                 try (ResultSet rows = statement.executeQuery()) {
                     while (rows.next()) {
+                        long beforeBytes = rows.getLong("before_entity_bytes");
+                        long targetBytes = rows.getLong("target_entity_bytes");
+                        long expectedBytes = rows.getLong("expected_entity_bytes");
+                        if (beforeBytes > maximumSnapshotBytes - snapshotBytes
+                                || targetBytes > maximumSnapshotBytes - snapshotBytes - beforeBytes
+                                || expectedBytes > maximumSnapshotBytes - snapshotBytes
+                                        - beforeBytes - targetBytes) {
+                            throw new RollbackJobSnapshotLimitExceededException(maximumSnapshotBytes, undo);
+                        }
+                        snapshotBytes += beforeBytes + targetBytes + expectedBytes;
                         String beforeData = rows.getString("before_data");
                         String expectedData = rows.getString("expected_data");
                         if (expectedData == null) {
@@ -1527,6 +1551,20 @@ final class Database {
 
         RollbackSnapshotLimitExceededException(long maximumBytes) {
             super("Rollback preview block-entity snapshots exceed the " + maximumBytes + "-byte limit.");
+            this.maximumBytes = maximumBytes;
+        }
+
+        long maximumBytes() {
+            return maximumBytes;
+        }
+    }
+
+    static final class RollbackJobSnapshotLimitExceededException extends IllegalStateException {
+        private final long maximumBytes;
+
+        RollbackJobSnapshotLimitExceededException(long maximumBytes, boolean undo) {
+            super((undo ? "Undo" : "Rollback") + " job block-entity snapshots exceed the configured "
+                    + "rollback-max-snapshot-bytes-per-command limit of " + maximumBytes + " bytes.");
             this.maximumBytes = maximumBytes;
         }
 

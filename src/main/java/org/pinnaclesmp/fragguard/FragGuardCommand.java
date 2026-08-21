@@ -208,11 +208,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(color("&7Finding changes to rollback in radius &f" + radius + "&7 back to &f"
                 + DATE_FORMAT.format(Instant.ofEpochMilli(targetTimestamp)) + "&7..."));
         int maxBlocks = Math.max(1, plugin.getConfig().getInt("rollback-max-blocks-per-command", 50_000));
-        long maxSnapshotBytes = Math.max(1L, plugin.getConfig().getLong(
-                "rollback-max-snapshot-bytes-per-command", Database.DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES));
         CompletableFuture<List<RollbackTarget>> query = database.rollbackTargetsAsync(
                 worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
-                maxBlocks, maxSnapshotBytes);
+                maxBlocks, maximumRollbackSnapshotBytes());
         reportQueryProgress(player, query);
         query.whenComplete((targets, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
             if (throwable != null) {
@@ -375,7 +373,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         if (!executingJobs.add(job.id())) {
             return;
         }
-        database.loadRollbackChangesAsync(job.id(), undo)
+        database.loadRollbackChangesAsync(job.id(), undo, maximumRollbackSnapshotBytes())
                 .thenApply(RollbackChunkPlan::group)
                 .whenComplete((plan, throwable) -> onServerThread(() -> {
                     if (throwable != null) {
@@ -569,6 +567,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         double maximumMillis = Math.max(0.1,
                 Math.min(50.0, plugin.getConfig().getDouble("rollback-max-millis-per-tick", 4.0)));
         return Math.max(1L, (long) (maximumMillis * 1_000_000.0));
+    }
+
+    private long maximumRollbackSnapshotBytes() {
+        return Math.max(1L, plugin.getConfig().getLong(
+                "rollback-max-snapshot-bytes-per-command", Database.DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES));
     }
 
     private void retryJobLater(RollbackJob job, Runnable retry, long ticks) {

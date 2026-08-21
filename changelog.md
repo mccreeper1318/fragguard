@@ -16,6 +16,7 @@
 - Added rollback and undo regression coverage for compatible chest inventories after physics normalizes their structural block state, including the resulting correction-audit snapshots.
 - Added block-entity snapshot regression coverage for the 16 MiB serialized-inventory boundary and oversized containers, lecterns, and decorated pots.
 - Added a configurable `rollback-max-snapshot-bytes-per-command` preview safeguard, defaulting to 64 MiB, with SQLite-backed aggregate snapshot-budget and operator-facing limit regression coverage.
+- Added regression coverage for saved rollback/recovery/undo snapshot-byte budgets, post-preview original inventories, legacy jobs without preview snapshots, and oversized skull-profile, banner-pattern, and sign-line collections.
 
 ### Changed
 
@@ -40,6 +41,8 @@
 - Fixed physics-enabled rollback and undo discarding compatible block-entity contents when the server normalizes the requested block state, such as a single chest joining a neighboring double chest; correction audits now retain the restored contents.
 - Fixed oversized container, lectern, and decorated-pot inventories entering block history even though rollback could not restore them; snapshot capture now enforces the same 16 MiB inventory limit as restoration before history or world state can be changed.
 - Fixed rollback previews exhausting server memory when many component-heavy container snapshots fit under the block-count limit; SQLite snapshot lengths are now checked against the aggregate byte budget before their BLOBs are materialized.
+- Fixed saved rollback jobs, restart recovery, and undo exhausting server memory by loading unbounded original, target, and expected block-entity snapshots; all job loads now enforce the configured aggregate byte limit before copying SQLite BLOBs.
+- Fixed oversized player-head profile properties, banner patterns, and sign-line collections entering history even though rollback rejected those snapshots; capture now enforces the same 4,096-entry collection limit as restoration.
 
 ## 26.2-3-beta.2
 
