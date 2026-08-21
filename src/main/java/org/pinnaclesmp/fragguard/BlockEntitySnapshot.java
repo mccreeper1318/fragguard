@@ -91,8 +91,16 @@ final class BlockEntitySnapshot {
     }
 
     static void restore(Block block, byte[] payload) {
+        restore(block, payload, false);
+    }
+
+    static boolean restoreIfCompatible(Block block, byte[] payload) {
+        return restore(block, payload, true);
+    }
+
+    private static boolean restore(Block block, byte[] payload, boolean ignoreIncompatibleState) {
         if (payload == null) {
-            return;
+            return false;
         }
 
         BlockState state = block.getState();
@@ -107,6 +115,9 @@ final class BlockEntitySnapshot {
 
             Kind kind = Kind.valueOf(input.readUTF());
             if (Kind.of(state) != kind) {
+                if (ignoreIncompatibleState) {
+                    return false;
+                }
                 throw new IOException("Snapshot type " + kind + " does not match " + state.getType());
             }
 
@@ -138,6 +149,7 @@ final class BlockEntitySnapshot {
             if (!state.update(true, false)) {
                 throw new IOException("The restored block-entity state was rejected");
             }
+            return true;
         } catch (IOException | RuntimeException exception) {
             throw new IllegalStateException("Could not restore block-entity data at " + block.getX() + ","
                     + block.getY() + "," + block.getZ(), exception);

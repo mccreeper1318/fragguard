@@ -13,6 +13,7 @@
 - Added regression coverage for stable action identifiers, unknown legacy actions, world renames, renamed resumable rollback jobs, retained migration backups, rejected future schema versions, failed atomic migrations, and unavailable backup locations.
 - Added compressed, format-versioned block-entity snapshots for double-sided signs, container inventories and books, banner patterns, player-head profiles, lecterns, decorated-pot inventories/sherds, and supported custom names.
 - Added SQLite schema version 2 and regression coverage for verified version-1 migration backups, entity-only history, same-tick snapshot coalescing, rollback planning, recovered jobs, force retries, and undo snapshots.
+- Added rollback and undo regression coverage for compatible chest inventories after physics normalizes their structural block state, including the resulting correction-audit snapshots.
 
 ### Changed
 
@@ -34,6 +35,7 @@
 - Fixed #14 by preventing world renames, changed or unknown action enums, unsupported database downgrades, and partially applied schema upgrades from orphaning history or breaking lookups and rollback recovery.
 - Fixed #15 by restoring sign text/colors/glow/wax, container contents including written books, banner designs, player-head textures, lectern books/pages, and decorated-pot items/sherds during rollback and undo.
 - Fixed the Beta 3 build failing banner regression coverage by avoiding Paper registry initialization for banners without patterns; patterned banners still resolve their designs through the data-driven registry.
+- Fixed physics-enabled rollback and undo discarding compatible block-entity contents when the server normalizes the requested block state, such as a single chest joining a neighboring double chest; correction audits now retain the restored contents.
 
 ## 26.2-3-beta.2
 

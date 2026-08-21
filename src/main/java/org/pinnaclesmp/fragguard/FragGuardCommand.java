@@ -793,6 +793,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     String resultingData = block.getBlockData().getAsString();
                     if (desiredData.equals(resultingData)) {
                         BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
+                    } else {
+                        BlockEntitySnapshot.restoreIfCompatible(block, candidate.desiredEntityData());
                     }
                     if (!desiredData.equals(resultingData)) {
                         observedCorrections.add(RollbackAudit.create(

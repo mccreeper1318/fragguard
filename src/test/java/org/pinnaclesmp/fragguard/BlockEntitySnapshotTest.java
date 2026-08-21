@@ -31,9 +31,11 @@ import java.util.zip.GZIPOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -98,6 +100,48 @@ class BlockEntitySnapshotTest {
 
         verify(targetInventory).setContents(items);
         verify(target).update(true, false);
+    }
+
+    @Test
+    void restoresCompatibleInventoryAfterPhysicsNormalizesItsBlockState() {
+        TileStateInventoryHolder source = mock(TileStateInventoryHolder.class);
+        Inventory sourceInventory = mock(Inventory.class);
+        ItemStack[] contents = new ItemStack[]{mock(ItemStack.class)};
+        when(source.getSnapshotInventory()).thenReturn(sourceInventory);
+        when(sourceInventory.getContents()).thenReturn(contents);
+
+        TileStateInventoryHolder corrected = mock(TileStateInventoryHolder.class);
+        Inventory correctedInventory = mock(Inventory.class);
+        when(corrected.getSnapshotInventory()).thenReturn(correctedInventory);
+        byte[] serializedContents = new byte[]{3, 1, 4, 1, 5};
+
+        try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+            itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents)).thenReturn(serializedContents);
+            itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedContents)).thenReturn(contents);
+
+            assertTrue(BlockEntitySnapshot.restoreIfCompatible(block(corrected),
+                    BlockEntitySnapshot.capture(source)));
+        }
+
+        verify(correctedInventory).setContents(contents);
+        verify(corrected).update(true, false);
+    }
+
+    @Test
+    void skipsSnapshotWhenPhysicsReplacesTheBlockWithAnIncompatibleState() {
+        TileStateInventoryHolder source = mock(TileStateInventoryHolder.class);
+        Inventory sourceInventory = mock(Inventory.class);
+        ItemStack[] contents = new ItemStack[]{mock(ItemStack.class)};
+        when(source.getSnapshotInventory()).thenReturn(sourceInventory);
+        when(sourceInventory.getContents()).thenReturn(contents);
+        byte[] serializedContents = new byte[]{2, 7, 1, 8};
+
+        try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+            itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents)).thenReturn(serializedContents);
+
+            assertFalse(BlockEntitySnapshot.restoreIfCompatible(block(mock(BlockState.class)),
+                    BlockEntitySnapshot.capture(source)));
+        }
     }
 
     @Test
