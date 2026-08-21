@@ -84,6 +84,7 @@ class DatabaseShutdownTest {
         assertEquals(8, report.drainedWrites());
         assertEquals(0, report.remainingWrites());
         assertEquals(0, report.remainingOperations());
+        assertEquals(0, report.unconfirmedOperations());
         assertEquals(0, report.lostDuringShutdown());
         assertEquals(0, report.unconfirmedWrites());
         assertTrue(report.workerStopped(), "database worker must finish before clean shutdown is reported");
@@ -131,10 +132,31 @@ class DatabaseShutdownTest {
                 3, false, false);
 
         assertEquals(0, report.drainedWrites());
+        assertEquals(0, report.unconfirmedOperations(),
+                "the single database worker cannot own an operation while it owns the active write batch");
         assertEquals(5, report.lostDuringShutdown(),
                 "queued writes explicitly abandoned after cancellation must be counted as lost");
         assertEquals(3, report.unconfirmedWrites(),
                 "an in-flight batch still owned by a live worker must never disappear from the shutdown report");
+        assertFalse(report.clean());
+    }
+
+    @Test
+    void liveWorkerOperationIsIncludedInRemainingOperations() {
+        DatabaseHealth before = new DatabaseHealth(0, 64, 0, 16,
+                0L, 0L, true, "");
+        DatabaseHealth after = new DatabaseHealth(0, 64, 0, 16,
+                0L, 0L, false, "database worker did not stop");
+
+        StorageShutdownReport report = StorageShutdownSupport.finish(
+                before, after,
+                40L, 40L,
+                0, false, false);
+
+        assertEquals(1, report.unconfirmedOperations(),
+                "a live worker with no active write batch must be conservatively accounted as active database work");
+        assertEquals(1, report.remainingOperations(),
+                "active work already removed from the operation queue must not produce a zero-operation report");
         assertFalse(report.clean());
     }
 
