@@ -139,26 +139,93 @@ class RollbackChunkExecutionTest {
     }
 
     @Test
+    void releasesCompletedChunkBeforeLowTpsPausesTheNextChunk() throws Exception {
+        assertChunkTicketBehaviorDuringLowTpsPause(true);
+    }
+
+    @Test
+    void retainsActiveChunkWhenLowTpsPausesMoreChangesInTheSameChunk() throws Exception {
+        assertChunkTicketBehaviorDuringLowTpsPause(false);
+    }
+
+    @Test
     void persistsOnlyTheActiveRollbackSliceBeforeLowTpsDefersLaterCandidates() throws Exception {
-        assertOnlyTheActiveSliceIsAudited(false, true);
+        assertOnlyTheActiveSliceIsAudited(false, true, false);
     }
 
     @Test
     void persistsOnlyTheActiveUndoSliceBeforeLowTpsDefersLaterCandidates() throws Exception {
-        assertOnlyTheActiveSliceIsAudited(true, true);
+        assertOnlyTheActiveSliceIsAudited(true, true, false);
     }
 
     @Test
     void persistsOnlyTheActiveRollbackSliceBeforeTheTickBudgetDefersLaterCandidates() throws Exception {
-        assertOnlyTheActiveSliceIsAudited(false, false);
+        assertOnlyTheActiveSliceIsAudited(false, false, false);
     }
 
-    private void assertOnlyTheActiveSliceIsAudited(boolean undo, boolean lowTpsPause) throws Exception {
+    @Test
+    void persistsRollbackPhysicsCorrectionsBeforeLowTpsDefersTheNextSlice() throws Exception {
+        assertOnlyTheActiveSliceIsAudited(false, true, true);
+    }
+
+    @Test
+    void persistsUndoPhysicsCorrectionsBeforeLowTpsDefersTheNextSlice() throws Exception {
+        assertOnlyTheActiveSliceIsAudited(true, true, true);
+    }
+
+    @Test
+    void persistsRollbackPhysicsCorrectionsBeforeTheTickBudgetDefersTheNextSlice() throws Exception {
+        assertOnlyTheActiveSliceIsAudited(false, false, true);
+    }
+
+    private void assertChunkTicketBehaviorDuringLowTpsPause(boolean crossesChunkBoundary) throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("rollback-minimum-tps", 18.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getTPS()).thenReturn(new double[]{17.0});
+
+        FragGuardCommand command = new FragGuardCommand(plugin, mock(Database.class));
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+        Player operator = mock(Player.class);
+        when(operator.isOnline()).thenReturn(true);
+        World world = mock(World.class);
+        when(world.isChunkLoaded(0, 0)).thenReturn(true);
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        List<RollbackJobChange> changes = List.of(
+                new RollbackJobChange(0, "world", 0, 64, 0,
+                        "minecraft:stone", "minecraft:dirt", false, false, false),
+                new RollbackJobChange(1, "world", crossesChunkBoundary ? 16 : 1, 64, 0,
+                        "minecraft:stone", "minecraft:dirt", false, false, false));
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(() -> Bukkit.getWorld("world")).thenReturn(world);
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+
+            ensureChunkLoaded(command, job, new RollbackChunkPlan.ChunkKey("world", 0, 0), () -> { });
+            runJobBatch(command, job, operator, changes, 1);
+
+            if (crossesChunkBoundary) {
+                verify(world).removePluginChunkTicket(0, 0, plugin);
+                verify(world, never()).addPluginChunkTicket(1, 0, plugin);
+            } else {
+                verify(world, never()).removePluginChunkTicket(0, 0, plugin);
+            }
+            verify(scheduler).runTaskLater(eq(plugin), any(Runnable.class), eq(20L));
+        }
+    }
+
+    private void assertOnlyTheActiveSliceIsAudited(boolean undo, boolean lowTpsPause,
+                                                    boolean applyPhysics) throws Exception {
         FragGuardPlugin plugin = mock(FragGuardPlugin.class);
         Server server = mock(Server.class);
         YamlConfiguration configuration = new YamlConfiguration();
         configuration.set("rollback-minimum-tps", 18.0);
         configuration.set("rollback-max-millis-per-tick", 50.0);
+        configuration.set("apply-physics-during-rollback", applyPhysics);
         when(plugin.getConfig()).thenReturn(configuration);
         when(plugin.getServer()).thenReturn(server);
         AtomicReference<Double> currentTps = new AtomicReference<>(20.0);
@@ -194,8 +261,10 @@ class RollbackChunkExecutionTest {
             Block block = mock(Block.class);
             BlockData before = mock(BlockData.class);
             BlockData desired = mock(BlockData.class);
+            BlockData corrected = mock(BlockData.class);
             when(before.getAsString()).thenReturn(initialData);
             when(desired.getAsString()).thenReturn(desiredData);
+            when(corrected.getAsString()).thenReturn("minecraft:air");
             AtomicReference<BlockData> actual = new AtomicReference<>(before);
             actualStates.add(actual);
             when(block.getBlockData()).thenAnswer(ignored -> actual.get());
@@ -205,7 +274,9 @@ class RollbackChunkExecutionTest {
             when(block.getZ()).thenReturn(0);
             int changeIndex = index;
             doAnswer(invocation -> {
-                actual.set(invocation.getArgument(0));
+                actual.set(applyPhysics && changeIndex == 0
+                        ? corrected
+                        : invocation.getArgument(0));
                 if (changeIndex == 15) {
                     if (lowTpsPause) {
                         currentTps.set(17.0);
@@ -217,7 +288,7 @@ class RollbackChunkExecutionTest {
                     }
                 }
                 return null;
-            }).when(block).setBlockData(eq(desired), eq(false));
+            }).when(block).setBlockData(eq(desired), eq(applyPhysics));
 
             RollbackJobChange change = new RollbackJobChange(index, "world", index, 64, 0,
                     "minecraft:stone", "minecraft:dirt", false, false, false);
@@ -243,10 +314,19 @@ class RollbackChunkExecutionTest {
 
             persistAndApplyCandidates(command, job, operator, candidates, undo, completed);
 
-            assertEquals(1, committedAudits.size(),
+            int firstSliceAuditBatches = applyPhysics ? 2 : 1;
+            assertEquals(firstSliceAuditBatches, committedAudits.size(),
                     "the paused second slice must not already appear in rollback history");
             assertEquals(16, committedAudits.get(0).size());
             assertTrue(committedAudits.get(0).stream().allMatch(change -> change.x() < 16));
+            if (applyPhysics) {
+                assertEquals(1, committedAudits.get(1).size(),
+                        "physics corrections must be durable before the next slice can pause");
+                BlockChange correction = committedAudits.get(1).get(0);
+                assertEquals(0, correction.x());
+                assertEquals(desiredData, correction.beforeData());
+                assertEquals("minecraft:air", correction.afterData());
+            }
             assertEquals(initialData, actualStates.get(16).get().getAsString(),
                     "the deferred block must remain unchanged while its slice is paused");
             assertEquals(1, postponed.size());
@@ -257,9 +337,10 @@ class RollbackChunkExecutionTest {
             currentTps.set(20.0);
             postponed.get(0).run();
 
-            assertEquals(2, committedAudits.size());
-            assertEquals(1, committedAudits.get(1).size());
-            assertEquals(16, committedAudits.get(1).get(0).x());
+            assertEquals(firstSliceAuditBatches + 1, committedAudits.size(),
+                    "physics corrections must not be persisted again when the batch finishes");
+            assertEquals(1, committedAudits.get(firstSliceAuditBatches).size());
+            assertEquals(16, committedAudits.get(firstSliceAuditBatches).get(0).x());
             assertEquals(desiredData, actualStates.get(16).get().getAsString());
             verify(completed).run();
             if (undo) {
@@ -290,6 +371,15 @@ class RollbackChunkExecutionTest {
         Method method = FragGuardCommand.class.getDeclaredMethod("releaseJobChunk", long.class);
         method.setAccessible(true);
         method.invoke(command, jobId);
+    }
+
+    private static void runJobBatch(FragGuardCommand command, RollbackJob job,
+                                    Player operator, List<RollbackJobChange> changes,
+                                    int index) throws Exception {
+        Method method = FragGuardCommand.class.getDeclaredMethod("runJobBatch",
+                RollbackJob.class, Player.class, List.class, int.class, boolean.class, int.class);
+        method.setAccessible(true);
+        method.invoke(command, job, operator, changes, index, false, -1);
     }
 
     private static boolean pauseForLowTps(FragGuardCommand command, RollbackJob job,

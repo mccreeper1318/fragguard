@@ -409,13 +409,18 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
+        RollbackChunkPlan.ChunkKey chunk = RollbackChunkPlan.ChunkKey.from(changes.get(index));
+        RollbackChunkPlan.ChunkKey previousChunk = loadedJobChunks.get(job.id());
+        if (previousChunk != null && !previousChunk.equals(chunk)) {
+            releaseJobChunk(job.id());
+        }
+
         Runnable retry = () -> runJobBatch(job, operator, changes, index, undo, previousProgress);
         if (pauseForLowTps(job, operator, undo, retry)) {
             return;
         }
 
         int blocksPerTick = Math.max(1, plugin.getConfig().getInt("rollback-blocks-per-tick", 500));
-        RollbackChunkPlan.ChunkKey chunk = RollbackChunkPlan.ChunkKey.from(changes.get(index));
         int end = index;
         while (end < changes.size() && end - index < blocksPerTick
                 && chunk.equals(RollbackChunkPlan.ChunkKey.from(changes.get(end)))) {
@@ -624,14 +629,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         int preparedNextIndex = nextIndex - batch.size() + preparedBatch.size();
         List<BlockChange> observedCorrections = new ArrayList<>();
         persistAndApplyCandidates(job, operator, candidates, results, observedCorrections,
-                undo, false, 0, () -> persistRequiredAudits(job, operator, observedCorrections, ignored -> {
+                undo, false, 0, () -> {
                     List<RollbackStepResult> orderedResults = preparedBatch.stream()
                             .map(change -> results.getOrDefault(change.sequence(),
                                     new RollbackStepResult(change.sequence(), false, false)))
                             .toList();
                     persistBatchResults(job, operator, changes, orderedResults,
                             preparedNextIndex, undo, previousProgress);
-                }));
+                });
     }
 
     private void persistAndApplyCandidates(RollbackJob job, Player operator,
@@ -804,24 +809,40 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             }
             RuntimeException finalFailure = failure;
             deleteRequiredAudits(job, operator, staleAuditIds, () ->
-                    persistRequiredAudits(job, operator, observedCorrections,
-                            ignored -> failJob(job, operator, finalFailure)));
+                    persistObservedCorrections(job, operator, observedCorrections,
+                            () -> failJob(job, operator, finalFailure)));
             return;
         }
 
-        deleteRequiredAudits(job, operator, staleAuditIds, () -> {
-            if (forceRetries.isEmpty()) {
-                afterApplied.run();
-                return;
-            }
-            if (forceAttempt >= MAX_FORCE_REVALIDATION_RETRIES) {
-                failJob(job, operator, new IllegalStateException(
-                        "Could not obtain a stable live block state after "
-                                + MAX_FORCE_REVALIDATION_RETRIES + " force revalidation attempts."));
-                return;
-            }
-            retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
-                    forceAttempt + 1, afterApplied);
+        deleteRequiredAudits(job, operator, staleAuditIds, () ->
+                persistObservedCorrections(job, operator, observedCorrections, () -> {
+                    if (forceRetries.isEmpty()) {
+                        afterApplied.run();
+                        return;
+                    }
+                    if (forceAttempt >= MAX_FORCE_REVALIDATION_RETRIES) {
+                        failJob(job, operator, new IllegalStateException(
+                                "Could not obtain a stable live block state after "
+                                        + MAX_FORCE_REVALIDATION_RETRIES + " force revalidation attempts."));
+                        return;
+                    }
+                    retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
+                            forceAttempt + 1, afterApplied);
+                }));
+    }
+
+    private void persistObservedCorrections(RollbackJob job, Player operator,
+                                            List<BlockChange> observedCorrections,
+                                            Runnable afterPersisted) {
+        if (observedCorrections.isEmpty()) {
+            afterPersisted.run();
+            return;
+        }
+
+        List<BlockChange> sliceCorrections = List.copyOf(observedCorrections);
+        persistRequiredAudits(job, operator, sliceCorrections, ignored -> {
+            observedCorrections.subList(0, sliceCorrections.size()).clear();
+            afterPersisted.run();
         });
     }
 

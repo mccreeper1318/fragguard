@@ -8,6 +8,7 @@
 - Added regression coverage for chunk grouping, negative chunk boundaries, separate-world chunk identities, preview chunk counting, asynchronous no-generation loads, shared chunk tickets, TPS pause/resume, per-tick budget sharing, and next-tick budget resets.
 - Added rollback-planner and SQLite-backed regression coverage for interleaved chunk sequences, repeated chunk visits, and undo execution in the exact reverse persisted order.
 - Added regression coverage ensuring only the currently executing rollback or undo slice publishes audit history, low-TPS and exhausted-budget pauses do not expose deferred blocks as changed, and already-committed audit slices finish before throttling resumes.
+- Added regression coverage for durable per-slice rollback and undo physics corrections across low-TPS or exhausted-budget pauses, completed chunk-ticket release before cross-chunk TPS pauses, and active-ticket retention during same-chunk pauses.
 
 ### Changed
 
@@ -15,12 +16,15 @@
 - Applied a shared millisecond-per-tick work budget across block-state preparation, world mutations, and force-mode retries while retaining the configured maximum blocks per batch.
 - Automatically paused rollback and undo jobs when server TPS falls below the configured threshold, resumed them after recovery, and rejected previews or saved jobs that exceed the maximum affected chunk count.
 - Prepared and durably recorded rollback or undo audits in bounded 16-block slices immediately before applying each slice, with later slices remaining unaudited while work is deferred.
+- Persisted observed physics-correction audits immediately after each applied slice, before force retries or subsequent slices can pause, and released completed chunk tickets before evaluating TPS at chunk boundaries.
 
 ### Fixed
 
 - Fixed #8 by preventing large rollback and undo jobs from synchronously loading many chunks or monopolizing the server thread with fixed-size block batches.
 - Fixed interleaved chunk visits being globally regrouped out of sequence, which caused physics-enabled rollbacks and undo operations to update cross-chunk neighbors in the wrong order.
 - Fixed deferred rollback candidates appearing in `/fg lookup` or later time-based rollback calculations before their blocks were actually changed when a tick-budget limit or low TPS paused the job.
+- Fixed physics-enabled rollback or undo history retaining an incorrect requested block state if a later slice paused and the server restarted before its observed correction was persisted.
+- Fixed completed rollback chunks remaining forcibly loaded throughout low-TPS pauses before the next chunk began processing.
 
 ## 26.2-3-beta.2
 
