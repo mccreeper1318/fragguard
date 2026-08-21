@@ -49,6 +49,7 @@ record StorageShutdownReport(
                 && unconfirmedOperations == 0
                 && lostDuringShutdown == 0
                 && unconfirmedWrites == 0
+                && totalDroppedWrites == 0
                 && storageAvailable
                 && workerStopped
                 && walCheckpointCompleted;
