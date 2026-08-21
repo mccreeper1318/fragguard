@@ -8,10 +8,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.UUID;
@@ -43,6 +45,32 @@ class DatabaseTest {
         if (database != null) {
             database.shutdown();
         }
+    }
+
+    @Test
+    void initializesVersionedSchemaAndPersistsStableActionIdentifiers() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
+            }
+            try (ResultSet row = statement.executeQuery("SELECT action, world_uuid, world FROM block_changes")) {
+                assertTrue(row.next());
+                assertEquals("block.break", row.getString("action"));
+                assertEquals(WORLD_UUID.toString(), row.getString("world_uuid"));
+                assertEquals("world", row.getString("world"));
+            }
+        }
+
+        assertFalse(Files.exists(temporaryDirectory.resolve("backups")),
+                "a newly created database has no existing history that needs a migration backup");
+        assertEquals(ChangeAction.BREAK, ChangeAction.fromStorageId("BREAK"));
+        assertEquals(ChangeAction.BREAK, ChangeAction.fromStorageId("block.break"));
+        assertEquals(ChangeAction.UNKNOWN, ChangeAction.fromStorageId("future.block.action"));
     }
 
     @Test
@@ -243,13 +271,187 @@ class DatabaseTest {
         try (Connection connection = openDatabase();
              Statement statement = connection.createStatement();
              ResultSet row = statement.executeQuery(
-                     "SELECT world_uuid, chunk_x, chunk_z, coalesce_session, server_tick FROM block_changes")) {
+                     "SELECT world_uuid, chunk_x, chunk_z, coalesce_session, server_tick, action FROM block_changes")) {
             assertTrue(row.next());
-            assertEquals("world", row.getString("world_uuid"));
+            assertEquals(WORLD_UUID.toString(), row.getString("world_uuid"));
             assertEquals(-2, row.getInt("chunk_x"));
             assertEquals(-3, row.getInt("chunk_z"));
             assertNull(row.getString("coalesce_session"));
             assertNull(row.getObject("server_tick"));
+            assertEquals("block.break", row.getString("action"));
+        }
+
+        Path backup = onlyMigrationBackup();
+        try (Connection backupConnection = DriverManager.getConnection("jdbc:sqlite:" + backup);
+             Statement statement = backupConnection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(0, version.getInt(1));
+            }
+            try (ResultSet original = statement.executeQuery("SELECT action FROM block_changes")) {
+                assertTrue(original.next());
+                assertEquals("BREAK", original.getString("action"));
+            }
+        }
+
+        database.shutdown();
+        database = startDatabase();
+        assertEquals(backup, onlyMigrationBackup(),
+                "an already migrated database must not create another backup on every restart");
+    }
+
+    @Test
+    void preservesHistoryRollbackPlansAndActiveJobsAcrossWorldRenames() throws Exception {
+        long timestamp = System.currentTimeMillis();
+        database = startDatabase("original_world");
+        database.insertRequiredAsync(List.of(new BlockChange(timestamp, ACTOR_UUID.toString(), "Builder",
+                "original_world", 6, 64, 7, ChangeAction.BREAK,
+                "minecraft:stone", "minecraft:air"))).join();
+
+        RollbackJob savedJob = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "original_world",
+                6, 7, 5, timestamp - 1, timestamp, false,
+                List.of(new RollbackTarget("original_world", 6, 64, 7,
+                        "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+
+        database = startDatabase("renamed_world");
+        LookupPage history = database.lookupAsync("renamed_world", 6, 7, 2, 1, 15, 30).join();
+        assertEquals(1, history.totalRows());
+        assertEquals("original_world", history.rows().get(0).worldName(),
+                "the historical display name remains available alongside the stable world UUID");
+
+        List<RollbackTarget> targets = database.rollbackTargetsAsync("renamed_world", 6, 7, 2,
+                timestamp - 1, timestamp, 10).join();
+        assertEquals(1, targets.size());
+        assertEquals("renamed_world", targets.get(0).worldName());
+
+        RollbackJob resumed = database.loadResumableJobsAsync().join().get(0);
+        assertEquals(savedJob.id(), resumed.id());
+        assertEquals("renamed_world", resumed.worldName());
+        assertEquals("renamed_world", database.loadRollbackChangesAsync(savedJob.id(), false)
+                .join().get(0).worldName());
+
+        CompletionException overlap = assertThrows(CompletionException.class, () ->
+                database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "renamed_world",
+                        6, 7, 5, timestamp - 1, timestamp, false, targets).join());
+        assertTrue(overlap.getCause().getMessage().contains("overlapping region"));
+    }
+
+    @Test
+    void toleratesUnknownLegacyActionsWithoutBreakingLookupOrRollback() throws Exception {
+        long timestamp = System.currentTimeMillis();
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE block_changes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        happened_at INTEGER NOT NULL,
+                        actor_uuid TEXT NOT NULL,
+                        actor_name TEXT NOT NULL,
+                        world TEXT NOT NULL,
+                        x INTEGER NOT NULL,
+                        y INTEGER NOT NULL,
+                        z INTEGER NOT NULL,
+                        action TEXT NOT NULL,
+                        before_data TEXT NOT NULL,
+                        after_data TEXT NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("INSERT INTO block_changes VALUES (1, " + (timestamp - 1)
+                    + ", 'actor', 'Builder', 'world', 0, 64, 0, 'BREAK', 'minecraft:stone', 'minecraft:air')");
+            statement.executeUpdate("INSERT INTO block_changes VALUES (2, " + timestamp
+                    + ", 'actor', 'Builder', 'world', 1, 64, 0, 'REMOVED_FUTURE_ACTION', "
+                    + "'minecraft:dirt', 'minecraft:air')");
+        }
+
+        database = startDatabase();
+
+        LookupPage history = database.lookupAsync("world", 0, 0, 2, 1, 15, 30).join();
+        assertEquals(2, history.totalRows());
+        assertEquals(ChangeAction.UNKNOWN, history.rows().get(0).action());
+        assertEquals("changed", history.rows().get(0).action().displayPastTense());
+        assertEquals(ChangeAction.BREAK, history.rows().get(1).action());
+        assertEquals(2, database.rollbackTargetsAsync("world", 0, 0, 2,
+                timestamp - 2, timestamp, 10).join().size());
+
+        try (Connection connection = openDatabase();
+             Statement statement = connection.createStatement();
+             ResultSet row = statement.executeQuery("SELECT action FROM block_changes WHERE id = 2")) {
+            assertTrue(row.next());
+            assertEquals("REMOVED_FUTURE_ACTION", row.getString("action"),
+                    "unknown action identifiers must remain recoverable in the underlying history");
+        }
+    }
+
+    @Test
+    void refusesToOpenNewerDatabaseSchemasWithoutChangingThem() throws Exception {
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA user_version=99");
+        }
+
+        SQLException failure = assertThrows(SQLException.class, this::startDatabase);
+        assertTrue(failure.getCause().getMessage().contains("newer than the supported version"));
+        assertFalse(Files.exists(temporaryDirectory.resolve("backups")));
+
+        try (Connection connection = openDatabase();
+             Statement statement = connection.createStatement();
+             ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+            assertTrue(version.next());
+            assertEquals(99, version.getInt(1));
+        }
+    }
+
+    @Test
+    void leavesLegacySchemaUntouchedWhenMigrationFails() throws Exception {
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE TABLE block_changes (
+                        id INTEGER PRIMARY KEY,
+                        happened_at INTEGER NOT NULL,
+                        world TEXT NOT NULL,
+                        x INTEGER NOT NULL,
+                        y INTEGER NOT NULL,
+                        z INTEGER NOT NULL
+                    )
+                    """);
+            statement.executeUpdate("INSERT INTO block_changes VALUES (1, 100, 'world', 1, 64, 1)");
+        }
+
+        assertThrows(SQLException.class, this::startDatabase);
+        assertTrue(Files.exists(onlyMigrationBackup()));
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(0, version.getInt(1));
+            }
+            try (ResultSet columns = statement.executeQuery("PRAGMA table_info(block_changes)")) {
+                while (columns.next()) {
+                    assertFalse("world_uuid".equals(columns.getString("name")),
+                            "failed migrations must roll back their added columns");
+                }
+            }
+            try (ResultSet history = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+                assertTrue(history.next());
+                assertEquals(1, history.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void refusesMigrationWhenItsBackupCannotBeCreated() throws Exception {
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("CREATE TABLE block_changes (id INTEGER PRIMARY KEY)");
+        }
+        Files.writeString(temporaryDirectory.resolve("backups"), "not a directory");
+
+        SQLException failure = assertThrows(SQLException.class, this::startDatabase);
+        assertTrue(failure.getCause().getMessage().contains("backup directory"));
+
+        try (Connection connection = openDatabase();
+             Statement statement = connection.createStatement();
+             ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+            assertTrue(version.next());
+            assertEquals(0, version.getInt(1));
         }
     }
 
@@ -413,6 +615,10 @@ class DatabaseTest {
     }
 
     private Database startDatabase() throws Exception {
+        return startDatabase("world");
+    }
+
+    private Database startDatabase(String worldName) throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);
         World world = mock(World.class);
@@ -425,12 +631,24 @@ class DatabaseTest {
         when(plugin.getServer()).thenReturn(server);
         when(plugin.getLogger()).thenReturn(Logger.getLogger("FragGuardTest"));
         when(server.getCurrentTick()).thenAnswer(invocation -> currentTick.get());
-        when(server.getWorld("world")).thenReturn(world);
+        when(server.getWorld(worldName)).thenReturn(world);
+        when(server.getWorlds()).thenReturn(List.of(world));
         when(world.getUID()).thenReturn(WORLD_UUID);
+        when(world.getName()).thenReturn(worldName);
 
         Database instance = new Database(plugin);
         instance.init();
         return instance;
+    }
+
+    private Path onlyMigrationBackup() throws Exception {
+        try (var backups = Files.list(temporaryDirectory.resolve("backups"))) {
+            List<Path> files = backups.toList();
+            assertEquals(1, files.size());
+            assertTrue(files.get(0).getFileName().toString()
+                    .startsWith("fragguard.db.pre-migration-v0-to-v1-"));
+            return files.get(0);
+        }
     }
 
     private void waitForWriteQueueToDrain() throws InterruptedException {

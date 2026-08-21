@@ -9,6 +9,8 @@
 - Added rollback-planner and SQLite-backed regression coverage for interleaved chunk sequences, repeated chunk visits, and undo execution in the exact reverse persisted order.
 - Added regression coverage ensuring only the currently executing rollback or undo slice publishes audit history, low-TPS and exhausted-budget pauses do not expose deferred blocks as changed, and already-committed audit slices finish before throttling resumes.
 - Added regression coverage for durable per-slice rollback and undo physics corrections across low-TPS or exhausted-budget pauses, completed chunk-ticket release before cross-chunk TPS pauses, and active-ticket retention during same-chunk pauses.
+- Added explicit SQLite schema versioning through `PRAGMA user_version`, verified pre-migration `VACUUM INTO` backups, transactional schema upgrades, and documented database backup/restoration procedures.
+- Added regression coverage for stable action identifiers, unknown legacy actions, world renames, renamed resumable rollback jobs, retained migration backups, rejected future schema versions, failed atomic migrations, and unavailable backup locations.
 
 ### Changed
 
@@ -17,6 +19,7 @@
 - Automatically paused rollback and undo jobs when server TPS falls below the configured threshold, resumed them after recovery, and rejected previews or saved jobs that exceed the maximum affected chunk count.
 - Prepared and durably recorded rollback or undo audits in bounded 16-block slices immediately before applying each slice, with later slices remaining unaudited while work is deferred.
 - Persisted observed physics-correction audits immediately after each applied slice, before force retries or subsequent slices can pause, and released completed chunk tickets before evaluating TPS at chunk boundaries.
+- Persisted stable block-change action identifiers instead of Java enum names, migrated legacy action values and loaded-world UUIDs, matched history/rollback regions by stable world identity, and refreshed saved rollback world names after renames.
 
 ### Fixed
 
@@ -25,6 +28,7 @@
 - Fixed deferred rollback candidates appearing in `/fg lookup` or later time-based rollback calculations before their blocks were actually changed when a tick-budget limit or low TPS paused the job.
 - Fixed physics-enabled rollback or undo history retaining an incorrect requested block state if a later slice paused and the server restarted before its observed correction was persisted.
 - Fixed completed rollback chunks remaining forcibly loaded throughout low-TPS pauses before the next chunk began processing.
+- Fixed #14 by preventing world renames, changed or unknown action enums, unsupported database downgrades, and partially applied schema upgrades from orphaning history or breaking lookups and rollback recovery.
 
 ## 26.2-3-beta.2
 
