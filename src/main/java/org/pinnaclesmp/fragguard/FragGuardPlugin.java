@@ -15,7 +15,6 @@ public final class FragGuardPlugin extends JavaPlugin {
     private Database database;
     private boolean storageWarningActive;
     private long lastStorageWarningAt;
-    private long lastReportedDroppedWrites = -1L;
 
     @Override
     public void onEnable() {
@@ -65,8 +64,9 @@ public final class FragGuardPlugin extends JavaPlugin {
                 + ", drained=" + report.drainedWrites()
                 + ", remaining=" + report.remainingWrites()
                 + ", remaining operations=" + report.remainingOperations()
+                + ", unconfirmed active operations=" + report.unconfirmedOperations()
                 + ", lost during shutdown=" + report.lostDuringShutdown()
-                + ", unconfirmed in-flight=" + report.unconfirmedWrites()
+                + ", unconfirmed in-flight writes=" + report.unconfirmedWrites()
                 + ", total dropped this session=" + report.totalDroppedWrites()
                 + ", worker stopped=" + report.workerStopped()
                 + ", WAL checkpoint=" + (report.walCheckpointCompleted() ? "complete" : "FAILED");
@@ -111,21 +111,18 @@ public final class FragGuardPlugin extends JavaPlugin {
         DatabaseHealth health = database.health();
         if (!health.degraded()) {
             storageWarningActive = false;
-            lastReportedDroppedWrites = health.droppedWrites();
             return;
         }
 
         long now = System.currentTimeMillis();
         long repeatMillis = TimeUnit.SECONDS.toMillis(Math.max(5L,
                 getConfig().getLong("database-operator-warning-interval-seconds", 60L)));
-        boolean droppedChanged = health.droppedWrites() != lastReportedDroppedWrites;
-        if (storageWarningActive && !droppedChanged && now - lastStorageWarningAt < repeatMillis) {
+        if (!StorageWarningThrottle.shouldWarn(storageWarningActive, now, lastStorageWarningAt, repeatMillis)) {
             return;
         }
 
         storageWarningActive = true;
         lastStorageWarningAt = now;
-        lastReportedDroppedWrites = health.droppedWrites();
 
         String availability = health.storageAvailable() ? "DEGRADED" : "UNAVAILABLE";
         String message = "FragGuard logging is " + availability
