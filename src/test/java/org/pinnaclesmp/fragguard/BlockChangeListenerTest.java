@@ -522,11 +522,12 @@ class BlockChangeListenerTest {
             String interactionName,
             String beforeData,
             String afterData,
-            boolean lectern,
-            boolean beforeHasBook
+            Material material,
+            boolean beforeOccupied
     ) {
         try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
             Block interactable = harness.block(75, 64, 75, beforeData, afterData);
+            boolean lectern = material == Material.LECTERN;
             TileStateInventoryHolder beforeState = lectern
                     ? mock(Lectern.class)
                     : mock(TileStateInventoryHolder.class);
@@ -535,17 +536,18 @@ class BlockChangeListenerTest {
                     : mock(TileStateInventoryHolder.class);
             Inventory beforeInventory = mock(Inventory.class);
             Inventory afterInventory = mock(Inventory.class);
-            ItemStack[] bookContents = new ItemStack[]{mock(ItemStack.class)};
+            ItemStack[] occupiedContents = new ItemStack[]{mock(ItemStack.class)};
             ItemStack[] emptyContents = new ItemStack[]{null};
-            ItemStack[] beforeContents = beforeHasBook ? bookContents : emptyContents;
-            ItemStack[] afterContents = beforeHasBook ? emptyContents : bookContents;
-            byte[] serializedBefore = beforeHasBook ? new byte[]{1, 2, 3} : new byte[]{4, 5, 6};
-            byte[] serializedAfter = beforeHasBook ? new byte[]{4, 5, 6} : new byte[]{1, 2, 3};
+            ItemStack[] beforeContents = beforeOccupied ? occupiedContents : emptyContents;
+            ItemStack[] afterContents = beforeOccupied ? emptyContents : occupiedContents;
+            byte[] serializedBefore = beforeOccupied ? new byte[]{1, 2, 3} : new byte[]{4, 5, 6};
+            byte[] serializedAfter = beforeOccupied ? new byte[]{4, 5, 6} : new byte[]{1, 2, 3};
 
             when(beforeState.getSnapshotInventory()).thenReturn(beforeInventory);
             when(beforeInventory.getContents()).thenReturn(beforeContents);
             when(afterState.getSnapshotInventory()).thenReturn(afterInventory);
             when(afterInventory.getContents()).thenReturn(afterContents);
+            when(interactable.getType()).thenReturn(material);
             when(interactable.getState()).thenReturn(beforeState, afterState);
 
             try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
@@ -586,33 +588,53 @@ class BlockChangeListenerTest {
         }
     }
 
-    @Test
-    void doesNotLogAnUnchangedContainerWhenAPlayerOnlyOpensIt() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("ordinaryContainerInteractions")
+    void doesNotSerializeOrLogInventoriesWhenAPlayerOnlyOpensAContainer(
+            String containerName,
+            Material material,
+            String blockData
+    ) {
         try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
-            Block chest = harness.block(
-                    80, 64, 80,
-                    "minecraft:chest[facing=north,type=single,waterlogged=false]",
-                    "minecraft:chest[facing=north,type=single,waterlogged=false]"
-            );
-            TileStateInventoryHolder beforeState = mock(TileStateInventoryHolder.class);
-            TileStateInventoryHolder afterState = mock(TileStateInventoryHolder.class);
-            Inventory beforeInventory = mock(Inventory.class);
-            ItemStack[] beforeContents = new ItemStack[]{mock(ItemStack.class)};
-            when(beforeState.getSnapshotInventory()).thenReturn(beforeInventory);
-            when(beforeInventory.getContents()).thenReturn(beforeContents);
-            when(chest.getState()).thenReturn(beforeState, afterState);
+            Block container = harness.block(80, 64, 80, blockData, blockData);
+            TileStateInventoryHolder inventoryState = mock(TileStateInventoryHolder.class);
+            when(container.getType()).thenReturn(material);
+            when(container.getState()).thenReturn(inventoryState);
 
             try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
-                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(beforeContents))
-                        .thenReturn(new byte[]{7, 8, 9});
-
-                harness.listener.onPlayerInteract(harness.interactEvent(chest));
-                harness.runNextTick();
+                harness.listener.onPlayerInteract(harness.interactEvent(container));
 
                 verify(harness.database, never()).insertAsync(any());
-                verify(afterState, never()).getSnapshotInventory();
+                verify(inventoryState, never()).getSnapshotInventory();
+                verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+                itemStacks.verifyNoInteractions();
             }
         }
+    }
+
+    private static Stream<Arguments> ordinaryContainerInteractions() {
+        return Stream.of(
+                Arguments.of("chest", Material.CHEST,
+                        "minecraft:chest[facing=north,type=single,waterlogged=false]"),
+                Arguments.of("trapped chest", Material.TRAPPED_CHEST,
+                        "minecraft:trapped_chest[facing=north,type=single,waterlogged=false]"),
+                Arguments.of("barrel", Material.BARREL,
+                        "minecraft:barrel[facing=north,open=false]"),
+                Arguments.of("hopper", Material.HOPPER,
+                        "minecraft:hopper[enabled=true,facing=down]"),
+                Arguments.of("furnace", Material.FURNACE,
+                        "minecraft:furnace[facing=north,lit=false]"),
+                Arguments.of("shulker box", Material.SHULKER_BOX,
+                        "minecraft:shulker_box[facing=up]"),
+                Arguments.of("dispenser", Material.DISPENSER,
+                        "minecraft:dispenser[facing=north,triggered=false]"),
+                Arguments.of("dropper", Material.DROPPER,
+                        "minecraft:dropper[facing=north,triggered=false]"),
+                Arguments.of("brewing stand", Material.BREWING_STAND,
+                        "minecraft:brewing_stand[has_bottle_0=false,has_bottle_1=false,has_bottle_2=false]"),
+                Arguments.of("crafter", Material.CRAFTER,
+                        "minecraft:crafter[crafting=false,orientation=north_up,triggered=false]")
+        );
     }
 
     private static Stream<Arguments> inventoryBearingStructuralInteractions() {
@@ -621,28 +643,42 @@ class BlockChangeListenerTest {
                         "remove a book from a chiseled bookshelf",
                         "minecraft:chiseled_bookshelf[slot_0_occupied=true]",
                         "minecraft:chiseled_bookshelf[slot_0_occupied=false]",
-                        false,
+                        Material.CHISELED_BOOKSHELF,
                         true
                 ),
                 Arguments.of(
                         "insert a book into a chiseled bookshelf",
                         "minecraft:chiseled_bookshelf[slot_0_occupied=false]",
                         "minecraft:chiseled_bookshelf[slot_0_occupied=true]",
-                        false,
+                        Material.CHISELED_BOOKSHELF,
                         false
                 ),
                 Arguments.of(
                         "remove a book from a lectern",
                         "minecraft:lectern[facing=north,has_book=true,powered=false]",
                         "minecraft:lectern[facing=north,has_book=false,powered=false]",
-                        true,
+                        Material.LECTERN,
                         true
                 ),
                 Arguments.of(
                         "insert a book into a lectern",
                         "minecraft:lectern[facing=north,has_book=false,powered=false]",
                         "minecraft:lectern[facing=north,has_book=true,powered=false]",
-                        true,
+                        Material.LECTERN,
+                        false
+                ),
+                Arguments.of(
+                        "remove a music disc from a jukebox",
+                        "minecraft:jukebox[has_record=true]",
+                        "minecraft:jukebox[has_record=false]",
+                        Material.JUKEBOX,
+                        true
+                ),
+                Arguments.of(
+                        "insert a music disc into a jukebox",
+                        "minecraft:jukebox[has_record=false]",
+                        "minecraft:jukebox[has_record=true]",
+                        Material.JUKEBOX,
                         false
                 )
         );

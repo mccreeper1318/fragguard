@@ -483,9 +483,16 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
+        BlockData blockData = clickedBlock.getBlockData();
+        BlockState blockState = clickedBlock.getState();
+        if (blockState instanceof InventoryHolder
+                && !hasStructuralInventoryInteraction(clickedBlock.getType())) {
+            return;
+        }
+
         Player player = event.getPlayer();
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
-        captureInteractionBefore(beforeStates, clickedBlock, clickedBlock.getBlockData());
+        captureInteractionBefore(beforeStates, clickedBlock, blockData, blockState);
         logAfterServerAppliesChange(
                 beforeStates,
                 ChangeAction.PLAYER_INTERACT,
@@ -746,9 +753,9 @@ final class BlockChangeListener implements Listener {
     private void captureInteractionBefore(
             Map<BlockPosition, CapturedBlockState> beforeStates,
             Block block,
-            BlockData blockData
+            BlockData blockData,
+            BlockState state
     ) {
-        BlockState state = block.getState();
         beforeStates.putIfAbsent(
                 positionOf(block),
                 new CapturedBlockState(
@@ -783,6 +790,12 @@ final class BlockChangeListener implements Listener {
                     )
             );
         }
+    }
+
+    private boolean hasStructuralInventoryInteraction(Material material) {
+        return material == Material.LECTERN
+                || material == Material.CHISELED_BOOKSHELF
+                || material == Material.JUKEBOX;
     }
 
     private BlockPosition positionOf(Block block) {
