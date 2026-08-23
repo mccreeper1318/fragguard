@@ -7,13 +7,18 @@ FragGuard is a Paper plugin that logs block changes for 30 days, lets server ope
 - Player block placement
 - Player block destruction
 - Explosion block changes
-- Fire spread
+- Initial fire ignition and fire spread
 - Blocks destroyed by fire burn events
 - Lava and water flow
 - Player bucket water/lava placement and removal
+- Sponge absorption and dispenser bucket placement/removal
 - Blocks broken by lava/water flow
 - Piston extension and retraction changes
 - Blocks broken or moved by pistons
+- Entity-caused block changes and block formation
+- Natural block growth, fading, formation, spread, and leaves decay
+- Structure growth and fertilization
+- Player interactions that change structural block data
 - Player name and UUID when a player caused the change
 - System cause labels when the server/environment caused the change
 - World and block coordinates
@@ -151,7 +156,7 @@ Put that JAR into your server's `plugins` folder and restart the Paper server.
 - This restores block type and structural block data, including facing direction, slab state, stair shape, and similar properties, before restoring supported block-entity contents.
 - Supported block entities include both sides of signs (text, color, glowing text, and wax), container inventories and their books/items, banner patterns, player-head profiles/textures, lectern books/pages, decorated-pot items/sherds, and supported custom names.
 - Block entities outside those supported types, and contents from history recorded before block-entity snapshots were introduced, cannot be reconstructed.
-- Explosion, fire burn, bucket, liquid, and piston handlers record the before-state during the event and the after-state on the next server tick so the saved log matches what the server actually changed.
+- Explosion, ignition/fire, bucket/liquid/sponge, piston, entity, growth/form/fade/decay/fertilization, and player-interaction handlers record the before-state during the event and the actual after-state on the next server tick so the saved log matches what the server changed.
 - Fire-burn and bucket-source logging was added after the first version. Old damage that happened before installing this update cannot be rolled back unless it was already logged.
 - Rollback previews are capped inside SQLite at the configured maximum plus one, and use indexed world/chunk coordinates instead of loading an entire region's history.
 - Rollback previews enforce block-count, chunk-count, and aggregate block-entity snapshot-byte limits before execution; the snapshot budget defaults to 64 MiB and is checked before SQLite BLOBs are copied into server memory.

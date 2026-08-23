@@ -1,6 +1,25 @@
 # FG Changelog
 
-## 26.3-3-beta.3
+## 26.2-3-beta.4
+
+### Added
+
+- Added event-specific logging for initial fire ignition, sponge absorption, dispenser bucket placement/removal, entity block changes/forming, natural growth/fading/forming/spread, leaves decay, structure growth, fertilization, and player interactions that mutate block state.
+- Added stable action identifiers and lookup descriptions for every newly covered cause.
+- Added regression coverage for next-tick actual-state capture, multi-block sponge/structure changes, dispenser-facing targets, player/entity attribution, natural changes, and unchanged container interactions.
+
+### Changed
+
+- Captured each new event's before-state while the event is running and its actual resulting block/entity state on the next server tick, preserving the event's original tick for same-tick coalescing.
+- Attributed player-caused ignition, fertilization, structure growth, and interaction changes to the player's UUID/name; entity-caused changes retain the entity UUID/type, while environmental changes use explicit system cause labels.
+- Fire spread now verifies the actual applied next-tick state, and non-fire `BlockSpreadEvent` changes are logged independently of the fire logging setting.
+
+### Fixed
+
+- Fixed #16 by covering world mutations that previously bypassed FragGuard history and therefore could not be found in lookup or restored by rollback.
+- Prevented ordinary player container opens from producing entity-snapshot-only false positives when no structural block change occurred.
+
+## 26.2-3-beta.3
 
 ### Added
 

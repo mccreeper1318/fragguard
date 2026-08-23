@@ -1,15 +1,36 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Directional;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
+import org.bukkit.event.block.BlockFadeEvent;
+import org.bukkit.event.block.BlockFertilizeEvent;
+import org.bukkit.event.block.BlockFormEvent;
+import org.bukkit.event.block.BlockGrowEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPhysicsEvent;
+import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.block.LeavesDecayEvent;
+import org.bukkit.event.block.SpongeAbsorbEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.world.StructureGrowEvent;
+import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.Test;
@@ -33,6 +54,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -274,6 +296,237 @@ class BlockChangeListenerTest {
         }
     }
 
+    @Test
+    void recordsInitialIgnitionAfterApplicationWithPlayerAttribution() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(
+                    5, 65, 5,
+                    "minecraft:air",
+                    "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]"
+            );
+            BlockIgniteEvent event = mock(BlockIgniteEvent.class);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getCause()).thenReturn(BlockIgniteEvent.IgniteCause.FLINT_AND_STEEL);
+            when(event.getIgnitingEntity()).thenReturn(harness.player);
+
+            harness.listener.onBlockIgnite(event);
+
+            verify(harness.database, never()).insertAsync(any());
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.FIRE_IGNITE, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+            assertEquals("minecraft:air", change.beforeData());
+            assertEquals("minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]",
+                    change.afterData());
+        }
+    }
+
+    @Test
+    void recordsEverySpongeAffectedBlockIncludingTheSponge() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block sponge = harness.block(10, 64, 10, "minecraft:sponge", "minecraft:wet_sponge");
+            Block firstWater = harness.block(11, 64, 10, "minecraft:water[level=0]", "minecraft:air");
+            Block waterlogged = harness.block(
+                    10, 64, 11,
+                    "minecraft:oak_slab[type=bottom,waterlogged=true]",
+                    "minecraft:oak_slab[type=bottom,waterlogged=false]"
+            );
+            SpongeAbsorbEvent event = mock(SpongeAbsorbEvent.class);
+            when(event.getBlock()).thenReturn(sponge);
+            when(event.getBlocks()).thenReturn(List.of(
+                    harness.state(firstWater),
+                    harness.state(waterlogged)
+            ));
+
+            harness.listener.onSpongeAbsorb(event);
+            harness.runNextTick();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(3)).insertAsync(changes.capture());
+            assertEquals(
+                    List.of(ChangeAction.SPONGE_ABSORB, ChangeAction.SPONGE_ABSORB,
+                            ChangeAction.SPONGE_ABSORB),
+                    changes.getAllValues().stream().map(BlockChange::action).toList()
+            );
+            assertEquals(
+                    List.of("minecraft:wet_sponge", "minecraft:air",
+                            "minecraft:oak_slab[type=bottom,waterlogged=false]"),
+                    changes.getAllValues().stream().map(BlockChange::afterData).toList()
+            );
+        }
+    }
+
+    @Test
+    void recordsDispenserBucketChangesAtTheFacingBlock() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block dispenser = mock(Block.class);
+            Directional dispenserData = mock(Directional.class);
+            Block target = harness.block(21, 70, 20, "minecraft:air", "minecraft:water[level=0]");
+            ItemStack bucket = mock(ItemStack.class);
+            BlockDispenseEvent event = mock(BlockDispenseEvent.class);
+
+            when(dispenser.getBlockData()).thenReturn(dispenserData);
+            when(dispenserData.getFacing()).thenReturn(BlockFace.EAST);
+            when(dispenser.getRelative(BlockFace.EAST)).thenReturn(target);
+            when(bucket.getType()).thenReturn(Material.WATER_BUCKET);
+            when(event.getBlock()).thenReturn(dispenser);
+            when(event.getItem()).thenReturn(bucket);
+
+            harness.listener.onBlockDispense(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.DISPENSER_LIQUID_PLACE, change.action());
+            assertEquals("SYSTEM", change.actorUuid());
+            assertEquals("Dispenser: Water Bucket", change.actorName());
+            assertEquals(21, change.x());
+            assertEquals("minecraft:water[level=0]", change.afterData());
+        }
+    }
+
+    @Test
+    void recordsEntityBlockChangesWithEntityIdentityAndCause() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            UUID entityUuid = UUID.fromString("f9c6b634-0586-429d-b4e7-d50e16ab6d8c");
+            Entity entity = mock(Entity.class);
+            Block target = harness.block(30, 80, 30, "minecraft:grass_block", "minecraft:air");
+            EntityChangeBlockEvent event = mock(EntityChangeBlockEvent.class);
+
+            when(entity.getUniqueId()).thenReturn(entityUuid);
+            when(entity.getType()).thenReturn(EntityType.ENDERMAN);
+            when(event.getEntity()).thenReturn(entity);
+            when(event.getBlock()).thenReturn(target);
+
+            harness.listener.onEntityChangeBlock(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.ENTITY_CHANGE_BLOCK, change.action());
+            assertEquals(entityUuid.toString(), change.actorUuid());
+            assertEquals("Entity Block Change: Enderman", change.actorName());
+            assertEquals("minecraft:air", change.afterData());
+        }
+    }
+
+    @Test
+    void recordsNaturalGrowthFadeFormSpreadAndDecayAsActualTransitions() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block grown = harness.block(40, 64, 40, "minecraft:wheat[age=6]", "minecraft:wheat[age=7]");
+            Block faded = harness.block(41, 64, 40, "minecraft:ice", "minecraft:water[level=0]");
+            Block formed = harness.block(42, 64, 40, "minecraft:water[level=0]", "minecraft:ice");
+            Block spread = harness.block(43, 64, 40, "minecraft:air", "minecraft:vine[east=true]");
+            Block source = mock(Block.class);
+            BlockState spreadState = mock(BlockState.class);
+            Block decayed = harness.block(44, 64, 40, "minecraft:oak_leaves[persistent=false]", "minecraft:air");
+
+            BlockGrowEvent growEvent = mock(BlockGrowEvent.class);
+            when(growEvent.getBlock()).thenReturn(grown);
+            BlockFadeEvent fadeEvent = mock(BlockFadeEvent.class);
+            when(fadeEvent.getBlock()).thenReturn(faded);
+            BlockFormEvent formEvent = mock(BlockFormEvent.class);
+            when(formEvent.getBlock()).thenReturn(formed);
+            BlockSpreadEvent spreadEvent = mock(BlockSpreadEvent.class);
+            when(spreadEvent.getBlock()).thenReturn(spread);
+            when(spreadEvent.getSource()).thenReturn(source);
+            when(spreadEvent.getNewState()).thenReturn(spreadState);
+            when(source.getType()).thenReturn(Material.VINE);
+            when(spreadState.getType()).thenReturn(Material.VINE);
+            LeavesDecayEvent decayEvent = mock(LeavesDecayEvent.class);
+            when(decayEvent.getBlock()).thenReturn(decayed);
+
+            harness.listener.onBlockGrow(growEvent);
+            harness.listener.onBlockFade(fadeEvent);
+            harness.listener.onBlockForm(formEvent);
+            harness.listener.onFireSpread(spreadEvent);
+            harness.listener.onLeavesDecay(decayEvent);
+            harness.runAllTasks();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(5)).insertAsync(changes.capture());
+            assertEquals(
+                    List.of(ChangeAction.BLOCK_GROW, ChangeAction.BLOCK_FADE, ChangeAction.BLOCK_FORM,
+                            ChangeAction.BLOCK_SPREAD, ChangeAction.LEAVES_DECAY),
+                    changes.getAllValues().stream().map(BlockChange::action).toList()
+            );
+        }
+    }
+
+    @Test
+    void recordsStructureAndFertilizationChangesWithAvailablePlayerAttribution() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block trunk = harness.block(50, 64, 50, "minecraft:air", "minecraft:oak_log[axis=y]");
+            Block leaves = harness.block(50, 65, 50, "minecraft:air", "minecraft:oak_leaves[persistent=false]");
+            StructureGrowEvent structureEvent = mock(StructureGrowEvent.class);
+            when(structureEvent.getBlocks()).thenReturn(List.of(harness.state(trunk), harness.state(leaves)));
+            when(structureEvent.isFromBonemeal()).thenReturn(false);
+
+            Block crop = harness.block(60, 64, 60, "minecraft:wheat[age=2]", "minecraft:wheat[age=4]");
+            BlockFertilizeEvent fertilizeEvent = mock(BlockFertilizeEvent.class);
+            when(fertilizeEvent.getBlocks()).thenReturn(List.of(harness.state(crop)));
+            when(fertilizeEvent.getPlayer()).thenReturn(harness.player);
+
+            harness.listener.onStructureGrow(structureEvent);
+            harness.listener.onBlockFertilize(fertilizeEvent);
+            harness.runAllTasks();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(3)).insertAsync(changes.capture());
+            assertEquals(
+                    List.of(ChangeAction.STRUCTURE_GROW, ChangeAction.STRUCTURE_GROW,
+                            ChangeAction.FERTILIZE),
+                    changes.getAllValues().stream().map(BlockChange::action).toList()
+            );
+            BlockChange fertilized = changes.getAllValues().getLast();
+            assertEquals(PLAYER_UUID.toString(), fertilized.actorUuid());
+            assertEquals("Builder", fertilized.actorName());
+        }
+    }
+
+    @Test
+    void recordsPlayerInteractionsThatActuallyChangeBlockData() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block door = harness.block(
+                    70, 64, 70,
+                    "minecraft:oak_door[half=lower,open=false]",
+                    "minecraft:oak_door[half=lower,open=true]"
+            );
+            PlayerInteractEvent event = harness.interactEvent(door);
+
+            harness.listener.onPlayerInteract(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+            assertEquals("minecraft:oak_door[half=lower,open=true]", change.afterData());
+        }
+    }
+
+    @Test
+    void doesNotLogAnUnchangedContainerWhenAPlayerOnlyOpensIt() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block chest = harness.block(
+                    80, 64, 80,
+                    "minecraft:chest[facing=north,type=single,waterlogged=false]",
+                    "minecraft:chest[facing=north,type=single,waterlogged=false]"
+            );
+            BlockState inventoryState = mock(
+                    BlockState.class,
+                    withSettings().extraInterfaces(InventoryHolder.class)
+            );
+            when(chest.getState()).thenReturn(inventoryState);
+
+            harness.listener.onPlayerInteract(harness.interactEvent(chest));
+            harness.runNextTick();
+
+            verify(harness.database, never()).insertAsync(any());
+        }
+    }
+
     private static Stream<Arguments> postBreakTransitions() {
         return Stream.of(
                 Arguments.of(
@@ -354,6 +607,103 @@ class BlockChangeListenerTest {
                                 "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down]")
                 ))
         );
+    }
+
+    private static final class DeferredChangeHarness implements AutoCloseable {
+        private final FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        private final Database database = mock(Database.class);
+        private final FileConfiguration config = mock(FileConfiguration.class);
+        private final BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        private final BukkitTask task = mock(BukkitTask.class);
+        private final World world = mock(World.class);
+        private final Player player = mock(Player.class);
+        private final Map<BlockCoordinate, Block> blocks = new HashMap<>();
+        private final List<Runnable> scheduledTasks = new ArrayList<>();
+        private final MockedStatic<Bukkit> bukkit = mockStaticBukkit();
+        private final BlockChangeListener listener = new BlockChangeListener(plugin, database);
+
+        private DeferredChangeHarness() {
+            when(plugin.getConfig()).thenReturn(config);
+            when(config.getBoolean("log-fire-spread", true)).thenReturn(true);
+            when(config.getBoolean("log-liquid-flow", true)).thenReturn(true);
+            when(world.getName()).thenReturn("world");
+            when(player.getUniqueId()).thenReturn(PLAYER_UUID);
+            when(player.getName()).thenReturn("Builder");
+            when(world.getBlockAt(anyInt(), anyInt(), anyInt()))
+                    .thenAnswer(invocation -> blocks.get(new BlockCoordinate(
+                            invocation.getArgument(0),
+                            invocation.getArgument(1),
+                            invocation.getArgument(2)
+                    )));
+            when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+                scheduledTasks.add(invocation.getArgument(1));
+                return task;
+            });
+        }
+
+        private MockedStatic<Bukkit> mockStaticBukkit() {
+            MockedStatic<Bukkit> mockedBukkit = org.mockito.Mockito.mockStatic(Bukkit.class);
+            mockedBukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            mockedBukkit.when(Bukkit::getCurrentTick).thenReturn(500);
+            mockedBukkit.when(() -> Bukkit.getWorld("world")).thenReturn(world);
+            return mockedBukkit;
+        }
+
+        private Block block(int x, int y, int z, String beforeData, String afterData) {
+            Block block = mock(Block.class);
+            BlockData before = mock(BlockData.class);
+            BlockData after = mock(BlockData.class);
+            BlockState state = mock(BlockState.class);
+
+            when(before.getAsString()).thenReturn(beforeData);
+            when(after.getAsString()).thenReturn(afterData);
+            when(block.getWorld()).thenReturn(world);
+            when(block.getX()).thenReturn(x);
+            when(block.getY()).thenReturn(y);
+            when(block.getZ()).thenReturn(z);
+            when(block.getBlockData()).thenReturn(before, after);
+            when(block.getState()).thenReturn(state);
+            blocks.put(new BlockCoordinate(x, y, z), block);
+            return block;
+        }
+
+        private BlockState state(Block block) {
+            BlockState state = mock(BlockState.class);
+            when(state.getBlock()).thenReturn(block);
+            return state;
+        }
+
+        private PlayerInteractEvent interactEvent(Block block) {
+            PlayerInteractEvent event = mock(PlayerInteractEvent.class);
+            when(event.getAction()).thenReturn(Action.RIGHT_CLICK_BLOCK);
+            when(event.useInteractedBlock()).thenReturn(Event.Result.DEFAULT);
+            when(event.useItemInHand()).thenReturn(Event.Result.DEFAULT);
+            when(event.getClickedBlock()).thenReturn(block);
+            when(event.getPlayer()).thenReturn(player);
+            return event;
+        }
+
+        private void runNextTick() {
+            assertEquals(1, scheduledTasks.size());
+            scheduledTasks.removeFirst().run();
+        }
+
+        private void runAllTasks() {
+            while (!scheduledTasks.isEmpty()) {
+                scheduledTasks.removeFirst().run();
+            }
+        }
+
+        private BlockChange captureSingleChange() {
+            ArgumentCaptor<BlockChange> change = ArgumentCaptor.forClass(BlockChange.class);
+            verify(database).insertAsync(change.capture());
+            return change.getValue();
+        }
+
+        @Override
+        public void close() {
+            bukkit.close();
+        }
     }
 
     private static final class BreakHarness implements AutoCloseable {
