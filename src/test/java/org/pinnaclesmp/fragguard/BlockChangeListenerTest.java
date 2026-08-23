@@ -335,10 +335,12 @@ class BlockChangeListenerTest {
                     "minecraft:oak_slab[type=bottom,waterlogged=false]"
             );
             SpongeAbsorbEvent event = mock(SpongeAbsorbEvent.class);
+            BlockState firstWaterState = harness.state(firstWater);
+            BlockState waterloggedState = harness.state(waterlogged);
             when(event.getBlock()).thenReturn(sponge);
             when(event.getBlocks()).thenReturn(List.of(
-                    harness.state(firstWater),
-                    harness.state(waterlogged)
+                    firstWaterState,
+                    waterloggedState
             ));
 
             harness.listener.onSpongeAbsorb(event);
@@ -460,12 +462,15 @@ class BlockChangeListenerTest {
             Block trunk = harness.block(50, 64, 50, "minecraft:air", "minecraft:oak_log[axis=y]");
             Block leaves = harness.block(50, 65, 50, "minecraft:air", "minecraft:oak_leaves[persistent=false]");
             StructureGrowEvent structureEvent = mock(StructureGrowEvent.class);
-            when(structureEvent.getBlocks()).thenReturn(List.of(harness.state(trunk), harness.state(leaves)));
+            BlockState trunkState = harness.state(trunk);
+            BlockState leavesState = harness.state(leaves);
+            when(structureEvent.getBlocks()).thenReturn(List.of(trunkState, leavesState));
             when(structureEvent.isFromBonemeal()).thenReturn(false);
 
             Block crop = harness.block(60, 64, 60, "minecraft:wheat[age=2]", "minecraft:wheat[age=4]");
             BlockFertilizeEvent fertilizeEvent = mock(BlockFertilizeEvent.class);
-            when(fertilizeEvent.getBlocks()).thenReturn(List.of(harness.state(crop)));
+            BlockState cropState = harness.state(crop);
+            when(fertilizeEvent.getBlocks()).thenReturn(List.of(cropState));
             when(fertilizeEvent.getPlayer()).thenReturn(harness.player);
 
             harness.listener.onStructureGrow(structureEvent);
