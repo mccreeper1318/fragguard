@@ -7,6 +7,7 @@
 - Added event-specific logging for initial fire ignition, sponge absorption, dispenser bucket placement/removal, entity block changes/forming, natural growth/fading/forming/spread, leaves decay, structure growth, fertilization, and player interactions that mutate block state.
 - Added stable action identifiers and lookup descriptions for every newly covered cause.
 - Added regression coverage for next-tick actual-state capture, multi-block sponge/structure changes, dispenser-facing targets, player/entity attribution, natural changes, and unchanged container interactions.
+- Added regression coverage for chiseled-bookshelf and lectern book insertion/removal, preserved before/after inventory snapshots, rollback/undo inventory restoration, and unchanged container opens.
 
 ### Changed
 
@@ -18,6 +19,7 @@
 
 - Fixed #16 by covering world mutations that previously bypassed FragGuard history and therefore could not be found in lookup or restored by rollback.
 - Prevented ordinary player container opens from producing entity-snapshot-only false positives when no structural block change occurred.
+- Fixed structurally changing inventory-holder interactions discarding their before/after block-entity snapshots; bookshelf and lectern rollback/undo now restores books while unchanged container opens remain unlogged.
 
 ## 26.2-3-beta.3
 

@@ -1,11 +1,13 @@
 package org.pinnaclesmp.fragguard;
 
+import io.papermc.paper.block.TileStateInventoryHolder;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Lectern;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -29,7 +31,7 @@ import org.bukkit.event.block.SpongeAbsorbEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.world.StructureGrowEvent;
-import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
@@ -41,6 +43,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
@@ -49,12 +52,14 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -511,6 +516,76 @@ class BlockChangeListenerTest {
         }
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("inventoryBearingStructuralInteractions")
+    void preservesInventorySnapshotsWhenPlayerInteractionsChangeBlockData(
+            String interactionName,
+            String beforeData,
+            String afterData,
+            boolean lectern,
+            boolean beforeHasBook
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block interactable = harness.block(75, 64, 75, beforeData, afterData);
+            TileStateInventoryHolder beforeState = lectern
+                    ? mock(Lectern.class)
+                    : mock(TileStateInventoryHolder.class);
+            TileStateInventoryHolder afterState = lectern
+                    ? mock(Lectern.class)
+                    : mock(TileStateInventoryHolder.class);
+            Inventory beforeInventory = mock(Inventory.class);
+            Inventory afterInventory = mock(Inventory.class);
+            ItemStack[] bookContents = new ItemStack[]{mock(ItemStack.class)};
+            ItemStack[] emptyContents = new ItemStack[]{null};
+            ItemStack[] beforeContents = beforeHasBook ? bookContents : emptyContents;
+            ItemStack[] afterContents = beforeHasBook ? emptyContents : bookContents;
+            byte[] serializedBefore = beforeHasBook ? new byte[]{1, 2, 3} : new byte[]{4, 5, 6};
+            byte[] serializedAfter = beforeHasBook ? new byte[]{4, 5, 6} : new byte[]{1, 2, 3};
+
+            when(beforeState.getSnapshotInventory()).thenReturn(beforeInventory);
+            when(beforeInventory.getContents()).thenReturn(beforeContents);
+            when(afterState.getSnapshotInventory()).thenReturn(afterInventory);
+            when(afterInventory.getContents()).thenReturn(afterContents);
+            when(interactable.getState()).thenReturn(beforeState, afterState);
+
+            try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(beforeContents))
+                        .thenReturn(serializedBefore);
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(afterContents))
+                        .thenReturn(serializedAfter);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedBefore))
+                        .thenReturn(beforeContents);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedAfter))
+                        .thenReturn(afterContents);
+
+                harness.listener.onPlayerInteract(harness.interactEvent(interactable));
+                harness.runNextTick();
+
+                BlockChange change = harness.captureSingleChange();
+                assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+                assertEquals(beforeData, change.beforeData());
+                assertEquals(afterData, change.afterData());
+                assertNotNull(change.beforeEntityData());
+                assertNotNull(change.afterEntityData());
+                assertFalse(Arrays.equals(change.beforeEntityData(), change.afterEntityData()));
+
+                Block restorationBlock = mock(Block.class);
+                TileStateInventoryHolder restorationState = lectern
+                        ? mock(Lectern.class)
+                        : mock(TileStateInventoryHolder.class);
+                Inventory restorationInventory = mock(Inventory.class);
+                when(restorationState.getSnapshotInventory()).thenReturn(restorationInventory);
+                when(restorationState.update(true, false)).thenReturn(true);
+                when(restorationBlock.getState()).thenReturn(restorationState);
+
+                BlockEntitySnapshot.restore(restorationBlock, change.beforeEntityData());
+                verify(restorationInventory).setContents(beforeContents);
+                BlockEntitySnapshot.restore(restorationBlock, change.afterEntityData());
+                verify(restorationInventory).setContents(afterContents);
+            }
+        }
+    }
+
     @Test
     void doesNotLogAnUnchangedContainerWhenAPlayerOnlyOpensIt() {
         try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
@@ -519,17 +594,58 @@ class BlockChangeListenerTest {
                     "minecraft:chest[facing=north,type=single,waterlogged=false]",
                     "minecraft:chest[facing=north,type=single,waterlogged=false]"
             );
-            BlockState inventoryState = mock(
-                    BlockState.class,
-                    withSettings().extraInterfaces(InventoryHolder.class)
-            );
-            when(chest.getState()).thenReturn(inventoryState);
+            TileStateInventoryHolder beforeState = mock(TileStateInventoryHolder.class);
+            TileStateInventoryHolder afterState = mock(TileStateInventoryHolder.class);
+            Inventory beforeInventory = mock(Inventory.class);
+            ItemStack[] beforeContents = new ItemStack[]{mock(ItemStack.class)};
+            when(beforeState.getSnapshotInventory()).thenReturn(beforeInventory);
+            when(beforeInventory.getContents()).thenReturn(beforeContents);
+            when(chest.getState()).thenReturn(beforeState, afterState);
 
-            harness.listener.onPlayerInteract(harness.interactEvent(chest));
-            harness.runNextTick();
+            try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(beforeContents))
+                        .thenReturn(new byte[]{7, 8, 9});
 
-            verify(harness.database, never()).insertAsync(any());
+                harness.listener.onPlayerInteract(harness.interactEvent(chest));
+                harness.runNextTick();
+
+                verify(harness.database, never()).insertAsync(any());
+                verify(afterState, never()).getSnapshotInventory();
+            }
         }
+    }
+
+    private static Stream<Arguments> inventoryBearingStructuralInteractions() {
+        return Stream.of(
+                Arguments.of(
+                        "remove a book from a chiseled bookshelf",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=true]",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=false]",
+                        false,
+                        true
+                ),
+                Arguments.of(
+                        "insert a book into a chiseled bookshelf",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=false]",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=true]",
+                        false,
+                        false
+                ),
+                Arguments.of(
+                        "remove a book from a lectern",
+                        "minecraft:lectern[facing=north,has_book=true,powered=false]",
+                        "minecraft:lectern[facing=north,has_book=false,powered=false]",
+                        true,
+                        true
+                ),
+                Arguments.of(
+                        "insert a book into a lectern",
+                        "minecraft:lectern[facing=north,has_book=false,powered=false]",
+                        "minecraft:lectern[facing=north,has_book=true,powered=false]",
+                        true,
+                        false
+                )
+        );
     }
 
     private static Stream<Arguments> postBreakTransitions() {

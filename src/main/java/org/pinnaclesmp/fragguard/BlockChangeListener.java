@@ -671,11 +671,13 @@ final class BlockChangeListener implements Listener {
                     position.z()
             );
             String afterData = afterBlock.getBlockData().getAsString();
-            byte[] afterEntityData = before.captureEntityData()
-                    ? BlockEntitySnapshot.capture(afterBlock)
-                    : null;
-            if (before.blockData().equals(afterData)
-                    && Arrays.equals(before.entityData(), afterEntityData)) {
+            boolean structuralChange = !before.blockData().equals(afterData);
+            if (before.requireStructuralChange() && !structuralChange) {
+                continue;
+            }
+
+            byte[] afterEntityData = BlockEntitySnapshot.capture(afterBlock);
+            if (!structuralChange && Arrays.equals(before.entityData(), afterEntityData)) {
                 continue;
             }
 
@@ -747,13 +749,12 @@ final class BlockChangeListener implements Listener {
             BlockData blockData
     ) {
         BlockState state = block.getState();
-        boolean captureEntityData = !(state instanceof InventoryHolder);
         beforeStates.putIfAbsent(
                 positionOf(block),
                 new CapturedBlockState(
                         blockData.getAsString(),
-                        captureEntityData ? BlockEntitySnapshot.capture(state) : null,
-                        captureEntityData
+                        BlockEntitySnapshot.capture(state),
+                        state instanceof InventoryHolder
                 )
         );
 
@@ -773,13 +774,12 @@ final class BlockChangeListener implements Listener {
         if (pairedBlock != null) {
             BlockData pairedData = pairedBlock.getBlockData();
             BlockState pairedState = pairedBlock.getState();
-            boolean capturePairedEntityData = !(pairedState instanceof InventoryHolder);
             beforeStates.putIfAbsent(
                     positionOf(pairedBlock),
                     new CapturedBlockState(
                             pairedData.getAsString(),
-                            capturePairedEntityData ? BlockEntitySnapshot.capture(pairedState) : null,
-                            capturePairedEntityData
+                            BlockEntitySnapshot.capture(pairedState),
+                            pairedState instanceof InventoryHolder
                     )
             );
         }
@@ -864,9 +864,9 @@ final class BlockChangeListener implements Listener {
     private record BlockPosition(String worldName, int x, int y, int z) {
     }
 
-    private record CapturedBlockState(String blockData, byte[] entityData, boolean captureEntityData) {
+    private record CapturedBlockState(String blockData, byte[] entityData, boolean requireStructuralChange) {
         private CapturedBlockState(String blockData, byte[] entityData) {
-            this(blockData, entityData, true);
+            this(blockData, entityData, false);
         }
     }
 
