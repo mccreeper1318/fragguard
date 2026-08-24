@@ -7,6 +7,7 @@
 - Added event-specific logging for initial fire ignition, sponge absorption, dispenser bucket placement/removal, entity block changes/forming, natural growth/fading/forming/spread, leaves decay, structure growth, fertilization, and player interactions that mutate block state.
 - Added stable action identifiers and lookup descriptions for every newly covered cause.
 - Added regression coverage for next-tick actual-state capture, multi-block sponge/structure changes, dispenser-facing targets, player/entity attribution, natural changes, and unchanged container interactions.
+- Added regression coverage for player-fired flaming arrows, large/small fireballs, and projectile ignition caused by non-player or unknown shooters.
 - Added regression coverage for chiseled-bookshelf and lectern book insertion/removal, preserved before/after inventory snapshots, rollback/undo inventory restoration, and unchanged container opens.
 - Added regression coverage for taking a book through the lectern interface after an unchanged open, including player attribution, occupied/empty snapshots, restored book/page data, and suppressed logging.
 - Added regression coverage for snapshot-free chest, barrel, hopper, furnace, shulker-box, dispenser/dropper, brewing-stand, and crafter opens, plus jukebox record insertion/removal restoration.
@@ -18,6 +19,7 @@
 
 - Captured each new event's before-state while the event is running and its actual resulting block/entity state on the next server tick, preserving the event's original tick for same-tick coalescing.
 - Attributed player-caused ignition, fertilization, structure growth, and interaction changes to the player's UUID/name; entity-caused changes retain the entity UUID/type, while environmental changes use explicit system cause labels.
+- Resolved projectile shooters before assigning fire-ignition actors so player-launched arrows and fireballs retain the responsible player's identity without changing non-player projectile attribution.
 - Fire spread now verifies the actual applied next-tick state, and non-fire `BlockSpreadEvent` changes are logged independently of the fire logging setting.
 - Limited player-interaction inventory snapshots to structurally mutable lecterns, chiseled bookshelves, and jukeboxes; ordinary container opens skip both inventory serialization and deferred logging tasks.
 - Captured lectern books removed through their interface using the dedicated cancellable book-removal event and verified the resulting empty lectern on the following server tick.
@@ -27,6 +29,7 @@
 ### Fixed
 
 - Fixed #16 by covering world mutations that previously bypassed FragGuard history and therefore could not be found in lookup or restored by rollback.
+- Fixed player-fired flaming arrows and fireballs being recorded under the projectile's UUID/type instead of the responsible player's UUID and name.
 - Prevented ordinary player container opens from producing entity-snapshot-only false positives when no structural block change occurred.
 - Fixed structurally changing inventory-holder interactions discarding their before/after block-entity snapshots; bookshelf and lectern rollback/undo now restores books while unchanged container opens remain unlogged.
 - Fixed books removed through a lectern's Take Book button bypassing block history, which previously prevented rollback and undo from restoring the book and its selected page.

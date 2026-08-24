@@ -15,6 +15,7 @@ import org.bukkit.block.data.type.Bed;
 import org.bukkit.block.data.type.Door;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -867,6 +868,10 @@ final class BlockChangeListener implements Listener {
             return new Actor(SYSTEM_UUID, causeLabel);
         }
         if (entity instanceof Player player) {
+            return new Actor(player.getUniqueId().toString(), player.getName());
+        }
+        if (entity instanceof Projectile projectile
+                && projectile.getShooter() instanceof Player player) {
             return new Actor(player.getUniqueId().toString(), player.getName());
         }
         return new Actor(

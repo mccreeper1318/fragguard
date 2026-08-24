@@ -14,6 +14,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
 import org.bukkit.event.Event;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
@@ -35,6 +36,7 @@ import org.bukkit.event.player.PlayerTakeLecternBookEvent;
 import org.bukkit.event.world.StructureGrowEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.projectiles.ProjectileSource;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.Test;
@@ -328,6 +330,68 @@ class BlockChangeListenerTest {
             assertEquals("minecraft:air", change.beforeData());
             assertEquals("minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]",
                     change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("playerIgnitionProjectiles")
+    void attributesProjectileIgnitionToThePlayerWhoLaunchedIt(
+            String projectileName,
+            BlockIgniteEvent.IgniteCause ignitionCause,
+            EntityType projectileType
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(6, 65, 5, "minecraft:air", "minecraft:fire[age=0]");
+            Projectile projectile = mock(Projectile.class);
+            BlockIgniteEvent event = mock(BlockIgniteEvent.class);
+
+            when(projectile.getShooter()).thenReturn(harness.player);
+            when(projectile.getType()).thenReturn(projectileType);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getCause()).thenReturn(ignitionCause);
+            when(event.getIgnitingEntity()).thenReturn(projectile);
+
+            harness.listener.onBlockIgnite(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.FIRE_IGNITE, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+            assertEquals("minecraft:air", change.beforeData());
+            assertEquals("minecraft:fire[age=0]", change.afterData());
+            verify(projectile, never()).getUniqueId();
+            verify(projectile, never()).getType();
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nonPlayerProjectileShooters")
+    void preservesProjectileAttributionWhenItsShooterIsNotAPlayer(
+            String shooterDescription,
+            boolean hasShooter
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            UUID projectileUuid = UUID.fromString("a5c84b18-b6f9-4667-bb22-e994f8f5eb10");
+            Block target = harness.block(7, 65, 5, "minecraft:air", "minecraft:fire[age=0]");
+            Projectile projectile = mock(Projectile.class);
+            BlockIgniteEvent event = mock(BlockIgniteEvent.class);
+
+            when(projectile.getShooter()).thenReturn(hasShooter ? mock(ProjectileSource.class) : null);
+            when(projectile.getUniqueId()).thenReturn(projectileUuid);
+            when(projectile.getType()).thenReturn(EntityType.ARROW);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getCause()).thenReturn(BlockIgniteEvent.IgniteCause.ARROW);
+            when(event.getIgnitingEntity()).thenReturn(projectile);
+
+            harness.listener.onBlockIgnite(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.FIRE_IGNITE, change.action());
+            assertEquals(projectileUuid.toString(), change.actorUuid());
+            assertEquals("Fire Ignite: Arrow: Arrow", change.actorName());
+            assertEquals("minecraft:fire[age=0]", change.afterData());
         }
     }
 
@@ -894,6 +958,33 @@ class BlockChangeListenerTest {
                 itemStacks.verifyNoInteractions();
             }
         }
+    }
+
+    private static Stream<Arguments> playerIgnitionProjectiles() {
+        return Stream.of(
+                Arguments.of(
+                        "player-fired flaming arrow",
+                        BlockIgniteEvent.IgniteCause.ARROW,
+                        EntityType.ARROW
+                ),
+                Arguments.of(
+                        "player-launched fireball",
+                        BlockIgniteEvent.IgniteCause.FIREBALL,
+                        EntityType.FIREBALL
+                ),
+                Arguments.of(
+                        "player-launched small fireball",
+                        BlockIgniteEvent.IgniteCause.FIREBALL,
+                        EntityType.SMALL_FIREBALL
+                )
+        );
+    }
+
+    private static Stream<Arguments> nonPlayerProjectileShooters() {
+        return Stream.of(
+                Arguments.of("non-player projectile shooter", true),
+                Arguments.of("unknown projectile shooter", false)
+        );
     }
 
     private static Stream<Arguments> listenerRegistrationOrders() {
