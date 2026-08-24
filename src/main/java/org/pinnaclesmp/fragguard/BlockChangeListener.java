@@ -483,10 +483,15 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
+        Material material = clickedBlock.getType();
+        if (isMomentaryControl(material)) {
+            return;
+        }
+
         BlockData blockData = clickedBlock.getBlockData();
         BlockState blockState = clickedBlock.getState();
         if (blockState instanceof InventoryHolder
-                && !hasStructuralInventoryInteraction(clickedBlock.getType())) {
+                && !hasStructuralInventoryInteraction(material)) {
             return;
         }
 
@@ -790,6 +795,15 @@ final class BlockChangeListener implements Listener {
                     )
             );
         }
+    }
+
+    private boolean isMomentaryControl(Material material) {
+        if (material == null) {
+            return false;
+        }
+
+        String name = material.name();
+        return name.endsWith("_BUTTON") || name.endsWith("_PRESSURE_PLATE");
     }
 
     private boolean hasStructuralInventoryInteraction(Material material) {

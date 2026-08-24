@@ -517,6 +517,56 @@ class BlockChangeListenerTest {
     }
 
     @ParameterizedTest(name = "{0}")
+    @MethodSource("momentaryControlInteractions")
+    void doesNotRecordMomentaryControlsWhoseAutomaticReleaseIsNotObserved(
+            String controlName,
+            Material material,
+            Action action,
+            String beforeData,
+            String afterData
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block control = harness.block(71, 64, 71, beforeData, afterData);
+            PlayerInteractEvent event = harness.interactEvent(control);
+            when(control.getType()).thenReturn(material);
+            when(event.getAction()).thenReturn(action);
+
+            harness.listener.onPlayerInteract(event);
+
+            verify(harness.database, never()).insertAsync(any());
+            verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+            verify(control, never()).getBlockData();
+            verify(control, never()).getState();
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("persistentControlInteractions")
+    void keepsPersistentControlsAndPhysicalBlockChangesInHistory(
+            String interactionName,
+            Material material,
+            Action action,
+            String beforeData,
+            String afterData
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block block = harness.block(72, 64, 72, beforeData, afterData);
+            PlayerInteractEvent event = harness.interactEvent(block);
+            when(block.getType()).thenReturn(material);
+            when(event.getAction()).thenReturn(action);
+
+            harness.listener.onPlayerInteract(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals(beforeData, change.beforeData());
+            assertEquals(afterData, change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
     @MethodSource("inventoryBearingStructuralInteractions")
     void preservesInventorySnapshotsWhenPlayerInteractionsChangeBlockData(
             String interactionName,
@@ -610,6 +660,86 @@ class BlockChangeListenerTest {
                 itemStacks.verifyNoInteractions();
             }
         }
+    }
+
+    private static Stream<Arguments> momentaryControlInteractions() {
+        return Stream.of(
+                Arguments.of(
+                        "stone button press",
+                        Material.STONE_BUTTON,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:stone_button[face=wall,facing=north,powered=false]",
+                        "minecraft:stone_button[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "oak button press",
+                        Material.OAK_BUTTON,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:oak_button[face=wall,facing=north,powered=false]",
+                        "minecraft:oak_button[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "polished blackstone button press",
+                        Material.POLISHED_BLACKSTONE_BUTTON,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:polished_blackstone_button[face=wall,facing=north,powered=false]",
+                        "minecraft:polished_blackstone_button[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "stone pressure-plate activation",
+                        Material.STONE_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:stone_pressure_plate[powered=false]",
+                        "minecraft:stone_pressure_plate[powered=true]"
+                ),
+                Arguments.of(
+                        "oak pressure-plate activation",
+                        Material.OAK_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:oak_pressure_plate[powered=false]",
+                        "minecraft:oak_pressure_plate[powered=true]"
+                ),
+                Arguments.of(
+                        "polished blackstone pressure-plate activation",
+                        Material.POLISHED_BLACKSTONE_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:polished_blackstone_pressure_plate[powered=false]",
+                        "minecraft:polished_blackstone_pressure_plate[powered=true]"
+                ),
+                Arguments.of(
+                        "light weighted pressure-plate activation",
+                        Material.LIGHT_WEIGHTED_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:light_weighted_pressure_plate[power=0]",
+                        "minecraft:light_weighted_pressure_plate[power=1]"
+                ),
+                Arguments.of(
+                        "heavy weighted pressure-plate activation",
+                        Material.HEAVY_WEIGHTED_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:heavy_weighted_pressure_plate[power=0]",
+                        "minecraft:heavy_weighted_pressure_plate[power=1]"
+                )
+        );
+    }
+
+    private static Stream<Arguments> persistentControlInteractions() {
+        return Stream.of(
+                Arguments.of(
+                        "lever activation persists after the interaction",
+                        Material.LEVER,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:lever[face=wall,facing=north,powered=false]",
+                        "minecraft:lever[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "farmland trampling remains a tracked physical block change",
+                        Material.FARMLAND,
+                        Action.PHYSICAL,
+                        "minecraft:farmland[moisture=7]",
+                        "minecraft:dirt"
+                )
+        );
     }
 
     private static Stream<Arguments> ordinaryContainerInteractions() {
