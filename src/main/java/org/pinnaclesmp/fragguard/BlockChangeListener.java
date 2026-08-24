@@ -7,6 +7,7 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Lectern;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
@@ -43,6 +44,7 @@ import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerTakeLecternBookEvent;
 import org.bukkit.event.world.StructureGrowEvent;
 import org.bukkit.inventory.InventoryHolder;
 
@@ -500,6 +502,24 @@ final class BlockChangeListener implements Listener {
         Player player = event.getPlayer();
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureInteractionBefore(beforeStates, clickedBlock, blockData, blockState);
+        logAfterServerAppliesChange(
+                beforeStates,
+                ChangeAction.PLAYER_INTERACT,
+                player.getUniqueId().toString(),
+                player.getName()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onPlayerTakeLecternBook(PlayerTakeLecternBookEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
+        Lectern lectern = event.getLectern();
+        Player player = event.getPlayer();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+        captureInteractionBefore(beforeStates, lectern.getBlock(), lectern.getBlockData(), lectern);
         logAfterServerAppliesChange(
                 beforeStates,
                 ChangeAction.PLAYER_INTERACT,

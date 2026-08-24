@@ -8,6 +8,7 @@
 - Added stable action identifiers and lookup descriptions for every newly covered cause.
 - Added regression coverage for next-tick actual-state capture, multi-block sponge/structure changes, dispenser-facing targets, player/entity attribution, natural changes, and unchanged container interactions.
 - Added regression coverage for chiseled-bookshelf and lectern book insertion/removal, preserved before/after inventory snapshots, rollback/undo inventory restoration, and unchanged container opens.
+- Added regression coverage for taking a book through the lectern interface after an unchanged open, including player attribution, occupied/empty snapshots, restored book/page data, and suppressed logging.
 - Added regression coverage for snapshot-free chest, barrel, hopper, furnace, shulker-box, dispenser/dropper, brewing-stand, and crafter opens, plus jukebox record insertion/removal restoration.
 - Added regression coverage for transient stone/wood/blackstone buttons, ordinary and weighted pressure plates, tripwire activations, persistent lever toggles, and lasting physical farmland changes.
 - Added regression coverage for temporary occupancy on different bed colors and both bed halves, confirming bed entry skips deferred interaction capture while bed placements remain recorded.
@@ -19,6 +20,7 @@
 - Attributed player-caused ignition, fertilization, structure growth, and interaction changes to the player's UUID/name; entity-caused changes retain the entity UUID/type, while environmental changes use explicit system cause labels.
 - Fire spread now verifies the actual applied next-tick state, and non-fire `BlockSpreadEvent` changes are logged independently of the fire logging setting.
 - Limited player-interaction inventory snapshots to structurally mutable lecterns, chiseled bookshelves, and jukeboxes; ordinary container opens skip both inventory serialization and deferred logging tasks.
+- Captured lectern books removed through their interface using the dedicated cancellable book-removal event and verified the resulting empty lectern on the following server tick.
 - Excluded automatically resetting buttons, pressure plates, tripwire activations, and bed occupancy from interaction history while continuing to log persistent lever changes, genuine physical block mutations, and bed placements.
 - Routed inherited block growth/formation events exclusively through their most specific listener so each mutation schedules one authoritative history record.
 
@@ -27,6 +29,7 @@
 - Fixed #16 by covering world mutations that previously bypassed FragGuard history and therefore could not be found in lookup or restored by rollback.
 - Prevented ordinary player container opens from producing entity-snapshot-only false positives when no structural block change occurred.
 - Fixed structurally changing inventory-holder interactions discarding their before/after block-entity snapshots; bookshelf and lectern rollback/undo now restores books while unchanged container opens remain unlogged.
+- Fixed books removed through a lectern's Take Book button bypassing block history, which previously prevented rollback and undo from restoring the book and its selected page.
 - Fixed ordinary container opens serializing and gzip-compressing potentially large inventories on the server thread despite producing no history record.
 - Fixed transient button and pressure-plate activations leaving stale powered history after their unobserved automatic release, which caused normal rollbacks to skip those coordinates as conflicts.
 - Fixed temporary tripwire activation being recorded as a lasting powered block state, which caused normal rollbacks to incorrectly skip tripwire after players moved away.

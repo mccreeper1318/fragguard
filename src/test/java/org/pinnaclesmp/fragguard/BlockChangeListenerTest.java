@@ -31,6 +31,7 @@ import org.bukkit.event.block.LeavesDecayEvent;
 import org.bukkit.event.block.SpongeAbsorbEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerTakeLecternBookEvent;
 import org.bukkit.event.world.StructureGrowEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -780,6 +781,94 @@ class BlockChangeListenerTest {
                 BlockEntitySnapshot.restore(restorationBlock, change.afterEntityData());
                 verify(restorationInventory).setContents(afterContents);
             }
+        }
+    }
+
+    @Test
+    void recordsBooksRemovedThroughLecternUiAfterAnUnchangedOpen() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            String occupiedData = "minecraft:lectern[facing=north,has_book=true,powered=false]";
+            String emptyData = "minecraft:lectern[facing=north,has_book=false,powered=false]";
+            Block lecternBlock = harness.block(76, 64, 76, occupiedData, emptyData);
+            BlockData occupiedBlockData = mock(BlockData.class);
+            BlockData emptyBlockData = mock(BlockData.class);
+            Lectern occupiedState = mock(Lectern.class);
+            Lectern emptyState = mock(Lectern.class);
+            Inventory occupiedInventory = mock(Inventory.class);
+            Inventory emptyInventory = mock(Inventory.class);
+            ItemStack[] book = new ItemStack[]{mock(ItemStack.class)};
+            ItemStack[] empty = new ItemStack[]{null};
+            byte[] serializedBook = new byte[]{7, 5, 3};
+            byte[] serializedEmpty = new byte[]{2, 4, 6};
+
+            when(occupiedBlockData.getAsString()).thenReturn(occupiedData);
+            when(emptyBlockData.getAsString()).thenReturn(emptyData);
+            when(lecternBlock.getType()).thenReturn(Material.LECTERN);
+            when(lecternBlock.getBlockData()).thenReturn(occupiedBlockData, occupiedBlockData, emptyBlockData);
+            when(lecternBlock.getState()).thenReturn(occupiedState, emptyState);
+            when(occupiedState.getBlock()).thenReturn(lecternBlock);
+            when(occupiedState.getBlockData()).thenReturn(occupiedBlockData);
+            when(occupiedState.getSnapshotInventory()).thenReturn(occupiedInventory);
+            when(occupiedState.getPage()).thenReturn(4);
+            when(occupiedInventory.getContents()).thenReturn(book);
+            when(emptyState.getSnapshotInventory()).thenReturn(emptyInventory);
+            when(emptyInventory.getContents()).thenReturn(empty);
+
+            PlayerTakeLecternBookEvent takeBook = mock(PlayerTakeLecternBookEvent.class);
+            when(takeBook.getLectern()).thenReturn(occupiedState);
+            when(takeBook.getPlayer()).thenReturn(harness.player);
+
+            try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(book)).thenReturn(serializedBook);
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(empty)).thenReturn(serializedEmpty);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedBook)).thenReturn(book);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedEmpty)).thenReturn(empty);
+
+                harness.listener.onPlayerInteract(harness.interactEvent(lecternBlock));
+                harness.runNextTick();
+                verify(harness.database, never()).insertAsync(any());
+
+                harness.listener.onPlayerTakeLecternBook(takeBook);
+                harness.runNextTick();
+
+                BlockChange change = harness.captureSingleChange();
+                assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+                assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+                assertEquals("Builder", change.actorName());
+                assertEquals(occupiedData, change.beforeData());
+                assertEquals(emptyData, change.afterData());
+                assertNotNull(change.beforeEntityData());
+                assertNotNull(change.afterEntityData());
+                assertFalse(Arrays.equals(change.beforeEntityData(), change.afterEntityData()));
+
+                Block restorationBlock = mock(Block.class);
+                Lectern restorationState = mock(Lectern.class);
+                Inventory restorationInventory = mock(Inventory.class);
+                when(restorationState.getSnapshotInventory()).thenReturn(restorationInventory);
+                when(restorationState.update(true, false)).thenReturn(true);
+                when(restorationBlock.getState()).thenReturn(restorationState);
+
+                BlockEntitySnapshot.restore(restorationBlock, change.beforeEntityData());
+                verify(restorationInventory).setContents(book);
+                verify(restorationState).setPage(4);
+
+                BlockEntitySnapshot.restore(restorationBlock, change.afterEntityData());
+                verify(restorationInventory).setContents(empty);
+                verify(restorationState).setPage(0);
+            }
+        }
+    }
+
+    @Test
+    void doesNotRecordLecternBookRemovalWhileLoggingIsSuppressed() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            PlayerTakeLecternBookEvent takeBook = mock(PlayerTakeLecternBookEvent.class);
+
+            BlockLoggingSuppression.runSuppressed(() -> harness.listener.onPlayerTakeLecternBook(takeBook));
+
+            verify(takeBook, never()).getLectern();
+            verify(harness.database, never()).insertAsync(any());
+            verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
         }
     }
 
