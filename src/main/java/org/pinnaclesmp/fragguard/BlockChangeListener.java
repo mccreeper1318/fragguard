@@ -486,7 +486,7 @@ final class BlockChangeListener implements Listener {
         }
 
         Material material = clickedBlock.getType();
-        if (isMomentaryControl(material)) {
+        if (isTransientInteraction(material)) {
             return;
         }
 
@@ -799,13 +799,15 @@ final class BlockChangeListener implements Listener {
         }
     }
 
-    private boolean isMomentaryControl(Material material) {
+    private boolean isTransientInteraction(Material material) {
         if (material == null) {
             return false;
         }
 
         String name = material.name();
-        return name.endsWith("_BUTTON") || name.endsWith("_PRESSURE_PLATE");
+        return name.endsWith("_BUTTON")
+                || name.endsWith("_PRESSURE_PLATE")
+                || name.endsWith("_BED");
     }
 
     private boolean hasStructuralInventoryInteraction(Material material) {

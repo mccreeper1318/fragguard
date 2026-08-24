@@ -662,26 +662,26 @@ class BlockChangeListenerTest {
     }
 
     @ParameterizedTest(name = "{0}")
-    @MethodSource("momentaryControlInteractions")
-    void doesNotRecordMomentaryControlsWhoseAutomaticReleaseIsNotObserved(
-            String controlName,
+    @MethodSource("transientBlockInteractions")
+    void doesNotRecordTransientInteractionsWhoseAutomaticResetIsNotObserved(
+            String interactionName,
             Material material,
             Action action,
             String beforeData,
             String afterData
     ) {
         try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
-            Block control = harness.block(71, 64, 71, beforeData, afterData);
-            PlayerInteractEvent event = harness.interactEvent(control);
-            when(control.getType()).thenReturn(material);
+            Block block = harness.block(71, 64, 71, beforeData, afterData);
+            PlayerInteractEvent event = harness.interactEvent(block);
+            when(block.getType()).thenReturn(material);
             when(event.getAction()).thenReturn(action);
 
             harness.listener.onPlayerInteract(event);
 
             verify(harness.database, never()).insertAsync(any());
             verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
-            verify(control, never()).getBlockData();
-            verify(control, never()).getState();
+            verify(block, never()).getBlockData();
+            verify(block, never()).getState();
         }
     }
 
@@ -832,7 +832,7 @@ class BlockChangeListenerTest {
         );
     }
 
-    private static Stream<Arguments> momentaryControlInteractions() {
+    private static Stream<Arguments> transientBlockInteractions() {
         return Stream.of(
                 Arguments.of(
                         "stone button press",
@@ -889,6 +889,20 @@ class BlockChangeListenerTest {
                         Action.PHYSICAL,
                         "minecraft:heavy_weighted_pressure_plate[power=0]",
                         "minecraft:heavy_weighted_pressure_plate[power=1]"
+                ),
+                Arguments.of(
+                        "red-bed foot occupancy resets after the player leaves",
+                        Material.RED_BED,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:red_bed[facing=north,occupied=false,part=foot]",
+                        "minecraft:red_bed[facing=north,occupied=true,part=foot]"
+                ),
+                Arguments.of(
+                        "blue-bed head occupancy resets after the player leaves",
+                        Material.BLUE_BED,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:blue_bed[facing=south,occupied=false,part=head]",
+                        "minecraft:blue_bed[facing=south,occupied=true,part=head]"
                 )
         );
     }
