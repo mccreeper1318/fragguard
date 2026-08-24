@@ -805,7 +805,8 @@ final class BlockChangeListener implements Listener {
         }
 
         String name = material.name();
-        return name.endsWith("_BUTTON")
+        return material == Material.TRIPWIRE
+                || name.endsWith("_BUTTON")
                 || name.endsWith("_PRESSURE_PLATE")
                 || name.endsWith("_BED");
     }

@@ -891,6 +891,13 @@ class BlockChangeListenerTest {
                         "minecraft:heavy_weighted_pressure_plate[power=1]"
                 ),
                 Arguments.of(
+                        "tripwire activation resets after the player leaves",
+                        Material.TRIPWIRE,
+                        Action.PHYSICAL,
+                        "minecraft:tripwire[attached=true,disarmed=false,east=true,north=false,powered=false,south=false,west=true]",
+                        "minecraft:tripwire[attached=true,disarmed=false,east=true,north=false,powered=true,south=false,west=true]"
+                ),
+                Arguments.of(
                         "red-bed foot occupancy resets after the player leaves",
                         Material.RED_BED,
                         Action.RIGHT_CLICK_BLOCK,
