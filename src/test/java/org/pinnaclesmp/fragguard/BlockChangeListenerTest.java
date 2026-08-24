@@ -1,15 +1,42 @@
 package org.pinnaclesmp.fragguard;
 
+import io.papermc.paper.block.TileStateInventoryHolder;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Lectern;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Directional;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
+import org.bukkit.event.Event;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
+import org.bukkit.event.block.BlockFadeEvent;
+import org.bukkit.event.block.BlockFertilizeEvent;
+import org.bukkit.event.block.BlockFormEvent;
+import org.bukkit.event.block.BlockGrowEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPhysicsEvent;
+import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.block.EntityBlockFormEvent;
+import org.bukkit.event.block.LeavesDecayEvent;
+import org.bukkit.event.block.SpongeAbsorbEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerTakeLecternBookEvent;
+import org.bukkit.event.world.StructureGrowEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.projectiles.ProjectileSource;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.Test;
@@ -20,6 +47,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
@@ -28,10 +56,13 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -274,6 +305,886 @@ class BlockChangeListenerTest {
         }
     }
 
+    @Test
+    void recordsInitialIgnitionAfterApplicationWithPlayerAttribution() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(
+                    5, 65, 5,
+                    "minecraft:air",
+                    "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]"
+            );
+            BlockIgniteEvent event = mock(BlockIgniteEvent.class);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getCause()).thenReturn(BlockIgniteEvent.IgniteCause.FLINT_AND_STEEL);
+            when(event.getIgnitingEntity()).thenReturn(harness.player);
+
+            harness.listener.onBlockIgnite(event);
+
+            verify(harness.database, never()).insertAsync(any());
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.FIRE_IGNITE, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+            assertEquals("minecraft:air", change.beforeData());
+            assertEquals("minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]",
+                    change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("playerIgnitionProjectiles")
+    void attributesProjectileIgnitionToThePlayerWhoLaunchedIt(
+            String projectileName,
+            BlockIgniteEvent.IgniteCause ignitionCause,
+            EntityType projectileType
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(6, 65, 5, "minecraft:air", "minecraft:fire[age=0]");
+            Projectile projectile = mock(Projectile.class);
+            BlockIgniteEvent event = mock(BlockIgniteEvent.class);
+
+            when(projectile.getShooter()).thenReturn(harness.player);
+            when(projectile.getType()).thenReturn(projectileType);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getCause()).thenReturn(ignitionCause);
+            when(event.getIgnitingEntity()).thenReturn(projectile);
+
+            harness.listener.onBlockIgnite(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.FIRE_IGNITE, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+            assertEquals("minecraft:air", change.beforeData());
+            assertEquals("minecraft:fire[age=0]", change.afterData());
+            verify(projectile, never()).getUniqueId();
+            verify(projectile, never()).getType();
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nonPlayerProjectileShooters")
+    void preservesProjectileAttributionWhenItsShooterIsNotAPlayer(
+            String shooterDescription,
+            boolean hasShooter
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            UUID projectileUuid = UUID.fromString("a5c84b18-b6f9-4667-bb22-e994f8f5eb10");
+            Block target = harness.block(7, 65, 5, "minecraft:air", "minecraft:fire[age=0]");
+            Projectile projectile = mock(Projectile.class);
+            BlockIgniteEvent event = mock(BlockIgniteEvent.class);
+
+            when(projectile.getShooter()).thenReturn(hasShooter ? mock(ProjectileSource.class) : null);
+            when(projectile.getUniqueId()).thenReturn(projectileUuid);
+            when(projectile.getType()).thenReturn(EntityType.ARROW);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getCause()).thenReturn(BlockIgniteEvent.IgniteCause.ARROW);
+            when(event.getIgnitingEntity()).thenReturn(projectile);
+
+            harness.listener.onBlockIgnite(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.FIRE_IGNITE, change.action());
+            assertEquals(projectileUuid.toString(), change.actorUuid());
+            assertEquals("Fire Ignite: Arrow: Arrow", change.actorName());
+            assertEquals("minecraft:fire[age=0]", change.afterData());
+        }
+    }
+
+    @Test
+    void recordsEverySpongeAffectedBlockIncludingTheSponge() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block sponge = harness.block(10, 64, 10, "minecraft:sponge", "minecraft:wet_sponge");
+            Block firstWater = harness.block(11, 64, 10, "minecraft:water[level=0]", "minecraft:air");
+            Block waterlogged = harness.block(
+                    10, 64, 11,
+                    "minecraft:oak_slab[type=bottom,waterlogged=true]",
+                    "minecraft:oak_slab[type=bottom,waterlogged=false]"
+            );
+            SpongeAbsorbEvent event = mock(SpongeAbsorbEvent.class);
+            BlockState firstWaterState = harness.state(firstWater);
+            BlockState waterloggedState = harness.state(waterlogged);
+            when(event.getBlock()).thenReturn(sponge);
+            when(event.getBlocks()).thenReturn(List.of(
+                    firstWaterState,
+                    waterloggedState
+            ));
+
+            harness.listener.onSpongeAbsorb(event);
+            harness.runNextTick();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(3)).insertAsync(changes.capture());
+            assertEquals(
+                    List.of(ChangeAction.SPONGE_ABSORB, ChangeAction.SPONGE_ABSORB,
+                            ChangeAction.SPONGE_ABSORB),
+                    changes.getAllValues().stream().map(BlockChange::action).toList()
+            );
+            assertEquals(
+                    List.of("minecraft:wet_sponge", "minecraft:air",
+                            "minecraft:oak_slab[type=bottom,waterlogged=false]"),
+                    changes.getAllValues().stream().map(BlockChange::afterData).toList()
+            );
+        }
+    }
+
+    @Test
+    void recordsDispenserBucketChangesAtTheFacingBlock() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block dispenser = mock(Block.class);
+            Directional dispenserData = mock(Directional.class);
+            Block target = harness.block(21, 70, 20, "minecraft:air", "minecraft:water[level=0]");
+            ItemStack bucket = mock(ItemStack.class);
+            BlockDispenseEvent event = mock(BlockDispenseEvent.class);
+
+            when(dispenser.getBlockData()).thenReturn(dispenserData);
+            when(dispenserData.getFacing()).thenReturn(BlockFace.EAST);
+            when(dispenser.getRelative(BlockFace.EAST)).thenReturn(target);
+            when(bucket.getType()).thenReturn(Material.WATER_BUCKET);
+            when(event.getBlock()).thenReturn(dispenser);
+            when(event.getItem()).thenReturn(bucket);
+
+            harness.listener.onBlockDispense(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.DISPENSER_LIQUID_PLACE, change.action());
+            assertEquals("SYSTEM", change.actorUuid());
+            assertEquals("Dispenser: Water Bucket", change.actorName());
+            assertEquals(21, change.x());
+            assertEquals("minecraft:water[level=0]", change.afterData());
+        }
+    }
+
+    @Test
+    void recordsEntityBlockChangesWithEntityIdentityAndCause() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            UUID entityUuid = UUID.fromString("f9c6b634-0586-429d-b4e7-d50e16ab6d8c");
+            Entity entity = mock(Entity.class);
+            Block target = harness.block(30, 80, 30, "minecraft:grass_block", "minecraft:air");
+            EntityChangeBlockEvent event = mock(EntityChangeBlockEvent.class);
+
+            when(entity.getUniqueId()).thenReturn(entityUuid);
+            when(entity.getType()).thenReturn(EntityType.ENDERMAN);
+            when(event.getEntity()).thenReturn(entity);
+            when(event.getBlock()).thenReturn(target);
+
+            harness.listener.onEntityChangeBlock(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.ENTITY_CHANGE_BLOCK, change.action());
+            assertEquals(entityUuid.toString(), change.actorUuid());
+            assertEquals("Entity Block Change: Enderman", change.actorName());
+            assertEquals("minecraft:air", change.afterData());
+        }
+    }
+
+    @Test
+    void recordsNaturalGrowthFadeFormSpreadAndDecayAsActualTransitions() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block grown = harness.block(40, 64, 40, "minecraft:wheat[age=6]", "minecraft:wheat[age=7]");
+            Block faded = harness.block(41, 64, 40, "minecraft:ice", "minecraft:water[level=0]");
+            Block formed = harness.block(42, 64, 40, "minecraft:water[level=0]", "minecraft:ice");
+            Block spread = harness.block(43, 64, 40, "minecraft:air", "minecraft:vine[east=true]");
+            Block source = mock(Block.class);
+            BlockState spreadState = mock(BlockState.class);
+            Block decayed = harness.block(44, 64, 40, "minecraft:oak_leaves[persistent=false]", "minecraft:air");
+
+            BlockGrowEvent growEvent = mock(BlockGrowEvent.class);
+            when(growEvent.getBlock()).thenReturn(grown);
+            BlockFadeEvent fadeEvent = mock(BlockFadeEvent.class);
+            when(fadeEvent.getBlock()).thenReturn(faded);
+            BlockFormEvent formEvent = mock(BlockFormEvent.class);
+            when(formEvent.getBlock()).thenReturn(formed);
+            BlockSpreadEvent spreadEvent = mock(BlockSpreadEvent.class);
+            when(spreadEvent.getBlock()).thenReturn(spread);
+            when(spreadEvent.getSource()).thenReturn(source);
+            when(spreadEvent.getNewState()).thenReturn(spreadState);
+            when(source.getType()).thenReturn(Material.VINE);
+            when(spreadState.getType()).thenReturn(Material.VINE);
+            LeavesDecayEvent decayEvent = mock(LeavesDecayEvent.class);
+            when(decayEvent.getBlock()).thenReturn(decayed);
+
+            harness.listener.onBlockGrow(growEvent);
+            harness.listener.onBlockFade(fadeEvent);
+            harness.listener.onBlockForm(formEvent);
+            harness.listener.onFireSpread(spreadEvent);
+            harness.listener.onLeavesDecay(decayEvent);
+            harness.runAllTasks();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(5)).insertAsync(changes.capture());
+            assertEquals(
+                    List.of(ChangeAction.BLOCK_GROW, ChangeAction.BLOCK_FADE, ChangeAction.BLOCK_FORM,
+                            ChangeAction.BLOCK_SPREAD, ChangeAction.LEAVES_DECAY),
+                    changes.getAllValues().stream().map(BlockChange::action).toList()
+            );
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("listenerRegistrationOrders")
+    void recordsNaturalFormationOnlyOnceWhenTheGrowthHandlerReceivesItsSubclass(
+            String registrationOrder,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(45, 64, 40, "minecraft:water[level=0]", "minecraft:ice");
+            BlockFormEvent event = mock(BlockFormEvent.class);
+            when(event.getBlock()).thenReturn(target);
+
+            if (specializedFirst) {
+                harness.listener.onBlockForm(event);
+            }
+            harness.listener.onBlockGrow(event);
+            if (!specializedFirst) {
+                harness.listener.onBlockForm(event);
+            }
+
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.BLOCK_FORM, change.action());
+            assertEquals("SYSTEM", change.actorUuid());
+            assertEquals("Natural Block Form", change.actorName());
+            assertEquals("minecraft:ice", change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("specializedSpreadListenerOrders")
+    void recordsSpreadOnlyOnceWithItsAuthoritativeSpecializedCause(
+            String registrationOrder,
+            boolean fireSpread,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            String afterData = fireSpread
+                    ? "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]"
+                    : "minecraft:vine[east=true]";
+            Material spreadMaterial = fireSpread ? Material.FIRE : Material.VINE;
+            Block target = harness.block(46, 64, 40, "minecraft:air", afterData);
+            Block source = mock(Block.class);
+            BlockState newState = mock(BlockState.class);
+            BlockSpreadEvent event = mock(BlockSpreadEvent.class);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getSource()).thenReturn(source);
+            when(event.getNewState()).thenReturn(newState);
+            when(source.getType()).thenReturn(spreadMaterial);
+            when(newState.getType()).thenReturn(spreadMaterial);
+
+            if (specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+            harness.listener.onBlockGrow(event);
+            harness.listener.onBlockForm(event);
+            if (!specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(fireSpread ? ChangeAction.FIRE_SPREAD : ChangeAction.BLOCK_SPREAD, change.action());
+            assertEquals("SYSTEM", change.actorUuid());
+            assertEquals(fireSpread ? "Fire Spread" : "Natural Block Spread", change.actorName());
+            assertEquals(afterData, change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("entityFormationListenerOrders")
+    void recordsEntityFormationOnlyOnceWithoutLosingPlayerOrEntityAttribution(
+            String registrationOrder,
+            boolean playerActor,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            UUID entityUuid = UUID.fromString("7d72a4f5-4b7e-406c-b044-8369ecfc6dd8");
+            Entity actor = playerActor ? harness.player : mock(Entity.class);
+            if (!playerActor) {
+                when(actor.getUniqueId()).thenReturn(entityUuid);
+                when(actor.getType()).thenReturn(EntityType.SNOW_GOLEM);
+            }
+            Block target = harness.block(47, 64, 40, "minecraft:air", "minecraft:snow[layers=1]");
+            EntityBlockFormEvent event = mock(EntityBlockFormEvent.class);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getEntity()).thenReturn(actor);
+
+            if (specializedFirst) {
+                harness.listener.onEntityBlockForm(event);
+            }
+            harness.listener.onBlockGrow(event);
+            harness.listener.onBlockForm(event);
+            if (!specializedFirst) {
+                harness.listener.onEntityBlockForm(event);
+            }
+
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.ENTITY_BLOCK_FORM, change.action());
+            assertEquals(playerActor ? PLAYER_UUID.toString() : entityUuid.toString(), change.actorUuid());
+            assertEquals(playerActor ? "Builder" : "Entity Block Form: Snow Golem", change.actorName());
+            assertEquals("minecraft:snow[layers=1]", change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("listenerRegistrationOrders")
+    void disabledFireSpreadCannotBeLoggedThroughGenericAncestorHandlers(
+            String registrationOrder,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(
+                    48, 64, 40,
+                    "minecraft:air",
+                    "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]"
+            );
+            Block source = mock(Block.class);
+            BlockState newState = mock(BlockState.class);
+            BlockSpreadEvent event = mock(BlockSpreadEvent.class);
+            when(harness.config.getBoolean("log-fire-spread", true)).thenReturn(false);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getSource()).thenReturn(source);
+            when(event.getNewState()).thenReturn(newState);
+            when(source.getType()).thenReturn(Material.FIRE);
+            when(newState.getType()).thenReturn(Material.FIRE);
+
+            if (specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+            harness.listener.onBlockGrow(event);
+            harness.listener.onBlockForm(event);
+            if (!specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+
+            verify(harness.database, never()).insertAsync(any());
+            verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+        }
+    }
+
+    @Test
+    void recordsStructureAndFertilizationChangesWithAvailablePlayerAttribution() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block trunk = harness.block(50, 64, 50, "minecraft:air", "minecraft:oak_log[axis=y]");
+            Block leaves = harness.block(50, 65, 50, "minecraft:air", "minecraft:oak_leaves[persistent=false]");
+            StructureGrowEvent structureEvent = mock(StructureGrowEvent.class);
+            BlockState trunkState = harness.state(trunk);
+            BlockState leavesState = harness.state(leaves);
+            when(structureEvent.getBlocks()).thenReturn(List.of(trunkState, leavesState));
+            when(structureEvent.isFromBonemeal()).thenReturn(false);
+
+            Block crop = harness.block(60, 64, 60, "minecraft:wheat[age=2]", "minecraft:wheat[age=4]");
+            BlockFertilizeEvent fertilizeEvent = mock(BlockFertilizeEvent.class);
+            BlockState cropState = harness.state(crop);
+            when(fertilizeEvent.getBlocks()).thenReturn(List.of(cropState));
+            when(fertilizeEvent.getPlayer()).thenReturn(harness.player);
+
+            harness.listener.onStructureGrow(structureEvent);
+            harness.listener.onBlockFertilize(fertilizeEvent);
+            harness.runAllTasks();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(3)).insertAsync(changes.capture());
+            assertEquals(
+                    List.of(ChangeAction.STRUCTURE_GROW, ChangeAction.STRUCTURE_GROW,
+                            ChangeAction.FERTILIZE),
+                    changes.getAllValues().stream().map(BlockChange::action).toList()
+            );
+            BlockChange fertilized = changes.getAllValues().getLast();
+            assertEquals(PLAYER_UUID.toString(), fertilized.actorUuid());
+            assertEquals("Builder", fertilized.actorName());
+        }
+    }
+
+    @Test
+    void recordsPlayerInteractionsThatActuallyChangeBlockData() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block door = harness.block(
+                    70, 64, 70,
+                    "minecraft:oak_door[half=lower,open=false]",
+                    "minecraft:oak_door[half=lower,open=true]"
+            );
+            PlayerInteractEvent event = harness.interactEvent(door);
+
+            harness.listener.onPlayerInteract(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+            assertEquals("minecraft:oak_door[half=lower,open=true]", change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("transientBlockInteractions")
+    void doesNotRecordTransientInteractionsWhoseAutomaticResetIsNotObserved(
+            String interactionName,
+            Material material,
+            Action action,
+            String beforeData,
+            String afterData
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block block = harness.block(71, 64, 71, beforeData, afterData);
+            PlayerInteractEvent event = harness.interactEvent(block);
+            when(block.getType()).thenReturn(material);
+            when(event.getAction()).thenReturn(action);
+
+            harness.listener.onPlayerInteract(event);
+
+            verify(harness.database, never()).insertAsync(any());
+            verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+            verify(block, never()).getBlockData();
+            verify(block, never()).getState();
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("persistentControlInteractions")
+    void keepsPersistentControlsAndPhysicalBlockChangesInHistory(
+            String interactionName,
+            Material material,
+            Action action,
+            String beforeData,
+            String afterData
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block block = harness.block(72, 64, 72, beforeData, afterData);
+            PlayerInteractEvent event = harness.interactEvent(block);
+            when(block.getType()).thenReturn(material);
+            when(event.getAction()).thenReturn(action);
+
+            harness.listener.onPlayerInteract(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals(beforeData, change.beforeData());
+            assertEquals(afterData, change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("inventoryBearingStructuralInteractions")
+    void preservesInventorySnapshotsWhenPlayerInteractionsChangeBlockData(
+            String interactionName,
+            String beforeData,
+            String afterData,
+            Material material,
+            boolean beforeOccupied
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block interactable = harness.block(75, 64, 75, beforeData, afterData);
+            boolean lectern = material == Material.LECTERN;
+            TileStateInventoryHolder beforeState = lectern
+                    ? mock(Lectern.class)
+                    : mock(TileStateInventoryHolder.class);
+            TileStateInventoryHolder afterState = lectern
+                    ? mock(Lectern.class)
+                    : mock(TileStateInventoryHolder.class);
+            Inventory beforeInventory = mock(Inventory.class);
+            Inventory afterInventory = mock(Inventory.class);
+            ItemStack[] occupiedContents = new ItemStack[]{mock(ItemStack.class)};
+            ItemStack[] emptyContents = new ItemStack[]{null};
+            ItemStack[] beforeContents = beforeOccupied ? occupiedContents : emptyContents;
+            ItemStack[] afterContents = beforeOccupied ? emptyContents : occupiedContents;
+            byte[] serializedBefore = beforeOccupied ? new byte[]{1, 2, 3} : new byte[]{4, 5, 6};
+            byte[] serializedAfter = beforeOccupied ? new byte[]{4, 5, 6} : new byte[]{1, 2, 3};
+
+            when(beforeState.getSnapshotInventory()).thenReturn(beforeInventory);
+            when(beforeInventory.getContents()).thenReturn(beforeContents);
+            when(afterState.getSnapshotInventory()).thenReturn(afterInventory);
+            when(afterInventory.getContents()).thenReturn(afterContents);
+            when(interactable.getType()).thenReturn(material);
+            when(interactable.getState()).thenReturn(beforeState, afterState);
+
+            try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(beforeContents))
+                        .thenReturn(serializedBefore);
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(afterContents))
+                        .thenReturn(serializedAfter);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedBefore))
+                        .thenReturn(beforeContents);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedAfter))
+                        .thenReturn(afterContents);
+
+                harness.listener.onPlayerInteract(harness.interactEvent(interactable));
+                harness.runNextTick();
+
+                BlockChange change = harness.captureSingleChange();
+                assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+                assertEquals(beforeData, change.beforeData());
+                assertEquals(afterData, change.afterData());
+                assertNotNull(change.beforeEntityData());
+                assertNotNull(change.afterEntityData());
+                assertFalse(Arrays.equals(change.beforeEntityData(), change.afterEntityData()));
+
+                Block restorationBlock = mock(Block.class);
+                TileStateInventoryHolder restorationState = lectern
+                        ? mock(Lectern.class)
+                        : mock(TileStateInventoryHolder.class);
+                Inventory restorationInventory = mock(Inventory.class);
+                when(restorationState.getSnapshotInventory()).thenReturn(restorationInventory);
+                when(restorationState.update(true, false)).thenReturn(true);
+                when(restorationBlock.getState()).thenReturn(restorationState);
+
+                BlockEntitySnapshot.restore(restorationBlock, change.beforeEntityData());
+                verify(restorationInventory).setContents(beforeContents);
+                BlockEntitySnapshot.restore(restorationBlock, change.afterEntityData());
+                verify(restorationInventory).setContents(afterContents);
+            }
+        }
+    }
+
+    @Test
+    void recordsBooksRemovedThroughLecternUiAfterAnUnchangedOpen() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            String occupiedData = "minecraft:lectern[facing=north,has_book=true,powered=false]";
+            String emptyData = "minecraft:lectern[facing=north,has_book=false,powered=false]";
+            Block lecternBlock = harness.block(76, 64, 76, occupiedData, emptyData);
+            BlockData occupiedBlockData = mock(BlockData.class);
+            BlockData emptyBlockData = mock(BlockData.class);
+            Lectern occupiedState = mock(Lectern.class);
+            Lectern emptyState = mock(Lectern.class);
+            Inventory occupiedInventory = mock(Inventory.class);
+            Inventory emptyInventory = mock(Inventory.class);
+            ItemStack[] book = new ItemStack[]{mock(ItemStack.class)};
+            ItemStack[] empty = new ItemStack[]{null};
+            byte[] serializedBook = new byte[]{7, 5, 3};
+            byte[] serializedEmpty = new byte[]{2, 4, 6};
+
+            when(occupiedBlockData.getAsString()).thenReturn(occupiedData);
+            when(emptyBlockData.getAsString()).thenReturn(emptyData);
+            when(lecternBlock.getType()).thenReturn(Material.LECTERN);
+            when(lecternBlock.getBlockData()).thenReturn(occupiedBlockData, occupiedBlockData, emptyBlockData);
+            when(lecternBlock.getState()).thenReturn(occupiedState, emptyState);
+            when(occupiedState.getBlock()).thenReturn(lecternBlock);
+            when(occupiedState.getBlockData()).thenReturn(occupiedBlockData);
+            when(occupiedState.getSnapshotInventory()).thenReturn(occupiedInventory);
+            when(occupiedState.getPage()).thenReturn(4);
+            when(occupiedInventory.getContents()).thenReturn(book);
+            when(emptyState.getSnapshotInventory()).thenReturn(emptyInventory);
+            when(emptyInventory.getContents()).thenReturn(empty);
+
+            PlayerTakeLecternBookEvent takeBook = mock(PlayerTakeLecternBookEvent.class);
+            when(takeBook.getLectern()).thenReturn(occupiedState);
+            when(takeBook.getPlayer()).thenReturn(harness.player);
+
+            try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(book)).thenReturn(serializedBook);
+                itemStacks.when(() -> ItemStack.serializeItemsAsBytes(empty)).thenReturn(serializedEmpty);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedBook)).thenReturn(book);
+                itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(serializedEmpty)).thenReturn(empty);
+
+                harness.listener.onPlayerInteract(harness.interactEvent(lecternBlock));
+                harness.runNextTick();
+                verify(harness.database, never()).insertAsync(any());
+
+                harness.listener.onPlayerTakeLecternBook(takeBook);
+                harness.runNextTick();
+
+                BlockChange change = harness.captureSingleChange();
+                assertEquals(ChangeAction.PLAYER_INTERACT, change.action());
+                assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+                assertEquals("Builder", change.actorName());
+                assertEquals(occupiedData, change.beforeData());
+                assertEquals(emptyData, change.afterData());
+                assertNotNull(change.beforeEntityData());
+                assertNotNull(change.afterEntityData());
+                assertFalse(Arrays.equals(change.beforeEntityData(), change.afterEntityData()));
+
+                Block restorationBlock = mock(Block.class);
+                Lectern restorationState = mock(Lectern.class);
+                Inventory restorationInventory = mock(Inventory.class);
+                when(restorationState.getSnapshotInventory()).thenReturn(restorationInventory);
+                when(restorationState.update(true, false)).thenReturn(true);
+                when(restorationBlock.getState()).thenReturn(restorationState);
+
+                BlockEntitySnapshot.restore(restorationBlock, change.beforeEntityData());
+                verify(restorationInventory).setContents(book);
+                verify(restorationState).setPage(4);
+
+                BlockEntitySnapshot.restore(restorationBlock, change.afterEntityData());
+                verify(restorationInventory).setContents(empty);
+                verify(restorationState).setPage(0);
+            }
+        }
+    }
+
+    @Test
+    void doesNotRecordLecternBookRemovalWhileLoggingIsSuppressed() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            PlayerTakeLecternBookEvent takeBook = mock(PlayerTakeLecternBookEvent.class);
+
+            BlockLoggingSuppression.runSuppressed(() -> harness.listener.onPlayerTakeLecternBook(takeBook));
+
+            verify(takeBook, never()).getLectern();
+            verify(harness.database, never()).insertAsync(any());
+            verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("ordinaryContainerInteractions")
+    void doesNotSerializeOrLogInventoriesWhenAPlayerOnlyOpensAContainer(
+            String containerName,
+            Material material,
+            String blockData
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block container = harness.block(80, 64, 80, blockData, blockData);
+            TileStateInventoryHolder inventoryState = mock(TileStateInventoryHolder.class);
+            when(container.getType()).thenReturn(material);
+            when(container.getState()).thenReturn(inventoryState);
+
+            try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+                harness.listener.onPlayerInteract(harness.interactEvent(container));
+
+                verify(harness.database, never()).insertAsync(any());
+                verify(inventoryState, never()).getSnapshotInventory();
+                verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+                itemStacks.verifyNoInteractions();
+            }
+        }
+    }
+
+    private static Stream<Arguments> playerIgnitionProjectiles() {
+        return Stream.of(
+                Arguments.of(
+                        "player-fired flaming arrow",
+                        BlockIgniteEvent.IgniteCause.ARROW,
+                        EntityType.ARROW
+                ),
+                Arguments.of(
+                        "player-launched fireball",
+                        BlockIgniteEvent.IgniteCause.FIREBALL,
+                        EntityType.FIREBALL
+                ),
+                Arguments.of(
+                        "player-launched small fireball",
+                        BlockIgniteEvent.IgniteCause.FIREBALL,
+                        EntityType.SMALL_FIREBALL
+                )
+        );
+    }
+
+    private static Stream<Arguments> nonPlayerProjectileShooters() {
+        return Stream.of(
+                Arguments.of("non-player projectile shooter", true),
+                Arguments.of("unknown projectile shooter", false)
+        );
+    }
+
+    private static Stream<Arguments> listenerRegistrationOrders() {
+        return Stream.of(
+                Arguments.of("specialized listener runs first", true),
+                Arguments.of("generic listeners run first", false)
+        );
+    }
+
+    private static Stream<Arguments> specializedSpreadListenerOrders() {
+        return Stream.of(
+                Arguments.of("fire spread with specialized listener first", true, true),
+                Arguments.of("fire spread with generic listeners first", true, false),
+                Arguments.of("natural spread with specialized listener first", false, true),
+                Arguments.of("natural spread with generic listeners first", false, false)
+        );
+    }
+
+    private static Stream<Arguments> entityFormationListenerOrders() {
+        return Stream.of(
+                Arguments.of("entity formation with specialized listener first", false, true),
+                Arguments.of("entity formation with generic listeners first", false, false),
+                Arguments.of("player formation with specialized listener first", true, true),
+                Arguments.of("player formation with generic listeners first", true, false)
+        );
+    }
+
+    private static Stream<Arguments> transientBlockInteractions() {
+        return Stream.of(
+                Arguments.of(
+                        "stone button press",
+                        Material.STONE_BUTTON,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:stone_button[face=wall,facing=north,powered=false]",
+                        "minecraft:stone_button[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "oak button press",
+                        Material.OAK_BUTTON,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:oak_button[face=wall,facing=north,powered=false]",
+                        "minecraft:oak_button[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "polished blackstone button press",
+                        Material.POLISHED_BLACKSTONE_BUTTON,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:polished_blackstone_button[face=wall,facing=north,powered=false]",
+                        "minecraft:polished_blackstone_button[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "stone pressure-plate activation",
+                        Material.STONE_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:stone_pressure_plate[powered=false]",
+                        "minecraft:stone_pressure_plate[powered=true]"
+                ),
+                Arguments.of(
+                        "oak pressure-plate activation",
+                        Material.OAK_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:oak_pressure_plate[powered=false]",
+                        "minecraft:oak_pressure_plate[powered=true]"
+                ),
+                Arguments.of(
+                        "polished blackstone pressure-plate activation",
+                        Material.POLISHED_BLACKSTONE_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:polished_blackstone_pressure_plate[powered=false]",
+                        "minecraft:polished_blackstone_pressure_plate[powered=true]"
+                ),
+                Arguments.of(
+                        "light weighted pressure-plate activation",
+                        Material.LIGHT_WEIGHTED_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:light_weighted_pressure_plate[power=0]",
+                        "minecraft:light_weighted_pressure_plate[power=1]"
+                ),
+                Arguments.of(
+                        "heavy weighted pressure-plate activation",
+                        Material.HEAVY_WEIGHTED_PRESSURE_PLATE,
+                        Action.PHYSICAL,
+                        "minecraft:heavy_weighted_pressure_plate[power=0]",
+                        "minecraft:heavy_weighted_pressure_plate[power=1]"
+                ),
+                Arguments.of(
+                        "tripwire activation resets after the player leaves",
+                        Material.TRIPWIRE,
+                        Action.PHYSICAL,
+                        "minecraft:tripwire[attached=true,disarmed=false,east=true,north=false,powered=false,south=false,west=true]",
+                        "minecraft:tripwire[attached=true,disarmed=false,east=true,north=false,powered=true,south=false,west=true]"
+                ),
+                Arguments.of(
+                        "red-bed foot occupancy resets after the player leaves",
+                        Material.RED_BED,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:red_bed[facing=north,occupied=false,part=foot]",
+                        "minecraft:red_bed[facing=north,occupied=true,part=foot]"
+                ),
+                Arguments.of(
+                        "blue-bed head occupancy resets after the player leaves",
+                        Material.BLUE_BED,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:blue_bed[facing=south,occupied=false,part=head]",
+                        "minecraft:blue_bed[facing=south,occupied=true,part=head]"
+                )
+        );
+    }
+
+    private static Stream<Arguments> persistentControlInteractions() {
+        return Stream.of(
+                Arguments.of(
+                        "lever activation persists after the interaction",
+                        Material.LEVER,
+                        Action.RIGHT_CLICK_BLOCK,
+                        "minecraft:lever[face=wall,facing=north,powered=false]",
+                        "minecraft:lever[face=wall,facing=north,powered=true]"
+                ),
+                Arguments.of(
+                        "farmland trampling remains a tracked physical block change",
+                        Material.FARMLAND,
+                        Action.PHYSICAL,
+                        "minecraft:farmland[moisture=7]",
+                        "minecraft:dirt"
+                )
+        );
+    }
+
+    private static Stream<Arguments> ordinaryContainerInteractions() {
+        return Stream.of(
+                Arguments.of("chest", Material.CHEST,
+                        "minecraft:chest[facing=north,type=single,waterlogged=false]"),
+                Arguments.of("trapped chest", Material.TRAPPED_CHEST,
+                        "minecraft:trapped_chest[facing=north,type=single,waterlogged=false]"),
+                Arguments.of("barrel", Material.BARREL,
+                        "minecraft:barrel[facing=north,open=false]"),
+                Arguments.of("hopper", Material.HOPPER,
+                        "minecraft:hopper[enabled=true,facing=down]"),
+                Arguments.of("furnace", Material.FURNACE,
+                        "minecraft:furnace[facing=north,lit=false]"),
+                Arguments.of("shulker box", Material.SHULKER_BOX,
+                        "minecraft:shulker_box[facing=up]"),
+                Arguments.of("dispenser", Material.DISPENSER,
+                        "minecraft:dispenser[facing=north,triggered=false]"),
+                Arguments.of("dropper", Material.DROPPER,
+                        "minecraft:dropper[facing=north,triggered=false]"),
+                Arguments.of("brewing stand", Material.BREWING_STAND,
+                        "minecraft:brewing_stand[has_bottle_0=false,has_bottle_1=false,has_bottle_2=false]"),
+                Arguments.of("crafter", Material.CRAFTER,
+                        "minecraft:crafter[crafting=false,orientation=north_up,triggered=false]")
+        );
+    }
+
+    private static Stream<Arguments> inventoryBearingStructuralInteractions() {
+        return Stream.of(
+                Arguments.of(
+                        "remove a book from a chiseled bookshelf",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=true]",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=false]",
+                        Material.CHISELED_BOOKSHELF,
+                        true
+                ),
+                Arguments.of(
+                        "insert a book into a chiseled bookshelf",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=false]",
+                        "minecraft:chiseled_bookshelf[slot_0_occupied=true]",
+                        Material.CHISELED_BOOKSHELF,
+                        false
+                ),
+                Arguments.of(
+                        "remove a book from a lectern",
+                        "minecraft:lectern[facing=north,has_book=true,powered=false]",
+                        "minecraft:lectern[facing=north,has_book=false,powered=false]",
+                        Material.LECTERN,
+                        true
+                ),
+                Arguments.of(
+                        "insert a book into a lectern",
+                        "minecraft:lectern[facing=north,has_book=false,powered=false]",
+                        "minecraft:lectern[facing=north,has_book=true,powered=false]",
+                        Material.LECTERN,
+                        false
+                ),
+                Arguments.of(
+                        "remove a music disc from a jukebox",
+                        "minecraft:jukebox[has_record=true]",
+                        "minecraft:jukebox[has_record=false]",
+                        Material.JUKEBOX,
+                        true
+                ),
+                Arguments.of(
+                        "insert a music disc into a jukebox",
+                        "minecraft:jukebox[has_record=false]",
+                        "minecraft:jukebox[has_record=true]",
+                        Material.JUKEBOX,
+                        false
+                )
+        );
+    }
+
     private static Stream<Arguments> postBreakTransitions() {
         return Stream.of(
                 Arguments.of(
@@ -354,6 +1265,103 @@ class BlockChangeListenerTest {
                                 "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down]")
                 ))
         );
+    }
+
+    private static final class DeferredChangeHarness implements AutoCloseable {
+        private final FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        private final Database database = mock(Database.class);
+        private final FileConfiguration config = mock(FileConfiguration.class);
+        private final BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        private final BukkitTask task = mock(BukkitTask.class);
+        private final World world = mock(World.class);
+        private final Player player = mock(Player.class);
+        private final Map<BlockCoordinate, Block> blocks = new HashMap<>();
+        private final List<Runnable> scheduledTasks = new ArrayList<>();
+        private final MockedStatic<Bukkit> bukkit = mockStaticBukkit();
+        private final BlockChangeListener listener = new BlockChangeListener(plugin, database);
+
+        private DeferredChangeHarness() {
+            when(plugin.getConfig()).thenReturn(config);
+            when(config.getBoolean("log-fire-spread", true)).thenReturn(true);
+            when(config.getBoolean("log-liquid-flow", true)).thenReturn(true);
+            when(world.getName()).thenReturn("world");
+            when(player.getUniqueId()).thenReturn(PLAYER_UUID);
+            when(player.getName()).thenReturn("Builder");
+            when(world.getBlockAt(anyInt(), anyInt(), anyInt()))
+                    .thenAnswer(invocation -> blocks.get(new BlockCoordinate(
+                            invocation.getArgument(0),
+                            invocation.getArgument(1),
+                            invocation.getArgument(2)
+                    )));
+            when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+                scheduledTasks.add(invocation.getArgument(1));
+                return task;
+            });
+        }
+
+        private MockedStatic<Bukkit> mockStaticBukkit() {
+            MockedStatic<Bukkit> mockedBukkit = org.mockito.Mockito.mockStatic(Bukkit.class);
+            mockedBukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            mockedBukkit.when(Bukkit::getCurrentTick).thenReturn(500);
+            mockedBukkit.when(() -> Bukkit.getWorld("world")).thenReturn(world);
+            return mockedBukkit;
+        }
+
+        private Block block(int x, int y, int z, String beforeData, String afterData) {
+            Block block = mock(Block.class);
+            BlockData before = mock(BlockData.class);
+            BlockData after = mock(BlockData.class);
+            BlockState state = mock(BlockState.class);
+
+            when(before.getAsString()).thenReturn(beforeData);
+            when(after.getAsString()).thenReturn(afterData);
+            when(block.getWorld()).thenReturn(world);
+            when(block.getX()).thenReturn(x);
+            when(block.getY()).thenReturn(y);
+            when(block.getZ()).thenReturn(z);
+            when(block.getBlockData()).thenReturn(before, after);
+            when(block.getState()).thenReturn(state);
+            blocks.put(new BlockCoordinate(x, y, z), block);
+            return block;
+        }
+
+        private BlockState state(Block block) {
+            BlockState state = mock(BlockState.class);
+            when(state.getBlock()).thenReturn(block);
+            return state;
+        }
+
+        private PlayerInteractEvent interactEvent(Block block) {
+            PlayerInteractEvent event = mock(PlayerInteractEvent.class);
+            when(event.getAction()).thenReturn(Action.RIGHT_CLICK_BLOCK);
+            when(event.useInteractedBlock()).thenReturn(Event.Result.DEFAULT);
+            when(event.useItemInHand()).thenReturn(Event.Result.DEFAULT);
+            when(event.getClickedBlock()).thenReturn(block);
+            when(event.getPlayer()).thenReturn(player);
+            return event;
+        }
+
+        private void runNextTick() {
+            assertEquals(1, scheduledTasks.size());
+            scheduledTasks.removeFirst().run();
+        }
+
+        private void runAllTasks() {
+            while (!scheduledTasks.isEmpty()) {
+                scheduledTasks.removeFirst().run();
+            }
+        }
+
+        private BlockChange captureSingleChange() {
+            ArgumentCaptor<BlockChange> change = ArgumentCaptor.forClass(BlockChange.class);
+            verify(database).insertAsync(change.capture());
+            return change.getValue();
+        }
+
+        @Override
+        public void close() {
+            bukkit.close();
+        }
     }
 
     private static final class BreakHarness implements AutoCloseable {

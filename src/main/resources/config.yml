@@ -19,9 +19,9 @@ database-operator-warning-interval-seconds: 60
 
 # What FragGuard should log.
 log-explosions: true
-# Includes fire spreading and blocks destroyed by fire.
+# Includes initial ignition, fire spreading, and blocks destroyed by fire.
 log-fire-spread: true
-# Includes natural liquid flow and player bucket water/lava placement/removal.
+# Includes natural liquid flow, player buckets, sponge absorption, and dispenser buckets.
 log-liquid-flow: true
 log-pistons: true
 

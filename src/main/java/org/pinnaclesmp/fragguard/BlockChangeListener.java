@@ -7,27 +7,50 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Lectern;
+import org.bukkit.block.data.Bisected;
+import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Directional;
+import org.bukkit.block.data.type.Bed;
+import org.bukkit.block.data.type.Door;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockBurnEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFadeEvent;
+import org.bukkit.event.block.BlockFertilizeEvent;
+import org.bukkit.event.block.BlockFormEvent;
 import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockGrowEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPhysicsEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.block.EntityBlockFormEvent;
+import org.bukkit.event.block.LeavesDecayEvent;
+import org.bukkit.event.block.SpongeAbsorbEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerTakeLecternBookEvent;
+import org.bukkit.event.world.StructureGrowEvent;
+import org.bukkit.inventory.InventoryHolder;
 
-import java.util.LinkedHashMap;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -155,6 +178,30 @@ final class BlockChangeListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockIgnite(BlockIgniteEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("log-fire-spread", true)) {
+            return;
+        }
+        if (event.getCause() == BlockIgniteEvent.IgniteCause.SPREAD) {
+            return;
+        }
+
+        Actor actor = actorForEntity(
+                event.getIgnitingEntity(),
+                "Fire Ignite: " + readableEnum(event.getCause().name())
+        );
+        logBlockAfterServerAppliesChange(
+                event.getBlock(),
+                ChangeAction.FIRE_IGNITE,
+                actor.uuid(),
+                actor.name()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onPlayerBucketEmpty(PlayerBucketEmptyEvent event) {
         if (BlockLoggingSuppression.isSuppressed()) {
             return;
@@ -207,6 +254,57 @@ final class BlockChangeListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onSpongeAbsorb(SpongeAbsorbEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
+            return;
+        }
+
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+        captureBefore(beforeStates, event.getBlock());
+        for (BlockState changedState : event.getBlocks()) {
+            captureBefore(beforeStates, changedState.getBlock());
+        }
+        logAfterServerAppliesChange(beforeStates, ChangeAction.SPONGE_ABSORB, "Sponge Absorb");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockDispense(BlockDispenseEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
+            return;
+        }
+
+        Material itemType = event.getItem().getType();
+        boolean removingLiquid = itemType == Material.BUCKET;
+        if (!removingLiquid && !isPlaceableBucket(itemType)) {
+            return;
+        }
+
+        Block dispenser = event.getBlock();
+        if (!(dispenser.getBlockData() instanceof Directional directional)) {
+            return;
+        }
+
+        ChangeAction action = removingLiquid
+                ? ChangeAction.DISPENSER_LIQUID_REMOVE
+                : ChangeAction.DISPENSER_LIQUID_PLACE;
+        String actorName = removingLiquid
+                ? "Dispenser Bucket Removal"
+                : "Dispenser: " + readableEnum(itemType.name());
+        logBlockAfterServerAppliesChange(
+                dispenser.getRelative(directional.getFacing()),
+                action,
+                SYSTEM_UUID,
+                actorName
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onEntityExplode(EntityExplodeEvent event) {
         if (BlockLoggingSuppression.isSuppressed()) {
             return;
@@ -254,24 +352,180 @@ final class BlockChangeListener implements Listener {
         if (BlockLoggingSuppression.isSuppressed()) {
             return;
         }
-        if (!plugin.getConfig().getBoolean("log-fire-spread", true)) {
+
+        boolean fireSpread = isFire(event.getNewState().getType()) || isFire(event.getSource().getType());
+        if (fireSpread && !plugin.getConfig().getBoolean("log-fire-spread", true)) {
             return;
         }
 
-        if (!isFire(event.getNewState().getType()) && !isFire(event.getSource().getType())) {
-            return;
-        }
-
-        Block targetBlock = event.getBlock();
-        logNow(
-                targetBlock,
-                ChangeAction.FIRE_SPREAD,
+        logBlockAfterServerAppliesChange(
+                event.getBlock(),
+                fireSpread ? ChangeAction.FIRE_SPREAD : ChangeAction.BLOCK_SPREAD,
                 SYSTEM_UUID,
-                "Fire Spread",
-                targetBlock.getBlockData().getAsString(),
-                event.getNewState().getBlockData().getAsString(),
-                BlockEntitySnapshot.capture(targetBlock),
-                BlockEntitySnapshot.capture(event.getNewState())
+                fireSpread ? "Fire Spread" : "Natural Block Spread"
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockGrow(BlockGrowEvent event) {
+        if (BlockLoggingSuppression.isSuppressed() || event instanceof BlockFormEvent) {
+            return;
+        }
+        logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.BLOCK_GROW, "Natural Growth");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockFade(BlockFadeEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.BLOCK_FADE, "Block Fade");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockForm(BlockFormEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()
+                || event instanceof BlockSpreadEvent
+                || event instanceof EntityBlockFormEvent) {
+            return;
+        }
+        logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.BLOCK_FORM, "Natural Block Form");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onEntityBlockForm(EntityBlockFormEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
+        Actor actor = actorForEntity(event.getEntity(), "Entity Block Form");
+        logBlockAfterServerAppliesChange(
+                event.getBlock(),
+                ChangeAction.ENTITY_BLOCK_FORM,
+                actor.uuid(),
+                actor.name()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onLeavesDecay(LeavesDecayEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.LEAVES_DECAY, "Leaves Decay");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onStructureGrow(StructureGrowEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
+        Map<BlockPosition, CapturedBlockState> beforeStates = captureBeforeStates(event.getBlocks());
+        Player player = event.getPlayer();
+        String actorName = event.isFromBonemeal() ? "Fertilized Structure Growth" : "Natural Structure Growth";
+        if (player == null) {
+            logAfterServerAppliesChange(beforeStates, ChangeAction.STRUCTURE_GROW, actorName);
+        } else {
+            logAfterServerAppliesChange(
+                    beforeStates,
+                    ChangeAction.STRUCTURE_GROW,
+                    player.getUniqueId().toString(),
+                    player.getName()
+            );
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onBlockFertilize(BlockFertilizeEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
+        Map<BlockPosition, CapturedBlockState> beforeStates = captureBeforeStates(event.getBlocks());
+        Player player = event.getPlayer();
+        if (player == null) {
+            logAfterServerAppliesChange(beforeStates, ChangeAction.FERTILIZE, "Fertilization");
+        } else {
+            logAfterServerAppliesChange(
+                    beforeStates,
+                    ChangeAction.FERTILIZE,
+                    player.getUniqueId().toString(),
+                    player.getName()
+            );
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onEntityChangeBlock(EntityChangeBlockEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
+        Actor actor = actorForEntity(event.getEntity(), "Entity Block Change");
+        logBlockAfterServerAppliesChange(
+                event.getBlock(),
+                ChangeAction.ENTITY_CHANGE_BLOCK,
+                actor.uuid(),
+                actor.name()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    void onPlayerInteract(PlayerInteractEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK && event.getAction() != Action.PHYSICAL) {
+            return;
+        }
+        if (event.useInteractedBlock() == Event.Result.DENY && event.useItemInHand() == Event.Result.DENY) {
+            return;
+        }
+
+        Block clickedBlock = event.getClickedBlock();
+        if (clickedBlock == null) {
+            return;
+        }
+
+        Material material = clickedBlock.getType();
+        if (isTransientInteraction(material)) {
+            return;
+        }
+
+        BlockData blockData = clickedBlock.getBlockData();
+        BlockState blockState = clickedBlock.getState();
+        if (blockState instanceof InventoryHolder
+                && !hasStructuralInventoryInteraction(material)) {
+            return;
+        }
+
+        Player player = event.getPlayer();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+        captureInteractionBefore(beforeStates, clickedBlock, blockData, blockState);
+        logAfterServerAppliesChange(
+                beforeStates,
+                ChangeAction.PLAYER_INTERACT,
+                player.getUniqueId().toString(),
+                player.getName()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onPlayerTakeLecternBook(PlayerTakeLecternBookEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+
+        Lectern lectern = event.getLectern();
+        Player player = event.getPlayer();
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+        captureInteractionBefore(beforeStates, lectern.getBlock(), lectern.getBlockData(), lectern);
+        logAfterServerAppliesChange(
+                beforeStates,
+                ChangeAction.PLAYER_INTERACT,
+                player.getUniqueId().toString(),
+                player.getName()
         );
     }
 
@@ -379,6 +633,21 @@ final class BlockChangeListener implements Listener {
         logAfterServerAppliesChange(beforeStates, action, SYSTEM_UUID, actorName);
     }
 
+    private void logBlockAfterServerAppliesChange(Block block, ChangeAction action, String actorName) {
+        logBlockAfterServerAppliesChange(block, action, SYSTEM_UUID, actorName);
+    }
+
+    private void logBlockAfterServerAppliesChange(
+            Block block,
+            ChangeAction action,
+            String actorUuid,
+            String actorName
+    ) {
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+        captureBefore(beforeStates, block);
+        logAfterServerAppliesChange(beforeStates, action, actorUuid, actorName);
+    }
+
     private void logAfterServerAppliesChange(Map<BlockPosition, CapturedBlockState> beforeStates,
                                              ChangeAction action, String actorUuid, String actorName) {
         if (BlockLoggingSuppression.isSuppressed() || beforeStates.isEmpty()) {
@@ -437,9 +706,13 @@ final class BlockChangeListener implements Listener {
                     position.z()
             );
             String afterData = afterBlock.getBlockData().getAsString();
+            boolean structuralChange = !before.blockData().equals(afterData);
+            if (before.requireStructuralChange() && !structuralChange) {
+                continue;
+            }
+
             byte[] afterEntityData = BlockEntitySnapshot.capture(afterBlock);
-            if (before.blockData().equals(afterData)
-                    && Arrays.equals(before.entityData(), afterEntityData)) {
+            if (!structuralChange && Arrays.equals(before.entityData(), afterEntityData)) {
                 continue;
             }
 
@@ -497,6 +770,74 @@ final class BlockChangeListener implements Listener {
         );
     }
 
+    private Map<BlockPosition, CapturedBlockState> captureBeforeStates(Iterable<BlockState> states) {
+        Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+        for (BlockState state : states) {
+            captureBefore(beforeStates, state.getBlock());
+        }
+        return beforeStates;
+    }
+
+    private void captureInteractionBefore(
+            Map<BlockPosition, CapturedBlockState> beforeStates,
+            Block block,
+            BlockData blockData,
+            BlockState state
+    ) {
+        beforeStates.putIfAbsent(
+                positionOf(block),
+                new CapturedBlockState(
+                        blockData.getAsString(),
+                        BlockEntitySnapshot.capture(state),
+                        state instanceof InventoryHolder
+                )
+        );
+
+        Block pairedBlock = null;
+        if (blockData instanceof Door door) {
+            pairedBlock = block.getRelative(
+                    door.getHalf() == Bisected.Half.TOP ? BlockFace.DOWN : BlockFace.UP
+            );
+        } else if (blockData instanceof Bed bed) {
+            pairedBlock = block.getRelative(
+                    bed.getPart() == Bed.Part.FOOT
+                            ? bed.getFacing()
+                            : bed.getFacing().getOppositeFace()
+            );
+        }
+
+        if (pairedBlock != null) {
+            BlockData pairedData = pairedBlock.getBlockData();
+            BlockState pairedState = pairedBlock.getState();
+            beforeStates.putIfAbsent(
+                    positionOf(pairedBlock),
+                    new CapturedBlockState(
+                            pairedData.getAsString(),
+                            BlockEntitySnapshot.capture(pairedState),
+                            pairedState instanceof InventoryHolder
+                    )
+            );
+        }
+    }
+
+    private boolean isTransientInteraction(Material material) {
+        if (material == null) {
+            return false;
+        }
+
+        String name = material.name();
+        return material == Material.TRIPWIRE
+                || name.endsWith("_BUTTON")
+                || name.endsWith("_PRESSURE_PLATE")
+                || name.endsWith("_BED");
+    }
+
+    private boolean hasStructuralInventoryInteraction(Material material) {
+        return material == Material.LECTERN
+                || material == Material.CHISELED_BOOKSHELF
+                || material == Material.JUKEBOX;
+    }
+
     private BlockPosition positionOf(Block block) {
         return new BlockPosition(
                 block.getWorld().getName(),
@@ -516,6 +857,27 @@ final class BlockChangeListener implements Listener {
 
     private boolean isPiston(Material material) {
         return material == Material.PISTON || material == Material.STICKY_PISTON || material == Material.PISTON_HEAD || material == Material.MOVING_PISTON;
+    }
+
+    private boolean isPlaceableBucket(Material material) {
+        return material.name().endsWith("_BUCKET") && material != Material.MILK_BUCKET;
+    }
+
+    private Actor actorForEntity(Entity entity, String causeLabel) {
+        if (entity == null) {
+            return new Actor(SYSTEM_UUID, causeLabel);
+        }
+        if (entity instanceof Player player) {
+            return new Actor(player.getUniqueId().toString(), player.getName());
+        }
+        if (entity instanceof Projectile projectile
+                && projectile.getShooter() instanceof Player player) {
+            return new Actor(player.getUniqueId().toString(), player.getName());
+        }
+        return new Actor(
+                entity.getUniqueId().toString(),
+                causeLabel + ": " + readableEnum(entity.getType().name())
+        );
     }
 
     private String readableEnum(String enumName) {
@@ -559,6 +921,12 @@ final class BlockChangeListener implements Listener {
     private record BlockPosition(String worldName, int x, int y, int z) {
     }
 
-    private record CapturedBlockState(String blockData, byte[] entityData) {
+    private record CapturedBlockState(String blockData, byte[] entityData, boolean requireStructuralChange) {
+        private CapturedBlockState(String blockData, byte[] entityData) {
+            this(blockData, entityData, false);
+        }
+    }
+
+    private record Actor(String uuid, String name) {
     }
 }
