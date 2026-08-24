@@ -26,6 +26,7 @@ import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPhysicsEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.block.LeavesDecayEvent;
 import org.bukkit.event.block.SpongeAbsorbEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
@@ -461,6 +462,150 @@ class BlockChangeListenerTest {
         }
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("listenerRegistrationOrders")
+    void recordsNaturalFormationOnlyOnceWhenTheGrowthHandlerReceivesItsSubclass(
+            String registrationOrder,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(45, 64, 40, "minecraft:water[level=0]", "minecraft:ice");
+            BlockFormEvent event = mock(BlockFormEvent.class);
+            when(event.getBlock()).thenReturn(target);
+
+            if (specializedFirst) {
+                harness.listener.onBlockForm(event);
+            }
+            harness.listener.onBlockGrow(event);
+            if (!specializedFirst) {
+                harness.listener.onBlockForm(event);
+            }
+
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.BLOCK_FORM, change.action());
+            assertEquals("SYSTEM", change.actorUuid());
+            assertEquals("Natural Block Form", change.actorName());
+            assertEquals("minecraft:ice", change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("specializedSpreadListenerOrders")
+    void recordsSpreadOnlyOnceWithItsAuthoritativeSpecializedCause(
+            String registrationOrder,
+            boolean fireSpread,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            String afterData = fireSpread
+                    ? "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]"
+                    : "minecraft:vine[east=true]";
+            Material spreadMaterial = fireSpread ? Material.FIRE : Material.VINE;
+            Block target = harness.block(46, 64, 40, "minecraft:air", afterData);
+            Block source = mock(Block.class);
+            BlockState newState = mock(BlockState.class);
+            BlockSpreadEvent event = mock(BlockSpreadEvent.class);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getSource()).thenReturn(source);
+            when(event.getNewState()).thenReturn(newState);
+            when(source.getType()).thenReturn(spreadMaterial);
+            when(newState.getType()).thenReturn(spreadMaterial);
+
+            if (specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+            harness.listener.onBlockGrow(event);
+            harness.listener.onBlockForm(event);
+            if (!specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(fireSpread ? ChangeAction.FIRE_SPREAD : ChangeAction.BLOCK_SPREAD, change.action());
+            assertEquals("SYSTEM", change.actorUuid());
+            assertEquals(fireSpread ? "Fire Spread" : "Natural Block Spread", change.actorName());
+            assertEquals(afterData, change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("entityFormationListenerOrders")
+    void recordsEntityFormationOnlyOnceWithoutLosingPlayerOrEntityAttribution(
+            String registrationOrder,
+            boolean playerActor,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            UUID entityUuid = UUID.fromString("7d72a4f5-4b7e-406c-b044-8369ecfc6dd8");
+            Entity actor = playerActor ? harness.player : mock(Entity.class);
+            if (!playerActor) {
+                when(actor.getUniqueId()).thenReturn(entityUuid);
+                when(actor.getType()).thenReturn(EntityType.SNOW_GOLEM);
+            }
+            Block target = harness.block(47, 64, 40, "minecraft:air", "minecraft:snow[layers=1]");
+            EntityBlockFormEvent event = mock(EntityBlockFormEvent.class);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getEntity()).thenReturn(actor);
+
+            if (specializedFirst) {
+                harness.listener.onEntityBlockForm(event);
+            }
+            harness.listener.onBlockGrow(event);
+            harness.listener.onBlockForm(event);
+            if (!specializedFirst) {
+                harness.listener.onEntityBlockForm(event);
+            }
+
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.ENTITY_BLOCK_FORM, change.action());
+            assertEquals(playerActor ? PLAYER_UUID.toString() : entityUuid.toString(), change.actorUuid());
+            assertEquals(playerActor ? "Builder" : "Entity Block Form: Snow Golem", change.actorName());
+            assertEquals("minecraft:snow[layers=1]", change.afterData());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("listenerRegistrationOrders")
+    void disabledFireSpreadCannotBeLoggedThroughGenericAncestorHandlers(
+            String registrationOrder,
+            boolean specializedFirst
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block target = harness.block(
+                    48, 64, 40,
+                    "minecraft:air",
+                    "minecraft:fire[age=0,east=false,north=false,south=false,up=false,west=false]"
+            );
+            Block source = mock(Block.class);
+            BlockState newState = mock(BlockState.class);
+            BlockSpreadEvent event = mock(BlockSpreadEvent.class);
+            when(harness.config.getBoolean("log-fire-spread", true)).thenReturn(false);
+            when(event.getBlock()).thenReturn(target);
+            when(event.getSource()).thenReturn(source);
+            when(event.getNewState()).thenReturn(newState);
+            when(source.getType()).thenReturn(Material.FIRE);
+            when(newState.getType()).thenReturn(Material.FIRE);
+
+            if (specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+            harness.listener.onBlockGrow(event);
+            harness.listener.onBlockForm(event);
+            if (!specializedFirst) {
+                harness.listener.onFireSpread(event);
+            }
+
+            verify(harness.database, never()).insertAsync(any());
+            verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+        }
+    }
+
     @Test
     void recordsStructureAndFertilizationChangesWithAvailablePlayerAttribution() {
         try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
@@ -660,6 +805,31 @@ class BlockChangeListenerTest {
                 itemStacks.verifyNoInteractions();
             }
         }
+    }
+
+    private static Stream<Arguments> listenerRegistrationOrders() {
+        return Stream.of(
+                Arguments.of("specialized listener runs first", true),
+                Arguments.of("generic listeners run first", false)
+        );
+    }
+
+    private static Stream<Arguments> specializedSpreadListenerOrders() {
+        return Stream.of(
+                Arguments.of("fire spread with specialized listener first", true, true),
+                Arguments.of("fire spread with generic listeners first", true, false),
+                Arguments.of("natural spread with specialized listener first", false, true),
+                Arguments.of("natural spread with generic listeners first", false, false)
+        );
+    }
+
+    private static Stream<Arguments> entityFormationListenerOrders() {
+        return Stream.of(
+                Arguments.of("entity formation with specialized listener first", false, true),
+                Arguments.of("entity formation with generic listeners first", false, false),
+                Arguments.of("player formation with specialized listener first", true, true),
+                Arguments.of("player formation with generic listeners first", true, false)
+        );
     }
 
     private static Stream<Arguments> momentaryControlInteractions() {

@@ -10,6 +10,7 @@
 - Added regression coverage for chiseled-bookshelf and lectern book insertion/removal, preserved before/after inventory snapshots, rollback/undo inventory restoration, and unchanged container opens.
 - Added regression coverage for snapshot-free chest, barrel, hopper, furnace, shulker-box, dispenser/dropper, brewing-stand, and crafter opens, plus jukebox record insertion/removal restoration.
 - Added regression coverage for transient stone/wood/blackstone buttons, ordinary and weighted pressure plates, persistent lever toggles, and lasting physical farmland changes.
+- Added registration-order regression coverage for inherited growth/formation events, natural and fire spread, player/entity block formation attribution, and disabled fire-spread logging.
 
 ### Changed
 
@@ -18,6 +19,7 @@
 - Fire spread now verifies the actual applied next-tick state, and non-fire `BlockSpreadEvent` changes are logged independently of the fire logging setting.
 - Limited player-interaction inventory snapshots to structurally mutable lecterns, chiseled bookshelves, and jukeboxes; ordinary container opens skip both inventory serialization and deferred logging tasks.
 - Excluded automatically resetting buttons and pressure plates from interaction history while continuing to log persistent lever changes and genuine physical block mutations.
+- Routed inherited block growth/formation events exclusively through their most specific listener so each mutation schedules one authoritative history record.
 
 ### Fixed
 
@@ -26,6 +28,7 @@
 - Fixed structurally changing inventory-holder interactions discarding their before/after block-entity snapshots; bookshelf and lectern rollback/undo now restores books while unchanged container opens remain unlogged.
 - Fixed ordinary container opens serializing and gzip-compressing potentially large inventories on the server thread despite producing no history record.
 - Fixed transient button and pressure-plate activations leaving stale powered history after their unobserved automatic release, which caused normal rollbacks to skip those coordinates as conflicts.
+- Fixed generic growth and formation listeners nondeterministically overwriting spread/entity-formation causes or actor attribution, and prevented disabled fire-spread logging from being bypassed through inherited handlers.
 
 ## 26.2-3-beta.3
 

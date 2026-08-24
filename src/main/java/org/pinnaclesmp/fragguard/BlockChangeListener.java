@@ -365,7 +365,7 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockGrow(BlockGrowEvent event) {
-        if (BlockLoggingSuppression.isSuppressed()) {
+        if (BlockLoggingSuppression.isSuppressed() || event instanceof BlockFormEvent) {
             return;
         }
         logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.BLOCK_GROW, "Natural Growth");
@@ -381,7 +381,9 @@ final class BlockChangeListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onBlockForm(BlockFormEvent event) {
-        if (BlockLoggingSuppression.isSuppressed()) {
+        if (BlockLoggingSuppression.isSuppressed()
+                || event instanceof BlockSpreadEvent
+                || event instanceof EntityBlockFormEvent) {
             return;
         }
         logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.BLOCK_FORM, "Natural Block Form");
