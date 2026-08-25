@@ -2,7 +2,7 @@ import org.gradle.api.artifacts.dsl.LockMode
 
 plugins {
     java
-    id("com.gradleup.shadow") version "9.4.2"
+    id("com.gradleup.shadow") version "9.6.1"
 }
 
 group = "org.pinnaclesmp"
