@@ -1,5 +1,26 @@
 # FG Changelog
 
+## 26.2-3-rc.1
+
+### Added
+
+- Added committed Gradle dependency locking with CI validation that the lock state remains current.
+- Added regression coverage for duration overflow, retention-limit parsing, and malformed or overflowing radius values.
+
+### Changed
+
+- Pinned the Paper API used for compilation and tests to the exact tested `26.2.build.62-beta` release instead of a moving `26.2.build.+` selector.
+- Hardened GitHub Actions by pinning every third-party action to a reviewed full commit SHA and separating the read-only release build from the write-enabled release upload job.
+- Limited `GH_TOKEN` exposure to the release-inspection and release-upload steps that require it.
+- Marked the committed Gradle wrapper executable, added SHA-256 verification for the Gradle 9.3.0 distribution, and updated build documentation to use the repository wrapper and the current `26.2-3` JAR name.
+
+### Fixed
+
+- Fixed #10 by making dependency resolution reproducible while retaining read-only push and pull-request compilation, test, JAR-content, version, and checksum verification.
+- Fixed #11 by removing repository write permission and `GH_TOKEN` from release build steps; only the isolated upload job can write release assets.
+- Fixed #12 by storing `gradlew` as executable, verifying the wrapper distribution checksum, and correcting the README's obsolete wrapper/build-output instructions.
+- Fixed #13 by using exact arithmetic for duration tokens, converting overflow into a validation error, stopping as soon as the configured retention limit is exceeded, and rejecting malformed lookup radii instead of silently falling back to radius 15.
+
 ## 26.2-3-beta.4
 
 ### Added

@@ -135,18 +135,18 @@ apply-physics-during-rollback: false
 
 ## Build
 
-Requires a JDK that supports the Paper 26.2 toolchain, currently Java 25 in the project setup.
+Requires Java 25. The Gradle 9.3.0 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
 ```bash
-gradle build
+./gradlew build
 ```
 
-If your IDE creates a Gradle wrapper for the project, you can use `./gradlew build` instead.
+Dependencies are pinned and the committed Gradle lock state is checked by CI so ordinary pushes, pull requests, and release builds resolve the reviewed versions.
 
 The plugin JAR will be in:
 
 ```text
-build/libs/FragGuard-1.0.1.jar
+build/libs/FragGuard-26.2-3.jar
 ```
 
 Put that JAR into your server's `plugins` folder and restart the Paper server.
