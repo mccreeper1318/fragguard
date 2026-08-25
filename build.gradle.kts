@@ -26,8 +26,7 @@ dependencies {
 
 dependencyLocking {
     lockAllConfigurations()
-    // Strict mode is enabled after the generated lock state is committed.
-    lockMode.set(LockMode.DEFAULT)
+    lockMode.set(LockMode.STRICT)
 }
 
 tasks {
