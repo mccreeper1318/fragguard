@@ -1,3 +1,5 @@
+import org.gradle.api.artifacts.dsl.LockMode
+
 plugins {
     java
     id("com.gradleup.shadow") version "9.4.2"
@@ -12,14 +14,20 @@ java {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:26.2.build.+")
+    compileOnly("io.papermc.paper:paper-api:26.2.build.62-beta")
     implementation("org.xerial:sqlite-jdbc:3.49.1.0")
     implementation("org.slf4j:slf4j-nop:2.0.16")
 
-    testImplementation("io.papermc.paper:paper-api:26.2.build.+")
+    testImplementation("io.papermc.paper:paper-api:26.2.build.62-beta")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
     testImplementation("org.mockito:mockito-core:5.23.0")
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+    // Strict mode is enabled after the generated lock state is committed.
+    lockMode.set(LockMode.DEFAULT)
 }
 
 tasks {

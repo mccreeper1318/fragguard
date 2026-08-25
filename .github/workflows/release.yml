@@ -15,7 +15,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.event.release.tag_name || inputs.tag }}
@@ -24,32 +24,36 @@ concurrency:
 jobs:
   build-release:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
 
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      GH_TOKEN: ${{ github.token }}
+
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: "25"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Make Gradle wrapper executable
-        run: chmod +x gradlew
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
 
       - name: Read and validate version
         id: version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           RAW_TAG="$RELEASE_TAG"
           VERSION="$RAW_TAG"
@@ -60,13 +64,13 @@ jobs:
             VERSION="${VERSION#v}"
           fi
 
-          # Stable examples: 26.2-6
-          # Prerelease examples: 26.2-6-beta.1, 26.2-6-rc.2
+          # Stable examples: 26.2-3
+          # Prerelease examples: 26.2-3-beta.1, 26.2-3-rc.1
           if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+-[0-9]+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
             BASE_VERSION="${BASH_REMATCH[1]}"
           else
             echo "Invalid FragGuard release tag: $RAW_TAG"
-            echo "Expected a tag such as 26.2-6, 26.2-6-beta.1, v26.2-6, or v26.2-6-beta.1."
+            echo "Expected a tag such as 26.2-3, 26.2-3-beta.1, v26.2-3, or v26.2-3-rc.1."
             exit 1
           fi
 
@@ -227,20 +231,40 @@ jobs:
           ls -l "$RELEASE_DIR"
           cat "$RELEASE_DIR/$EXPECTED_NAME.sha256"
 
-      - name: Upload release files
-        shell: bash
-        run: |
-          gh release upload \
-            "$RELEASE_TAG" \
-            "${{ steps.package.outputs.jar }}" \
-            "${{ steps.package.outputs.checksum }}" \
-            --clobber
-
-      - name: Save workflow artifact
-        uses: actions/upload-artifact@v4
+      - name: Save verified release package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: fragguard-${{ steps.version.outputs.version }}
+          name: fragguard-release-${{ steps.version.outputs.version }}
           path: |
             ${{ steps.package.outputs.jar }}
             ${{ steps.package.outputs.checksum }}
           if-no-files-found: error
+
+  upload-release:
+    needs: build-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Download verified release package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fragguard-release-${{ needs.build-release.outputs.version }}
+          path: build/release
+
+      - name: Upload release files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-release.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          FILES=(build/release/*.jar build/release/*.sha256)
+          if (( ${#FILES[@]} != 2 )); then
+            echo "Expected exactly one JAR and one SHA-256 file from the verified build job."
+            printf 'Found: %s\n' "${FILES[@]}"
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${FILES[@]}" --clobber

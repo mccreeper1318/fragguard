@@ -93,7 +93,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     }
 
     private void handleLookup(Player player, String[] args) {
-        int radius = parseRadius(args).orElse(15);
+        OptionalInt radiusOptional;
+        try {
+            radiusOptional = RadiusParser.parse(args);
+        } catch (IllegalArgumentException exception) {
+            player.sendMessage(color("&c" + exception.getMessage()));
+            return;
+        }
+        int radius = radiusOptional.orElse(15);
         int maxRadius = Math.max(1, plugin.getConfig().getInt("max-lookup-radius", 150));
         if (radius < 1 || radius > maxRadius) {
             player.sendMessage(color("&cLookup radius must be between 1 and " + maxRadius + "."));
@@ -169,7 +176,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     }
 
     private void handleRollback(Player player, String[] args) {
-        OptionalInt radiusOptional = parseRadius(args);
+        OptionalInt radiusOptional;
+        try {
+            radiusOptional = RadiusParser.parse(args);
+        } catch (IllegalArgumentException exception) {
+            player.sendMessage(color("&c" + exception.getMessage()));
+            return;
+        }
         if (radiusOptional.isEmpty()) {
             player.sendMessage(color("&cMissing radius. Example: &f/fg rollback r:30 t:2d 7h 15m"));
             return;
@@ -183,18 +196,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         }
 
         List<String> timeTokens = parseTimeTokens(args);
+        long maxHistoryMillis = plugin.getRetentionDays() * 24L * 60L * 60L * 1000L;
         long durationMillis;
         try {
-            durationMillis = DurationParser.parseMillis(timeTokens);
+            durationMillis = DurationParser.parseMillis(timeTokens, maxHistoryMillis);
+        } catch (DurationParser.DurationLimitExceededException exception) {
+            player.sendMessage(color("&cFragGuard only keeps " + plugin.getRetentionDays() + " days of history."));
+            return;
         } catch (IllegalArgumentException exception) {
             player.sendMessage(color("&c" + exception.getMessage()));
             player.sendMessage(color("&7Example: &f/fg rollback r:30 t:2d 7h 15m"));
-            return;
-        }
-
-        long maxHistoryMillis = plugin.getRetentionDays() * 24L * 60L * 60L * 1000L;
-        if (durationMillis > maxHistoryMillis) {
-            player.sendMessage(color("&cFragGuard only keeps " + plugin.getRetentionDays() + " days of history."));
             return;
         }
 
@@ -537,7 +548,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             if (pausedJobs.add(job.id())) {
                 message(operator, "&e" + (undo ? "Undo" : "Rollback") + " job #" + job.id()
                         + " paused while server TPS is &f" + String.format(Locale.ROOT, "%.1f", currentTps)
-                        + "&e (minimum &f" + String.format(Locale.ROOT, "%.1f", minimumTps) + "&e).");
+                        + "&e (minimum &f" + String.format(Locale.ROOT, "%.1f", minimumTps) + "&e)." );
             }
             retryJobLater(job, resume, 20L);
             return true;
@@ -1085,21 +1096,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
     private void onServerThread(Runnable action) {
         Bukkit.getScheduler().runTask(plugin, action);
-    }
-
-    private OptionalInt parseRadius(String[] args) {
-        for (String arg : args) {
-            String lower = arg.toLowerCase(Locale.ROOT);
-            if (lower.startsWith("r:") || lower.startsWith("radius:")) {
-                String value = arg.substring(arg.indexOf(':') + 1);
-                try {
-                    return OptionalInt.of(Integer.parseInt(value));
-                } catch (NumberFormatException ignored) {
-                    return OptionalInt.empty();
-                }
-            }
-        }
-        return OptionalInt.empty();
     }
 
     private OptionalInt parsePage(String[] args) {
