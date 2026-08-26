@@ -2,7 +2,7 @@ import org.gradle.api.artifacts.dsl.LockMode
 
 plugins {
     java
-    id("com.gradleup.shadow") version "9.4.2"
+    id("com.gradleup.shadow") version "9.6.1"
 }
 
 group = "org.pinnaclesmp"
@@ -15,8 +15,8 @@ java {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:26.2.build.62-beta")
-    implementation("org.xerial:sqlite-jdbc:3.49.1.0")
-    implementation("org.slf4j:slf4j-nop:2.0.16")
+    implementation("org.xerial:sqlite-jdbc:3.53.2.1")
+    implementation("org.slf4j:slf4j-nop:2.0.18")
 
     testImplementation("io.papermc.paper:paper-api:26.2.build.62-beta")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")

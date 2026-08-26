@@ -6,6 +6,8 @@
 
 - Added committed Gradle dependency locking with CI validation that the lock state remains current.
 - Added regression coverage for duration overflow, retention-limit parsing, and malformed or overflowing radius values.
+- Added regression coverage for same-tick bonemealed structure/fertilization overlap, selective coordinate filtering, and tick-scoped deduplication expiry.
+- Added weekly Dependabot version-update checks for Gradle and GitHub Actions, grouping routine updates while keeping Paper and SQLite upgrades in separate pull requests for dedicated server validation.
 
 ### Changed
 
@@ -13,6 +15,8 @@
 - Hardened GitHub Actions by pinning every third-party action to a reviewed full commit SHA and separating the read-only release build from the write-enabled release upload job.
 - Limited `GH_TOKEN` exposure to the release-inspection and release-upload steps that require it.
 - Marked the committed Gradle wrapper executable, added SHA-256 verification for the Gradle 9.3.0 distribution, and updated build documentation to use the repository wrapper and the current `26.2-3` JAR name.
+- Kept bonemealed `StructureGrowEvent` coordinates authoritative when Paper emits the paired same-tick `BlockFertilizeEvent`, while preserving generic fertilization logging for non-overlapping blocks.
+- Updated SQLite JDBC from `3.49.1.0` to `3.53.2.1`, Shadow from `9.4.2` to `9.6.1`, and SLF4J NOP from `2.0.16` to `2.0.18`, with the Gradle lock state refreshed to the resolved versions.
 
 ### Fixed
 
@@ -20,6 +24,10 @@
 - Fixed #11 by removing repository write permission and `GH_TOKEN` from release build steps; only the isolated upload job can write release assets.
 - Fixed #12 by storing `gradlew` as executable, verifying the wrapper distribution checksum, and correcting the README's obsolete wrapper/build-output instructions.
 - Fixed #13 by using exact arithmetic for duration tokens, converting overflow into a validation error, stopping as soon as the configured retention limit is exceeded, and rejecting malformed lookup radii instead of silently falling back to radius 15.
+- Fixed #36 by preventing a paired `BlockFertilizeEvent` from relabeling bonemealed trees, mushrooms, and other generated structures from `STRUCTURE_GROW` to generic `FERTILIZE` history.
+- Fixed #18 by bringing the identified outdated runtime/build dependencies current and adding ongoing Dependabot maintenance without grouping Paper or SQLite into routine dependency batches.
+- Fixed #19 by updating SQLite JDBC to `3.53.2.1` and locking the resolved dependency state.
+- Fixed #20 by updating the Shadow plugin to `9.6.1` and validating the shaded plugin build through CI.
 
 ## 26.2-3-beta.4
 
@@ -159,7 +167,7 @@
 - Fixed #9 by making shutdown durability observable: FragGuard drains accepted bounded-queue work before close, checkpoints the WAL on the database worker, explicitly counts still-queued logs as dropped if the worker fails, reports incomplete shutdown state, preserves degraded health after known log loss/database failure, and notifies online operators when logging is unhealthy.
 - Fixed the shutdown timeout path returning immediately after cancellation while accepted writes were still owned by a live worker; FragGuard now waits for cancellation and explicitly accounts for queued losses plus any in-flight writes whose durability remains unconfirmed.
 - Fixed abandoned shutdown writes being counted as both `drained` and `lost`; only write batches that actually complete successfully contribute to the drained count.
-- Fixed long non-timed database operations disappearing from shutdown accounting after they were removed from `operationQueue`; a still-running worker now contributes an unconfirmed active operation to the remaining-operation count unless it is known to be processing an in-flight write batch.
+- Fixed long non-timed database operations disappearing from shutdown accounting after they were removed from `operationQueue`; a still-running worker now contributes an unconfirmed active operation to the remaining-operation total unless it is known to be processing an in-flight write batch.
 - Fixed degraded-storage warnings bypassing their configured repeat interval whenever `droppedWrites` increased; repeated operator alerts are now rate-limited by the configured interval regardless of how quickly losses accumulate.
 - Fixed pre-shutdown counters being captured from different moments while the database worker was concurrently completing a batch; shutdown now returns one atomic accounting snapshot so `queued`, `drained`, `remaining`, and clean-status reporting stay internally consistent.
 - Fixed prior session write loss being hidden by an otherwise successful shutdown; `totalDroppedWrites > 0` now always prevents the shutdown report from being classified as clean, ensuring `onDisable()` emits a warning even when the worker later caught up and no additional writes were lost during shutdown.

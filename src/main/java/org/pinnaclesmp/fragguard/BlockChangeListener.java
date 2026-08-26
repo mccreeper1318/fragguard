@@ -70,6 +70,7 @@ final class BlockChangeListener implements Listener {
     private final FragGuardPlugin plugin;
     private final Database database;
     private final Map<UUID, PendingPlayerBreak> pendingPlayerBreaks = new LinkedHashMap<>();
+    private final FertilizationDeduplicator fertilizationDeduplicator = new FertilizationDeduplicator();
 
     BlockChangeListener(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
@@ -421,6 +422,10 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
+        if (event.isFromBonemeal()) {
+            fertilizationDeduplicator.rememberBonemealedStructure(Bukkit.getCurrentTick(), event.getBlocks());
+        }
+
         Map<BlockPosition, CapturedBlockState> beforeStates = captureBeforeStates(event.getBlocks());
         Player player = event.getPlayer();
         String actorName = event.isFromBonemeal() ? "Fertilized Structure Growth" : "Natural Structure Growth";
@@ -442,7 +447,9 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Map<BlockPosition, CapturedBlockState> beforeStates = captureBeforeStates(event.getBlocks());
+        Map<BlockPosition, CapturedBlockState> beforeStates = captureBeforeStates(
+                fertilizationDeduplicator.excludeBonemealedStructureBlocks(
+                        Bukkit.getCurrentTick(), event.getBlocks()));
         Player player = event.getPlayer();
         if (player == null) {
             logAfterServerAppliesChange(beforeStates, ChangeAction.FERTILIZE, "Fertilization");
