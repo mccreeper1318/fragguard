@@ -64,13 +64,13 @@ jobs:
             VERSION="${VERSION#v}"
           fi
 
-          # Stable examples: 26.2-3
-          # Prerelease examples: 26.2-3-beta.1, 26.2-3-rc.1
-          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+-[0-9]+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
+          # Stable example: 1.1.0
+          # Prerelease examples: 1.1.0-beta.1, 1.1.0-rc.1
+          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
             BASE_VERSION="${BASH_REMATCH[1]}"
           else
             echo "Invalid FragGuard release tag: $RAW_TAG"
-            echo "Expected a tag such as 26.2-3, 26.2-3-beta.1, v26.2-3, or v26.2-3-rc.1."
+            echo "Expected a tag such as 1.1.0, 1.1.0-beta.1, v1.1.0, or v1.1.0-rc.1."
             exit 1
           fi
 

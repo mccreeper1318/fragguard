@@ -146,7 +146,7 @@ Dependencies are pinned and the committed Gradle lock state is checked by CI so 
 The plugin JAR will be in:
 
 ```text
-build/libs/FragGuard-26.2-3.jar
+build/libs/FragGuard-1.1.0.jar
 ```
 
 Put that JAR into your server's `plugins` folder and restart the Paper server.
@@ -170,7 +170,7 @@ Put that JAR into your server's `plugins` folder and restart the Paper server.
 This project uses the current GradleUp Shadow plugin:
 
 ```kotlin
-id("com.gradleup.shadow") version "9.4.2"
+id("com.gradleup.shadow") version "9.6.1"
 ```
 
 The older `com.github.johnrengelman.shadow` plugin line can fail when IntelliJ imports/builds the project with Gradle 9.x.
