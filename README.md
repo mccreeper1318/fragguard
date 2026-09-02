@@ -84,10 +84,10 @@ Shows database health, bounded write/control queue usage, coalesced same-tick ch
 FragGuard records its SQLite schema version in `PRAGMA user_version`. Existing unversioned and version-1 databases are upgraded automatically to version 2 when the plugin starts. Before changing an existing schema, FragGuard creates a consistent SQLite snapshot with `VACUUM INTO`, verifies it with `PRAGMA quick_check`, and saves it under:
 
 ```text
-plugins/FragGuard/backups/fragguard.db.pre-migration-v1-to-v2-<timestamp>.bak
+plugins/FragGuard/backups/fragguard.db.pre-migration-v2-to-v3-<timestamp>.bak
 ```
 
-The filename uses the database's actual starting version, so an unversioned database instead creates a `v0-to-v2` backup. Every migration and its schema-version update run in a single transaction. If the backup cannot be created or verified, or if the migration fails, FragGuard refuses to start instead of continuing with a partially upgraded database. A newer database schema is also rejected rather than silently opened by an older FragGuard release.
+The filename uses the database's actual starting version, so an unversioned database instead creates a `v0-to-v3` backup. Every migration and its schema-version update run in a single transaction. If the backup cannot be created or verified, or if the migration fails, FragGuard refuses to start instead of continuing with a partially upgraded database. A newer database schema is also rejected rather than silently opened by an older FragGuard release.
 
 Before upgrading, stop the server and copy the entire `plugins/FragGuard` directory to a separate location. Do not copy only `fragguard.db` while the server is running: active SQLite changes can still be in `fragguard.db-wal`.
 

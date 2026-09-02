@@ -15,6 +15,7 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
+import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.Event;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
@@ -22,6 +23,7 @@ import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockFadeEvent;
 import org.bukkit.event.block.BlockFertilizeEvent;
 import org.bukkit.event.block.BlockFormEvent;
+import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
@@ -31,6 +33,7 @@ import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.block.LeavesDecayEvent;
 import org.bukkit.event.block.SpongeAbsorbEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerTakeLecternBookEvent;
 import org.bukkit.event.world.StructureGrowEvent;
@@ -70,6 +73,69 @@ import static org.mockito.Mockito.when;
 
 class BlockChangeListenerTest {
     private static final UUID PLAYER_UUID = UUID.fromString("f7afdf9f-a9f7-4e30-88bc-614cf037d006");
+
+    @Test
+    void recordsBothEndsOfAFluidFlowTick() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block source = harness.block(4, 64, 4,
+                    "minecraft:water[level=1]", "minecraft:water[level=2]");
+            Block destination = harness.block(5, 64, 4,
+                    "minecraft:air", "minecraft:water[level=2]");
+            when(source.getType()).thenReturn(Material.WATER);
+            BlockFromToEvent event = mock(BlockFromToEvent.class);
+            when(event.getBlock()).thenReturn(source);
+            when(event.getToBlock()).thenReturn(destination);
+
+            harness.listener.onLiquidFlow(event);
+            harness.runNextTick();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(2)).insertAsync(changes.capture());
+            assertEquals(List.of(4, 5), changes.getAllValues().stream().map(BlockChange::x).toList());
+            assertEquals(List.of("minecraft:water[level=1]", "minecraft:air"),
+                    changes.getAllValues().stream().map(BlockChange::beforeData).toList());
+            assertEquals(List.of("minecraft:water[level=2]", "minecraft:water[level=2]"),
+                    changes.getAllValues().stream().map(BlockChange::afterData).toList());
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("playerCausedExplosives")
+    void attributesPlayerCausedExplosionsToThePlayer(String caseName, Entity explosive) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block destroyed = harness.block(7, 64, 7, "minecraft:stone", "minecraft:air");
+            EntityExplodeEvent event = mock(EntityExplodeEvent.class);
+            when(event.getEntity()).thenReturn(explosive);
+            when(event.blockList()).thenReturn(new ArrayList<>(List.of(destroyed)));
+
+            harness.listener.onEntityExplode(event);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+            assertEquals(ChangeAction.EXPLOSION, change.action());
+        }
+    }
+
+    private static Stream<Arguments> playerCausedExplosives() {
+        Player player = mock(Player.class);
+        when(player.getUniqueId()).thenReturn(PLAYER_UUID);
+        when(player.getName()).thenReturn("Builder");
+
+        TNTPrimed tnt = mock(TNTPrimed.class);
+        when(tnt.getUniqueId()).thenReturn(UUID.fromString("e76de695-e493-408a-813c-5d32cee3ce04"));
+        when(tnt.getSource()).thenReturn(player);
+
+        Projectile projectile = mock(Projectile.class);
+        when(projectile.getUniqueId()).thenReturn(UUID.fromString("f34f6b17-e6dc-4345-b44d-1120548e4769"));
+        when(projectile.getShooter()).thenReturn(player);
+
+        return Stream.of(
+                Arguments.of("player-primed TNT", tnt),
+                Arguments.of("player-launched projectile", projectile)
+        );
+    }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("multiBlockPlacements")
@@ -1284,6 +1350,7 @@ class BlockChangeListenerTest {
             when(plugin.getConfig()).thenReturn(config);
             when(config.getBoolean("log-fire-spread", true)).thenReturn(true);
             when(config.getBoolean("log-liquid-flow", true)).thenReturn(true);
+            when(config.getBoolean("log-explosions", true)).thenReturn(true);
             when(world.getName()).thenReturn("world");
             when(player.getUniqueId()).thenReturn(PLAYER_UUID);
             when(player.getName()).thenReturn("Builder");

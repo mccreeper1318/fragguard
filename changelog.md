@@ -22,7 +22,7 @@
 - Interaction logging now ignores temporary buttons, pressure plates, tripwires, and bed occupancy, and snapshots only containers whose structure can change through the interaction.
 - Rollback is now a preview-first workflow that reports affected blocks and chunks, selects each coordinate's earliest state in SQLite, and applies indexed region and block limits in the query.
 - Rollback and undo preserve persisted sequence order, load only existing chunks asynchronously, retain chunk tickets only while needed, and share TPS and time budgets across preparation and mutations.
-- Rollback and undo audits are committed in bounded slices before world mutation; physics corrections are recorded durably before later work can pause.
+- Rollback and undo audits are prepared as hidden, crash-recoverable rows in bounded slices and become visible atomically with durable job progress after the world mutation.
 - Normal rollback revalidates expected live state and skips conflicts, while force mode revalidates and retries from the latest state; unresolved undo conflicts remain retryable.
 - SQLite now uses one dedicated worker and long-lived connection, drains under queue pressure, and reports atomic queued, drained, remaining, and lost-write shutdown accounting before checkpointing the WAL.
 - Updated Paper API to `26.2.build.62-beta`, SQLite JDBC to `3.53.2.1`, Shadow to `9.6.1`, and SLF4J NOP to `2.0.18`.
@@ -46,3 +46,7 @@
 - Fixed #13 by rejecting overflowing durations, over-limit retention expressions, and malformed or overflowing lookup radii instead of accepting unsafe values or silently using defaults.
 - Fixed #36 by preventing paired fertilization events from relabeling bonemealed structures while retaining non-overlapping fertilization history.
 - Fixed #18, #19, and #20 by updating and locking the identified runtime and build dependencies and validating the shaded plugin through CI.
+- Fixed #39 by requiring undo to match the exact block and block-entity state observed after rollback, leaving later player edits untouched as retryable conflicts.
+- Fixed #40 by recording both the source and destination of liquid flow ticks so level loss, decay, retraction, and removal are retained in history.
+- Fixed #41 by hiding prepared rollback audits until their mutation is confirmed, durably linking them to job changes, and reconciling interrupted mutations on resume.
+- Fixed #42 by attributing TNT and projectile explosions to the responsible player when Paper exposes that causal source.
