@@ -862,7 +862,19 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     });
                 }
                 String appliedData = block.getBlockData().getAsString();
-                byte[] appliedEntityData = BlockEntitySnapshot.capture(block);
+                byte[] appliedEntityData;
+                try {
+                    appliedEntityData = BlockEntitySnapshot.capture(block);
+                } catch (RuntimeException exception) {
+                    // The world mutation and entity restore have completed. Confirm the prepared
+                    // audit with the observable block state before failing so this change remains
+                    // visible and recoverable even when its post-mutation snapshot cannot be read.
+                    results.put(candidate.change().sequence(),
+                            new RollbackStepResult(candidate.change().sequence(), true, false,
+                                    appliedData, null));
+                    index++;
+                    throw exception;
+                }
                 results.put(candidate.change().sequence(),
                         new RollbackStepResult(candidate.change().sequence(), true, false,
                                 appliedData, appliedEntityData));

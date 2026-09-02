@@ -48,5 +48,5 @@
 - Fixed #18, #19, and #20 by updating and locking the identified runtime and build dependencies and validating the shaded plugin through CI.
 - Fixed #39 by requiring undo to match the exact block and block-entity state observed after rollback, leaving later player edits untouched as retryable conflicts.
 - Fixed #40 by recording both the source and destination of liquid flow ticks so level loss, decay, retraction, and removal are retained in history.
-- Fixed #41 by hiding prepared rollback audits until their mutation is confirmed, durably linking them to job changes, and recovering physics-normalized states or completed mutation prefixes after crashes and runtime failures.
+- Fixed #41 by hiding prepared rollback audits until their mutation is confirmed, durably linking them to job changes, and preserving physics-normalized states and completed mutations across crashes, runtime failures, or post-mutation snapshot errors.
 - Fixed #42 by attributing TNT and projectile explosions to the responsible player when Paper exposes that causal source.

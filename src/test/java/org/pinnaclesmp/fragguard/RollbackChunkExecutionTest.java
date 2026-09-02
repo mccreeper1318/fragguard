@@ -416,6 +416,69 @@ class RollbackChunkExecutionTest {
         }
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void preservesCurrentAuditWhenPostMutationSnapshotCaptureFails() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("apply-physics-during-rollback", false);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getLogger()).thenReturn(Logger.getLogger("FragGuardTest"));
+        when(server.getCurrentTick()).thenReturn(100);
+
+        Database database = mock(Database.class);
+        when(database.markRollbackBatchAppliedAsync(eq(41L), anyList()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        when(database.failRollbackJobAsync(eq(41L), any(String.class)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+
+        BlockData initial = mock(BlockData.class);
+        BlockData desired = mock(BlockData.class);
+        when(initial.getAsString()).thenReturn("minecraft:stone");
+        when(desired.getAsString()).thenReturn("minecraft:dirt");
+        AtomicReference<BlockData> state = new AtomicReference<>(initial);
+        Block block = mock(Block.class);
+        when(block.getBlockData()).thenAnswer(ignored -> state.get());
+        doAnswer(invocation -> {
+            state.set(invocation.getArgument(0));
+            return null;
+        }).when(block).setBlockData(desired, false);
+
+        RollbackJobChange change = new RollbackJobChange(
+                0, "world", 1, 64, 1,
+                "minecraft:stone", "minecraft:dirt", false, false, false);
+        Object candidate = preparedChange(change, block, desired, "minecraft:stone");
+
+        BukkitScheduler scheduler = immediateScheduler(plugin);
+        Runnable completed = mock(Runnable.class);
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             MockedStatic<BlockEntitySnapshot> snapshots = mockStatic(BlockEntitySnapshot.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            snapshots.when(() -> BlockEntitySnapshot.capture(block))
+                    .thenReturn(null)
+                    .thenThrow(new IllegalStateException("simulated snapshot failure"));
+
+            applyPersistedCandidates(command, job, List.of(candidate), List.of(11L), completed);
+
+            verify(database, never()).deleteRequiredAsync(anyList());
+            ArgumentCaptor<List<RollbackStepResult>> captured = ArgumentCaptor.forClass(List.class);
+            verify(database).markRollbackBatchAppliedAsync(eq(41L), captured.capture());
+            assertEquals(1, captured.getValue().size());
+            RollbackStepResult persisted = captured.getValue().get(0);
+            assertEquals(0, persisted.sequence());
+            assertTrue(persisted.changed());
+            assertEquals("minecraft:dirt", persisted.appliedData());
+            verify(database).failRollbackJobAsync(eq(41L), contains("simulated snapshot failure"));
+            verify(completed, never()).run();
+        }
+    }
+
     private void assertCompatiblePhysicsCorrectionRestoresInventory(boolean undo) throws Exception {
         FragGuardPlugin plugin = mock(FragGuardPlugin.class);
         Server server = mock(Server.class);
