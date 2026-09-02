@@ -889,20 +889,33 @@ final class BlockChangeListener implements Listener {
     }
 
     private Actor playerActorForCause(Entity entity, Set<UUID> visited) {
-        if (entity == null || !visited.add(entity.getUniqueId())) {
+        if (entity == null) {
             return null;
         }
         if (entity instanceof Player player) {
             return new Actor(player.getUniqueId().toString(), player.getName());
         }
-        if (entity instanceof Projectile projectile
-                && projectile.getShooter() instanceof Entity shooter) {
-            return playerActorForCause(shooter, visited);
+        Entity causalEntity = null;
+        if (entity instanceof Projectile projectile) {
+            Object shooter = projectile.getShooter();
+            if (shooter instanceof Player player) {
+                return new Actor(player.getUniqueId().toString(), player.getName());
+            }
+            if (shooter instanceof Entity shooterEntity) {
+                causalEntity = shooterEntity;
+            }
+        } else if (entity instanceof TNTPrimed tnt) {
+            Entity source = tnt.getSource();
+            if (source instanceof Player player) {
+                return new Actor(player.getUniqueId().toString(), player.getName());
+            }
+            causalEntity = source;
         }
-        if (entity instanceof TNTPrimed tnt) {
-            return playerActorForCause(tnt.getSource(), visited);
+
+        if (causalEntity == null || !visited.add(entity.getUniqueId())) {
+            return null;
         }
-        return null;
+        return playerActorForCause(causalEntity, visited);
     }
 
     private String readableEnum(String enumName) {
