@@ -382,12 +382,20 @@ final class Database {
             return CompletableFuture.completedFuture(null);
         }
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
-            try (PreparedStatement statement = databaseConnection.prepareStatement(
-                    "DELETE FROM block_changes WHERE id = ?")) {
+            try (PreparedStatement clearLinks = databaseConnection.prepareStatement("""
+                         UPDATE rollback_job_changes
+                         SET pending_audit_id = NULL, pending_audit_undo = 0
+                         WHERE pending_audit_id = ?
+                         """);
+                 PreparedStatement statement = databaseConnection.prepareStatement(
+                         "DELETE FROM block_changes WHERE id = ?")) {
                 for (long id : savedIds) {
+                    clearLinks.setLong(1, id);
+                    clearLinks.addBatch();
                     statement.setLong(1, id);
                     statement.addBatch();
                 }
+                clearLinks.executeBatch();
                 statement.executeBatch();
             }
             return null;

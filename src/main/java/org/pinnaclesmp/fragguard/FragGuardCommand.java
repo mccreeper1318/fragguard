@@ -629,9 +629,18 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         throw new IllegalStateException("Rollback job #" + job.id() + " change "
                                 + change.sequence() + " has a pending audit for the wrong operation.");
                     }
-                    if (matchesState(actualData, actualEntityData, normalizedDesired, desiredEntityData)) {
+                    String pendingBeforeData = undo
+                            ? Objects.requireNonNullElse(change.appliedData(), change.targetData())
+                            : Objects.requireNonNull(change.beforeData(), "Missing prepared rollback state");
+                    byte[] pendingBeforeEntityData = undo && change.appliedData() == null
+                            ? change.targetEntityData()
+                            : undo ? change.appliedEntityData() : change.beforeEntityData();
+                    if (!matchesState(actualData, actualEntityData,
+                            pendingBeforeData, pendingBeforeEntityData)) {
                         // The server stopped after mutating the world but before atomically confirming
-                        // the audit and job progress. Finish that durable commit without mutating again.
+                        // the audit and job progress. The observed result may differ from the requested
+                        // state when physics normalized it, so recover any state that moved away from
+                        // the durable pre-mutation snapshot.
                         results.put(change.sequence(), new RollbackStepResult(
                                 change.sequence(), true, false, actualData, actualEntityData));
                         continue;
@@ -872,7 +881,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             RuntimeException finalFailure = failure;
             deleteRequiredAudits(job, operator, staleAuditIds, () ->
                     persistObservedCorrections(job, operator, observedCorrections,
-                            () -> failJob(job, operator, finalFailure)));
+                            () -> persistCompletedResultsBeforeFailure(
+                                    job, operator, results, undo, finalFailure)));
             return;
         }
 
@@ -891,6 +901,29 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
                             forceAttempt + 1, afterApplied);
                 }));
+    }
+
+    private void persistCompletedResultsBeforeFailure(RollbackJob job, Player operator,
+                                                      Map<Integer, RollbackStepResult> results,
+                                                      boolean undo, RuntimeException failure) {
+        List<RollbackStepResult> completedResults = List.copyOf(results.values());
+        if (completedResults.isEmpty()) {
+            failJob(job, operator, failure);
+            return;
+        }
+
+        CompletableFuture<Void> persisted = undo
+                ? database.markUndoBatchAppliedAsync(job.id(), completedResults)
+                : database.markRollbackBatchAppliedAsync(job.id(), completedResults);
+        persisted.whenComplete((ignored, throwable) -> onServerThread(() -> {
+            if (throwable != null) {
+                Throwable persistenceFailure = unwrap(throwable);
+                persistenceFailure.addSuppressed(failure);
+                failJob(job, operator, persistenceFailure);
+                return;
+            }
+            failJob(job, operator, failure);
+        }));
     }
 
     private void persistObservedCorrections(RollbackJob job, Player operator,

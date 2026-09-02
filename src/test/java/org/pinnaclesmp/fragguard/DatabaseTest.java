@@ -891,6 +891,33 @@ class DatabaseTest {
     }
 
     @Test
+    void deletingAPendingAuditAlsoClearsItsDurableJobLink() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 10, timestamp - 1_000L, timestamp, false,
+                List.of(new RollbackTarget("world", 4, 70, 4,
+                        "minecraft:stone", "minecraft:dirt"))).join();
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeData("minecraft:dirt"))).join();
+        BlockChange audit = RollbackAudit.create(job, "world", 4, 70, 4,
+                "minecraft:dirt", "minecraft:stone", false);
+        List<Long> ids = database.insertPendingRollbackAuditsAsync(job.id(), false,
+                List.of(new RollbackPendingAudit(change.sequence(), audit))).join();
+
+        database.deleteRequiredAsync(ids).join();
+
+        RollbackJobChange recovered = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertNull(recovered.pendingAuditId());
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(0, rows.getInt(1));
+        }
+    }
+
+    @Test
     void preservesInterleavedChunkSequenceForRollbackAndReverseUndo() throws Exception {
         database = startDatabase();
         long snapshotTimestamp = System.currentTimeMillis();
