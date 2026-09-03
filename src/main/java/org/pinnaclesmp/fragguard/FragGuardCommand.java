@@ -650,11 +650,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 if (undo) {
                     if (matchesState(actualData, actualEntityData, normalizedDesired, desiredEntityData)) {
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, false));
-                    } else if (!matchesState(actualData, actualEntityData,
-                            Objects.requireNonNullElse(change.appliedData(), change.targetData()),
-                            change.appliedData() == null
-                                    ? change.targetEntityData()
-                                    : change.appliedEntityData())) {
+                    } else if (change.appliedData() != null
+                            && !matchesState(actualData, actualEntityData,
+                                    change.appliedData(), change.appliedEntityData())) {
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                     } else {
                         candidates.add(new PreparedWorldChange(change, block, desired, actualData,
@@ -905,9 +903,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         return;
                     }
                     if (forceAttempt >= MAX_FORCE_REVALIDATION_RETRIES) {
-                        failJob(job, operator, new IllegalStateException(
-                                "Could not obtain a stable live block state after "
-                                        + MAX_FORCE_REVALIDATION_RETRIES + " force revalidation attempts."));
+                        persistCompletedResultsBeforeFailure(job, operator, results, false,
+                                new IllegalStateException(
+                                        "Could not obtain a stable live block state after "
+                                                + MAX_FORCE_REVALIDATION_RETRIES
+                                                + " force revalidation attempts."));
                         return;
                     }
                     retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
