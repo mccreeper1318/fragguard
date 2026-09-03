@@ -580,10 +580,6 @@ final class Database {
                         }
                         String appliedData = rows.getString("applied_data");
                         byte[] appliedEntityData = rows.getBytes("applied_entity_data");
-                        if (appliedData == null && beforeData != null) {
-                            appliedData = rows.getString("target_data");
-                            appliedEntityData = rows.getBytes("target_entity_data");
-                        }
                         long pendingAuditId = rows.getLong("pending_audit_id");
                         Long nullablePendingAuditId = rows.wasNull() ? null : pendingAuditId;
                         changes.add(new RollbackJobChange(rows.getInt("sequence"), rows.getString("world"),
@@ -1045,15 +1041,6 @@ final class Database {
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_id", "INTEGER");
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_undo",
                 "INTEGER NOT NULL DEFAULT 0");
-
-        try (Statement statement = databaseConnection.createStatement()) {
-            statement.executeUpdate("""
-                    UPDATE rollback_job_changes
-                    SET applied_data = target_data,
-                        applied_entity_data = target_entity_data
-                    WHERE before_data IS NOT NULL AND conflicted = 0 AND applied_data IS NULL
-                    """);
-        }
     }
 
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
