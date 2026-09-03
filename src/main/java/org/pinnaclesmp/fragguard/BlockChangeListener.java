@@ -16,6 +16,7 @@ import org.bukkit.block.data.type.Door;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
+import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -50,9 +51,11 @@ import org.bukkit.event.world.StructureGrowEvent;
 import org.bukkit.inventory.InventoryHolder;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 final class BlockChangeListener implements Listener {
@@ -317,13 +320,13 @@ final class BlockChangeListener implements Listener {
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         event.blockList().forEach(block -> captureBefore(beforeStates, block));
 
-        Entity entity = event.getEntity();
-        String actorName = "Explosion";
-        if (entity != null) {
-            actorName = "Explosion: " + readableEnum(entity.getType().name());
-        }
-
-        logAfterServerAppliesChange(beforeStates, ChangeAction.EXPLOSION, actorName);
+        Actor actor = actorForEntity(event.getEntity(), "Explosion");
+        logAfterServerAppliesChange(
+                beforeStates,
+                ChangeAction.EXPLOSION,
+                actor.uuid(),
+                actor.name()
+        );
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -551,6 +554,7 @@ final class BlockChangeListener implements Listener {
         }
 
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+        captureBefore(beforeStates, event.getBlock());
         captureBefore(beforeStates, event.getToBlock());
         logAfterServerAppliesChange(beforeStates, ChangeAction.LIQUID_FLOW, readableEnum(sourceType.name()) + " Flow");
     }
@@ -874,17 +878,44 @@ final class BlockChangeListener implements Listener {
         if (entity == null) {
             return new Actor(SYSTEM_UUID, causeLabel);
         }
-        if (entity instanceof Player player) {
-            return new Actor(player.getUniqueId().toString(), player.getName());
-        }
-        if (entity instanceof Projectile projectile
-                && projectile.getShooter() instanceof Player player) {
-            return new Actor(player.getUniqueId().toString(), player.getName());
+        Actor playerCause = playerActorForCause(entity, new HashSet<>());
+        if (playerCause != null) {
+            return playerCause;
         }
         return new Actor(
                 entity.getUniqueId().toString(),
                 causeLabel + ": " + readableEnum(entity.getType().name())
         );
+    }
+
+    private Actor playerActorForCause(Entity entity, Set<UUID> visited) {
+        if (entity == null) {
+            return null;
+        }
+        if (entity instanceof Player player) {
+            return new Actor(player.getUniqueId().toString(), player.getName());
+        }
+        Entity causalEntity = null;
+        if (entity instanceof Projectile projectile) {
+            Object shooter = projectile.getShooter();
+            if (shooter instanceof Player player) {
+                return new Actor(player.getUniqueId().toString(), player.getName());
+            }
+            if (shooter instanceof Entity shooterEntity) {
+                causalEntity = shooterEntity;
+            }
+        } else if (entity instanceof TNTPrimed tnt) {
+            Entity source = tnt.getSource();
+            if (source instanceof Player player) {
+                return new Actor(player.getUniqueId().toString(), player.getName());
+            }
+            causalEntity = source;
+        }
+
+        if (causalEntity == null || !visited.add(entity.getUniqueId())) {
+            return null;
+        }
+        return playerActorForCause(causalEntity, visited);
     }
 
     private String readableEnum(String enumName) {

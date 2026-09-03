@@ -26,12 +26,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 2;
+    static final int SCHEMA_VERSION = 3;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
     private static final String AREA_FILTER = """
-            world_uuid IN (?, ?)
+            rollback_pending = 0
+            AND world_uuid IN (?, ?)
             AND (world_uuid = ? OR world = ?)
             AND happened_at %s ?
             AND chunk_x BETWEEN ? AND ?
@@ -291,18 +292,110 @@ final class Database {
         }), false);
     }
 
+    CompletableFuture<List<Long>> insertPendingRollbackAuditsAsync(
+            long jobId,
+            boolean undo,
+            List<RollbackPendingAudit> audits
+    ) {
+        List<ResolvedRollbackPendingAudit> savedAudits = audits.stream()
+                .map(pending -> new ResolvedRollbackPendingAudit(
+                        pending.sequence(), resolveWorldUuid(pending.change().worldName()), pending.change()))
+                .toList();
+        if (savedAudits.isEmpty()) {
+            return CompletableFuture.completedFuture(List.of());
+        }
+
+        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            List<Long> insertedIds = new ArrayList<>(savedAudits.size());
+            try (PreparedStatement deletePrevious = databaseConnection.prepareStatement("""
+                         DELETE FROM block_changes
+                         WHERE id = (SELECT pending_audit_id FROM rollback_job_changes
+                                     WHERE job_id = ? AND sequence = ?)
+                         """);
+                 PreparedStatement insert = databaseConnection.prepareStatement("""
+                         INSERT INTO block_changes
+                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
+                          before_data, after_data, world_uuid, chunk_x, chunk_z,
+                          before_entity_data, after_entity_data, rollback_pending)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                         """, Statement.RETURN_GENERATED_KEYS);
+                 PreparedStatement link = databaseConnection.prepareStatement("""
+                         UPDATE rollback_job_changes
+                         SET pending_audit_id = ?, pending_audit_undo = ?
+                         WHERE job_id = ? AND sequence = ?
+                           AND %s
+                         """.formatted(undo ? "undone = 0" : "processed = 0"))) {
+                for (ResolvedRollbackPendingAudit pending : savedAudits) {
+                    BlockChange change = pending.change();
+                    if (sameState(change.beforeData(), change.beforeEntityData(),
+                            change.afterData(), change.afterEntityData())) {
+                        throw new IllegalArgumentException("Pending rollback audits must describe a state change.");
+                    }
+
+                    deletePrevious.setLong(1, jobId);
+                    deletePrevious.setInt(2, pending.sequence());
+                    deletePrevious.executeUpdate();
+
+                    insert.setLong(1, change.happenedAt());
+                    insert.setString(2, change.actorUuid());
+                    insert.setString(3, change.actorName());
+                    insert.setString(4, change.worldName());
+                    insert.setInt(5, change.x());
+                    insert.setInt(6, change.y());
+                    insert.setInt(7, change.z());
+                    insert.setString(8, change.action().storageId());
+                    insert.setString(9, change.beforeData());
+                    insert.setString(10, change.afterData());
+                    insert.setString(11, pending.worldUuid());
+                    insert.setInt(12, change.x() >> 4);
+                    insert.setInt(13, change.z() >> 4);
+                    insert.setBytes(14, change.beforeEntityData());
+                    insert.setBytes(15, change.afterEntityData());
+                    insert.executeUpdate();
+
+                    long auditId;
+                    try (ResultSet keys = insert.getGeneratedKeys()) {
+                        if (!keys.next()) {
+                            throw new SQLException("SQLite did not return a pending rollback audit ID");
+                        }
+                        auditId = keys.getLong(1);
+                    }
+
+                    link.setLong(1, auditId);
+                    link.setInt(2, undo ? 1 : 0);
+                    link.setLong(3, jobId);
+                    link.setInt(4, pending.sequence());
+                    if (link.executeUpdate() != 1) {
+                        throw new SQLException("Could not link pending rollback audit " + auditId
+                                + " to job #" + jobId + " change " + pending.sequence() + ".");
+                    }
+                    insertedIds.add(auditId);
+                }
+            }
+            return List.copyOf(insertedIds);
+        }), false);
+    }
+
     CompletableFuture<Void> deleteRequiredAsync(List<Long> ids) {
         List<Long> savedIds = List.copyOf(ids);
         if (savedIds.isEmpty()) {
             return CompletableFuture.completedFuture(null);
         }
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
-            try (PreparedStatement statement = databaseConnection.prepareStatement(
-                    "DELETE FROM block_changes WHERE id = ?")) {
+            try (PreparedStatement clearLinks = databaseConnection.prepareStatement("""
+                         UPDATE rollback_job_changes
+                         SET pending_audit_id = NULL, pending_audit_undo = 0
+                         WHERE pending_audit_id = ?
+                         """);
+                 PreparedStatement statement = databaseConnection.prepareStatement(
+                         "DELETE FROM block_changes WHERE id = ?")) {
                 for (long id : savedIds) {
+                    clearLinks.setLong(1, id);
+                    clearLinks.addBatch();
                     statement.setLong(1, id);
                     statement.addBatch();
                 }
+                clearLinks.executeBatch();
                 statement.executeBatch();
             }
             return null;
@@ -318,7 +411,7 @@ final class Database {
         return submit(databaseConnection -> {
             long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
             try (PreparedStatement statement = databaseConnection.prepareStatement(
-                    "DELETE FROM block_changes WHERE happened_at < ?")) {
+                    "DELETE FROM block_changes WHERE happened_at < ? AND rollback_pending = 0")) {
                 statement.setLong(1, cutoff);
                 return statement.executeUpdate();
             }
@@ -455,7 +548,8 @@ final class Database {
                     SELECT *,
                            COALESCE(length(before_entity_data), 0) AS before_entity_bytes,
                            COALESCE(length(target_entity_data), 0) AS target_entity_bytes,
-                           COALESCE(length(expected_entity_data), 0) AS expected_entity_bytes
+                           COALESCE(length(expected_entity_data), 0) AS expected_entity_bytes,
+                           COALESCE(length(applied_entity_data), 0) AS applied_entity_bytes
                     FROM rollback_job_changes
                     WHERE job_id = ? AND %s
                     ORDER BY sequence %s
@@ -469,25 +563,33 @@ final class Database {
                         long beforeBytes = rows.getLong("before_entity_bytes");
                         long targetBytes = rows.getLong("target_entity_bytes");
                         long expectedBytes = rows.getLong("expected_entity_bytes");
+                        long appliedBytes = rows.getLong("applied_entity_bytes");
                         if (beforeBytes > maximumSnapshotBytes - snapshotBytes
                                 || targetBytes > maximumSnapshotBytes - snapshotBytes - beforeBytes
                                 || expectedBytes > maximumSnapshotBytes - snapshotBytes
-                                        - beforeBytes - targetBytes) {
+                                        - beforeBytes - targetBytes
+                                || appliedBytes > maximumSnapshotBytes - snapshotBytes
+                                        - beforeBytes - targetBytes - expectedBytes) {
                             throw new RollbackJobSnapshotLimitExceededException(maximumSnapshotBytes, undo);
                         }
-                        snapshotBytes += beforeBytes + targetBytes + expectedBytes;
+                        snapshotBytes += beforeBytes + targetBytes + expectedBytes + appliedBytes;
                         String beforeData = rows.getString("before_data");
                         String expectedData = rows.getString("expected_data");
                         if (expectedData == null) {
                             expectedData = beforeData;
                         }
+                        String appliedData = rows.getString("applied_data");
+                        byte[] appliedEntityData = rows.getBytes("applied_entity_data");
+                        long pendingAuditId = rows.getLong("pending_audit_id");
+                        Long nullablePendingAuditId = rows.wasNull() ? null : pendingAuditId;
                         changes.add(new RollbackJobChange(rows.getInt("sequence"), rows.getString("world"),
                                 rows.getInt("x"), rows.getInt("y"), rows.getInt("z"),
                                 beforeData, rows.getString("target_data"), expectedData,
                                 rows.getBoolean("processed"), rows.getBoolean("applied"),
                                 rows.getBoolean("conflicted"), rows.getBoolean("undone"),
                                 rows.getBytes("before_entity_data"), rows.getBytes("target_entity_data"),
-                                rows.getBytes("expected_entity_data")));
+                                rows.getBytes("expected_entity_data"), appliedData, appliedEntityData,
+                                nullablePendingAuditId, rows.getBoolean("pending_audit_undo")));
                     }
                 }
             }
@@ -720,6 +822,7 @@ final class Database {
                 switch (previousVersion) {
                     case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
                     case 1 -> migrateBlockEntitySchema(databaseConnection);
+                    case 2 -> migrateRollbackSafetySchema(databaseConnection);
                     default -> throw new SQLException("No FragGuard database migration exists for schema version "
                             + previousVersion + ".");
                 }
@@ -928,6 +1031,16 @@ final class Database {
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "before_entity_data", "BLOB");
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "target_entity_data", "BLOB");
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "expected_entity_data", "BLOB");
+    }
+
+    private void migrateRollbackSafetySchema(Connection databaseConnection) throws SQLException {
+        addColumnIfMissing(databaseConnection, "block_changes", "rollback_pending",
+                "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "applied_data", "TEXT");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "applied_entity_data", "BLOB");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_id", "INTEGER");
+        addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_undo",
+                "INTEGER NOT NULL DEFAULT 0");
     }
 
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
@@ -1392,20 +1505,80 @@ final class Database {
         List<RollbackStepResult> savedResults = List.copyOf(results);
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
             String sql = undo
-                    ? "UPDATE rollback_job_changes SET undone = 1 WHERE job_id = ? AND sequence = ? AND undone = 0"
-                    : "UPDATE rollback_job_changes SET processed = 1, applied = ?, conflicted = ? WHERE job_id = ? AND sequence = ? AND processed = 0";
+                    ? """
+                      UPDATE rollback_job_changes
+                      SET undone = 1, pending_audit_id = NULL, pending_audit_undo = 0
+                      WHERE job_id = ? AND sequence = ? AND undone = 0
+                      """
+                    : """
+                      UPDATE rollback_job_changes
+                      SET processed = 1, applied = ?, conflicted = ?,
+                          applied_data = CASE WHEN ? = 1 THEN COALESCE(?, target_data) ELSE applied_data END,
+                          applied_entity_data = CASE
+                              WHEN ? = 0 THEN applied_entity_data
+                              WHEN ? IS NULL THEN target_entity_data
+                              ELSE ?
+                          END,
+                          pending_audit_id = NULL, pending_audit_undo = 0
+                      WHERE job_id = ? AND sequence = ? AND processed = 0
+                      """;
             int processed = 0;
             int applied = 0;
             int conflicts = 0;
-            try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
+            try (PreparedStatement confirmAudit = databaseConnection.prepareStatement("""
+                         UPDATE block_changes
+                         SET after_data = COALESCE(?, after_data),
+                             after_entity_data = CASE WHEN ? IS NULL THEN after_entity_data ELSE ? END,
+                             rollback_pending = 0
+                         WHERE id = (SELECT pending_audit_id FROM rollback_job_changes
+                                     WHERE job_id = ? AND sequence = ? AND pending_audit_undo = ?)
+                           AND rollback_pending = 1
+                         """);
+                 PreparedStatement deleteAudit = databaseConnection.prepareStatement("""
+                         DELETE FROM block_changes
+                         WHERE id = (SELECT pending_audit_id FROM rollback_job_changes
+                                     WHERE job_id = ? AND sequence = ?)
+                           AND rollback_pending = 1
+                         """);
+                 PreparedStatement clearAudit = databaseConnection.prepareStatement("""
+                         UPDATE rollback_job_changes
+                         SET pending_audit_id = NULL, pending_audit_undo = 0
+                         WHERE job_id = ? AND sequence = ?
+                         """);
+                 PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
                 for (RollbackStepResult result : savedResults) {
+                    if (result.changed()) {
+                        confirmAudit.setString(1, result.appliedData());
+                        confirmAudit.setString(2, result.appliedData());
+                        confirmAudit.setBytes(3, result.appliedEntityData());
+                        confirmAudit.setLong(4, jobId);
+                        confirmAudit.setInt(5, result.sequence());
+                        confirmAudit.setInt(6, undo ? 1 : 0);
+                        confirmAudit.executeUpdate();
+                        deleteAudit.setLong(1, jobId);
+                        deleteAudit.setInt(2, result.sequence());
+                        deleteAudit.executeUpdate();
+                    } else {
+                        deleteAudit.setLong(1, jobId);
+                        deleteAudit.setInt(2, result.sequence());
+                        deleteAudit.executeUpdate();
+                    }
+
                     if (undo && result.conflicted()) {
+                        clearAudit.setLong(1, jobId);
+                        clearAudit.setInt(2, result.sequence());
+                        clearAudit.executeUpdate();
                         continue;
                     }
                     int index = 1;
                     if (!undo) {
                         statement.setInt(index++, result.changed() ? 1 : 0);
                         statement.setInt(index++, result.conflicted() ? 1 : 0);
+                        statement.setInt(index++, result.changed() ? 1 : 0);
+                        statement.setString(index++, result.appliedData());
+                        statement.setInt(index++, result.changed() ? 1 : 0);
+                        statement.setString(index++, result.appliedData());
+                        statement.setBytes(index++, result.appliedEntityData());
                     }
                     statement.setLong(index++, jobId);
                     statement.setInt(index, result.sequence());
@@ -1617,6 +1790,9 @@ final class Database {
     }
 
     private record RequiredBlockChange(String worldUuid, BlockChange change) {
+    }
+
+    private record ResolvedRollbackPendingAudit(int sequence, String worldUuid, BlockChange change) {
     }
 
     private static final class PendingBlockChange {

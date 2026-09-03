@@ -11,6 +11,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 
 import java.lang.reflect.Constructor;
@@ -27,8 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Logger;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -229,6 +230,255 @@ class RollbackChunkExecutionTest {
         assertCompatiblePhysicsCorrectionRestoresInventory(true);
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void undoRejectsAPlayerEditMadeAfterRollback() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("rollback-minimum-tps", 0.0);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getTPS()).thenReturn(new double[]{20.0});
+        when(server.getCurrentTick()).thenReturn(100);
+
+        Database database = mock(Database.class);
+        when(database.markUndoBatchAppliedAsync(eq(41L), anyList()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+
+        World world = mock(World.class);
+        Block block = mock(Block.class);
+        BlockData playerEdit = mock(BlockData.class);
+        BlockData undoTarget = mock(BlockData.class);
+        when(playerEdit.getAsString()).thenReturn("minecraft:gold_block");
+        when(undoTarget.getAsString()).thenReturn("minecraft:dirt");
+        when(block.getBlockData()).thenReturn(playerEdit);
+        when(world.getBlockAt(4, 64, 4)).thenReturn(block);
+        RollbackJobChange change = new RollbackJobChange(
+                0, "world", 4, 64, 4,
+                "minecraft:dirt", "minecraft:stone", "minecraft:dirt",
+                true, true, false, false,
+                null, null, null,
+                "minecraft:stone", null, null, false
+        );
+
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return mock(BukkitTask.class);
+        });
+        when(scheduler.runTaskLater(eq(plugin), any(Runnable.class), eq(1L)))
+                .thenReturn(mock(BukkitTask.class));
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(() -> Bukkit.getWorld("world")).thenReturn(world);
+            bukkit.when(() -> Bukkit.createBlockData("minecraft:dirt")).thenReturn(undoTarget);
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+
+            applyPreparedBatch(command, job, List.of(change), true);
+
+            verify(database, never()).insertPendingRollbackAuditsAsync(anyLong(), eq(true), anyList());
+            ArgumentCaptor<List<RollbackStepResult>> captured = ArgumentCaptor.forClass(List.class);
+            verify(database).markUndoBatchAppliedAsync(eq(41L), captured.capture());
+            assertEquals(1, captured.getValue().size());
+            assertTrue(captured.getValue().get(0).conflicted(),
+                    "undo must leave a post-rollback player edit untouched and retryable");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void recoversPendingRollbackAfterPhysicsNormalizesTheRequestedState() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("rollback-minimum-tps", 0.0);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getTPS()).thenReturn(new double[]{20.0});
+        when(server.getCurrentTick()).thenReturn(100);
+
+        Database database = mock(Database.class);
+        when(database.markRollbackBatchAppliedAsync(eq(41L), anyList()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+
+        String requestedData = "minecraft:chest[facing=north,type=single,waterlogged=false]";
+        String normalizedData = "minecraft:chest[facing=north,type=left,waterlogged=false]";
+        World world = mock(World.class);
+        Block block = mock(Block.class);
+        BlockData normalized = mock(BlockData.class);
+        BlockData requested = mock(BlockData.class);
+        when(normalized.getAsString()).thenReturn(normalizedData);
+        when(requested.getAsString()).thenReturn(requestedData);
+        when(block.getBlockData()).thenReturn(normalized);
+        when(world.getBlockAt(4, 64, 4)).thenReturn(block);
+        RollbackJobChange change = new RollbackJobChange(
+                0, "world", 4, 64, 4,
+                "minecraft:air", requestedData, "minecraft:air",
+                false, false, false, false,
+                null, null, null,
+                null, null, 99L, false
+        );
+
+        BukkitScheduler scheduler = immediateScheduler(plugin);
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(() -> Bukkit.getWorld("world")).thenReturn(world);
+            bukkit.when(() -> Bukkit.createBlockData(requestedData)).thenReturn(requested);
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+
+            applyPreparedBatch(command, job, List.of(change), false);
+
+            verify(database, never()).insertPendingRollbackAuditsAsync(anyLong(), eq(false), anyList());
+            ArgumentCaptor<List<RollbackStepResult>> captured = ArgumentCaptor.forClass(List.class);
+            verify(database).markRollbackBatchAppliedAsync(eq(41L), captured.capture());
+            RollbackStepResult recovered = captured.getValue().get(0);
+            assertTrue(recovered.changed());
+            assertFalse(recovered.conflicted());
+            assertEquals(normalizedData, recovered.appliedData());
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void persistsCompletedCandidatePrefixBeforeFailingTheJob() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("apply-physics-during-rollback", false);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getLogger()).thenReturn(Logger.getLogger("FragGuardTest"));
+        when(server.getCurrentTick()).thenReturn(100);
+
+        Database database = mock(Database.class);
+        when(database.deleteRequiredAsync(anyList())).thenReturn(CompletableFuture.completedFuture(null));
+        when(database.markRollbackBatchAppliedAsync(eq(41L), anyList()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        when(database.failRollbackJobAsync(eq(41L), any(String.class)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+
+        BlockData initial = mock(BlockData.class);
+        BlockData desired = mock(BlockData.class);
+        when(initial.getAsString()).thenReturn("minecraft:stone");
+        when(desired.getAsString()).thenReturn("minecraft:dirt");
+        AtomicReference<BlockData> firstState = new AtomicReference<>(initial);
+        Block first = mock(Block.class);
+        when(first.getBlockData()).thenAnswer(ignored -> firstState.get());
+        doAnswer(invocation -> {
+            firstState.set(invocation.getArgument(0));
+            return null;
+        }).when(first).setBlockData(desired, false);
+
+        Block second = mock(Block.class);
+        when(second.getBlockData()).thenReturn(initial);
+        doAnswer(ignored -> {
+            throw new IllegalStateException("simulated mutation failure");
+        }).when(second).setBlockData(desired, false);
+
+        RollbackJobChange firstChange = new RollbackJobChange(
+                0, "world", 1, 64, 1,
+                "minecraft:stone", "minecraft:dirt", false, false, false);
+        RollbackJobChange secondChange = new RollbackJobChange(
+                1, "world", 2, 64, 1,
+                "minecraft:stone", "minecraft:dirt", false, false, false);
+        List<Object> candidates = List.of(
+                preparedChange(firstChange, first, desired, "minecraft:stone"),
+                preparedChange(secondChange, second, desired, "minecraft:stone")
+        );
+
+        BukkitScheduler scheduler = immediateScheduler(plugin);
+        Runnable completed = mock(Runnable.class);
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+
+            applyPersistedCandidates(command, job, candidates, List.of(11L, 12L), completed);
+
+            verify(database).deleteRequiredAsync(List.of(12L));
+            ArgumentCaptor<List<RollbackStepResult>> captured = ArgumentCaptor.forClass(List.class);
+            verify(database).markRollbackBatchAppliedAsync(eq(41L), captured.capture());
+            assertEquals(1, captured.getValue().size());
+            assertEquals(0, captured.getValue().get(0).sequence());
+            assertEquals("minecraft:dirt", captured.getValue().get(0).appliedData());
+            verify(database).failRollbackJobAsync(eq(41L), contains("simulated mutation failure"));
+            verify(completed, never()).run();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void preservesCurrentAuditWhenPostMutationSnapshotCaptureFails() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("apply-physics-during-rollback", false);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getLogger()).thenReturn(Logger.getLogger("FragGuardTest"));
+        when(server.getCurrentTick()).thenReturn(100);
+
+        Database database = mock(Database.class);
+        when(database.markRollbackBatchAppliedAsync(eq(41L), anyList()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        when(database.failRollbackJobAsync(eq(41L), any(String.class)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = job(41L);
+        markExecuting(command, job);
+
+        BlockData initial = mock(BlockData.class);
+        BlockData desired = mock(BlockData.class);
+        when(initial.getAsString()).thenReturn("minecraft:stone");
+        when(desired.getAsString()).thenReturn("minecraft:dirt");
+        AtomicReference<BlockData> state = new AtomicReference<>(initial);
+        Block block = mock(Block.class);
+        when(block.getBlockData()).thenAnswer(ignored -> state.get());
+        doAnswer(invocation -> {
+            state.set(invocation.getArgument(0));
+            return null;
+        }).when(block).setBlockData(desired, false);
+
+        RollbackJobChange change = new RollbackJobChange(
+                0, "world", 1, 64, 1,
+                "minecraft:stone", "minecraft:dirt", false, false, false);
+        Object candidate = preparedChange(change, block, desired, "minecraft:stone");
+
+        BukkitScheduler scheduler = immediateScheduler(plugin);
+        Runnable completed = mock(Runnable.class);
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             MockedStatic<BlockEntitySnapshot> snapshots = mockStatic(BlockEntitySnapshot.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            snapshots.when(() -> BlockEntitySnapshot.capture(block))
+                    .thenReturn(null)
+                    .thenThrow(new IllegalStateException("simulated snapshot failure"));
+
+            applyPersistedCandidates(command, job, List.of(candidate), List.of(11L), completed);
+
+            verify(database, never()).deleteRequiredAsync(anyList());
+            ArgumentCaptor<List<RollbackStepResult>> captured = ArgumentCaptor.forClass(List.class);
+            verify(database).markRollbackBatchAppliedAsync(eq(41L), captured.capture());
+            assertEquals(1, captured.getValue().size());
+            RollbackStepResult persisted = captured.getValue().get(0);
+            assertEquals(0, persisted.sequence());
+            assertTrue(persisted.changed());
+            assertEquals("minecraft:dirt", persisted.appliedData());
+            verify(database).failRollbackJobAsync(eq(41L), contains("simulated snapshot failure"));
+            verify(completed, never()).run();
+        }
+    }
+
     private void assertCompatiblePhysicsCorrectionRestoresInventory(boolean undo) throws Exception {
         FragGuardPlugin plugin = mock(FragGuardPlugin.class);
         Server server = mock(Server.class);
@@ -244,11 +494,12 @@ class RollbackChunkExecutionTest {
         Database database = mock(Database.class);
         when(database.prepareRollbackBatchAsync(eq(41L), anyList()))
                 .thenReturn(CompletableFuture.completedFuture(null));
-        List<List<BlockChange>> committedAudits = new ArrayList<>();
+        List<List<BlockChange>> pendingAudits = new ArrayList<>();
         AtomicLong auditIds = new AtomicLong();
-        when(database.insertRequiredAsync(anyList())).thenAnswer(invocation -> {
-            List<BlockChange> audits = invocation.getArgument(0);
-            committedAudits.add(List.copyOf(audits));
+        when(database.insertPendingRollbackAuditsAsync(eq(41L), eq(undo), anyList())).thenAnswer(invocation -> {
+            List<RollbackPendingAudit> pending = invocation.getArgument(2);
+            List<BlockChange> audits = pending.stream().map(RollbackPendingAudit::change).toList();
+            pendingAudits.add(audits);
             return CompletableFuture.completedFuture(audits.stream()
                     .map(ignored -> auditIds.incrementAndGet())
                     .toList());
@@ -309,13 +560,8 @@ class RollbackChunkExecutionTest {
             persistAndApplyCandidates(command, job, operator, List.of(candidate), undo, completed);
 
             assertTrue(entityRestored.get(), "compatible chest contents must survive physics normalization");
-            assertEquals(2, committedAudits.size());
-            BlockChange correction = committedAudits.get(1).get(0);
-            assertEquals(desiredData, correction.beforeData());
-            assertEquals(correctedData, correction.afterData());
-            assertArrayEquals(snapshot, correction.beforeEntityData());
-            assertArrayEquals(snapshot, correction.afterEntityData(),
-                    "the observed correction must capture the restored inventory");
+            assertEquals(1, pendingAudits.size());
+            assertEquals(desiredData, pendingAudits.get(0).get(0).afterData());
             verify(completed).run();
         }
     }
@@ -378,11 +624,12 @@ class RollbackChunkExecutionTest {
         Database database = mock(Database.class);
         when(database.prepareRollbackBatchAsync(eq(41L), anyList()))
                 .thenReturn(CompletableFuture.completedFuture(null));
-        List<List<BlockChange>> committedAudits = new ArrayList<>();
+        List<List<BlockChange>> pendingAudits = new ArrayList<>();
         AtomicLong auditIds = new AtomicLong();
-        when(database.insertRequiredAsync(anyList())).thenAnswer(invocation -> {
-            List<BlockChange> audits = invocation.getArgument(0);
-            committedAudits.add(List.copyOf(audits));
+        when(database.insertPendingRollbackAuditsAsync(eq(41L), eq(undo), anyList())).thenAnswer(invocation -> {
+            List<RollbackPendingAudit> pending = invocation.getArgument(2);
+            List<BlockChange> audits = pending.stream().map(RollbackPendingAudit::change).toList();
+            pendingAudits.add(audits);
             return CompletableFuture.completedFuture(audits.stream()
                     .map(ignored -> auditIds.incrementAndGet())
                     .toList());
@@ -456,19 +703,11 @@ class RollbackChunkExecutionTest {
 
             persistAndApplyCandidates(command, job, operator, candidates, undo, completed);
 
-            int firstSliceAuditBatches = applyPhysics ? 2 : 1;
-            assertEquals(firstSliceAuditBatches, committedAudits.size(),
+            int firstSliceAuditBatches = 1;
+            assertEquals(firstSliceAuditBatches, pendingAudits.size(),
                     "the paused second slice must not already appear in rollback history");
-            assertEquals(16, committedAudits.get(0).size());
-            assertTrue(committedAudits.get(0).stream().allMatch(change -> change.x() < 16));
-            if (applyPhysics) {
-                assertEquals(1, committedAudits.get(1).size(),
-                        "physics corrections must be durable before the next slice can pause");
-                BlockChange correction = committedAudits.get(1).get(0);
-                assertEquals(0, correction.x());
-                assertEquals(desiredData, correction.beforeData());
-                assertEquals("minecraft:air", correction.afterData());
-            }
+            assertEquals(16, pendingAudits.get(0).size());
+            assertTrue(pendingAudits.get(0).stream().allMatch(change -> change.x() < 16));
             assertEquals(initialData, actualStates.get(16).get().getAsString(),
                     "the deferred block must remain unchanged while its slice is paused");
             assertEquals(1, postponed.size());
@@ -479,10 +718,9 @@ class RollbackChunkExecutionTest {
             currentTps.set(20.0);
             postponed.get(0).run();
 
-            assertEquals(firstSliceAuditBatches + 1, committedAudits.size(),
-                    "physics corrections must not be persisted again when the batch finishes");
-            assertEquals(1, committedAudits.get(firstSliceAuditBatches).size());
-            assertEquals(16, committedAudits.get(firstSliceAuditBatches).get(0).x());
+            assertEquals(firstSliceAuditBatches + 1, pendingAudits.size());
+            assertEquals(1, pendingAudits.get(firstSliceAuditBatches).size());
+            assertEquals(16, pendingAudits.get(firstSliceAuditBatches).get(0).x());
             assertEquals(desiredData, actualStates.get(16).get().getAsString());
             verify(completed).run();
             if (undo) {
@@ -522,6 +760,38 @@ class RollbackChunkExecutionTest {
                 RollbackJob.class, Player.class, List.class, int.class, boolean.class, int.class);
         method.setAccessible(true);
         method.invoke(command, job, operator, changes, index, false, -1);
+    }
+
+    private static void applyPreparedBatch(FragGuardCommand command, RollbackJob job,
+                                           List<RollbackJobChange> changes, boolean undo) throws Exception {
+        Method method = FragGuardCommand.class.getDeclaredMethod("applyPreparedBatch",
+                RollbackJob.class, Player.class, List.class, List.class,
+                int.class, boolean.class, int.class);
+        method.setAccessible(true);
+        method.invoke(command, job, null, changes, changes, changes.size(), undo, -1);
+    }
+
+    private static void applyPersistedCandidates(FragGuardCommand command, RollbackJob job,
+                                                 List<Object> candidates, List<Long> auditIds,
+                                                 Runnable completed) throws Exception {
+        Method method = FragGuardCommand.class.getDeclaredMethod("applyPersistedCandidates",
+                RollbackJob.class, Player.class, List.class, List.class, Map.class, List.class,
+                boolean.class, int.class, Runnable.class);
+        method.setAccessible(true);
+        method.invoke(command, job, null, candidates, auditIds,
+                new HashMap<Integer, RollbackStepResult>(), new ArrayList<BlockChange>(),
+                false, 0, completed);
+    }
+
+    private static BukkitScheduler immediateScheduler(FragGuardPlugin plugin) {
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return mock(BukkitTask.class);
+        });
+        when(scheduler.runTaskLater(eq(plugin), any(Runnable.class), eq(1L)))
+                .thenReturn(mock(BukkitTask.class));
+        return scheduler;
     }
 
     private static boolean pauseForLowTps(FragGuardCommand command, RollbackJob job,
