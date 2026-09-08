@@ -137,6 +137,8 @@ apply-physics-during-rollback: false
 
 Requires Java 25. The Gradle 9.3.0 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
+FragGuard versions use the Paper compatibility line followed by the plugin semantic version. For example, `26.2-1.1.0` means FragGuard `1.1.0` for Paper `26.2`. Release tags may optionally start with `v`, and prereleases append suffixes such as `-beta.1` or `-rc.1`.
+
 ```bash
 ./gradlew build
 ```
@@ -146,7 +148,7 @@ Dependencies are pinned and the committed Gradle lock state is checked by CI so 
 The plugin JAR will be in:
 
 ```text
-build/libs/FragGuard-1.1.0.jar
+build/libs/FragGuard-26.2-1.1.0.jar
 ```
 
 Put that JAR into your server's `plugins` folder and restart the Paper server.
