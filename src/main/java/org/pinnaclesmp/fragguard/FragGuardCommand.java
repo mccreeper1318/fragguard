@@ -678,7 +678,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             rollbackTickBudget.end(System.nanoTime());
         }
         if (failure != null) {
-            failJob(job, operator, failure);
+            persistCompletedResultsBeforeFailure(job, operator, results, undo, failure);
             return;
         }
 
@@ -1007,7 +1007,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             rollbackTickBudget.end(System.nanoTime());
         }
         if (failure != null) {
-            failJob(job, operator, failure);
+            persistCompletedResultsBeforeFailure(job, operator, results, false, failure);
             return;
         }
 
