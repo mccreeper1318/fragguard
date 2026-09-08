@@ -483,7 +483,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
         world.getChunkAtAsync(chunk.x(), chunk.z(), false)
                 .whenComplete((loaded, throwable) -> {
-                    // Paper completes chunk-load futures on the main server thread.
                     if (!executingJobs.contains(job.id())) {
                         return;
                     }
@@ -630,10 +629,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                 + change.sequence() + " has a pending audit for the wrong operation.");
                     }
                     if (undo && change.appliedData() == null) {
-                        // Legacy rows do not have a durable record of the physics-normalized rollback result.
-                        // A pending undo audit therefore cannot prove whether its world mutation happened
-                        // before a crash. Fail this coordinate closed and let a later /fg undo retry from a
-                        // fresh live snapshot instead of treating target_data as the pre-mutation state.
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                         continue;
                     }
@@ -643,11 +638,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     byte[] pendingBeforeEntityData = undo ? change.appliedEntityData() : change.beforeEntityData();
                     if (!matchesState(actualData, actualEntityData,
                             pendingBeforeData, pendingBeforeEntityData)) {
-                        // A pending audit proves that FragGuard intended a mutation, but it cannot prove
-                        // that FragGuard caused the live state now present after a crash. Another player,
-                        // plugin, physics/startup processing, or a later edit could have moved the block.
-                        // Fail closed so an unrelated live state is never claimed as FragGuard's applied
-                        // result and later overwritten by /fg undo.
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                         continue;
                     }
@@ -660,9 +650,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                             && ((change.appliedEntityData() == null && actualEntityData != null)
                             || !matchesState(actualData, actualEntityData,
                                     change.appliedData(), change.appliedEntityData()))) {
-                        // A known applied block state paired with a missing entity snapshot means the
-                        // post-mutation capture failed. Do not let null act as a wildcard over inventories,
-                        // signs, or other supported block-entity data during undo conflict checking.
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                     } else {
                         candidates.add(new PreparedWorldChange(change, block, desired, actualData,
@@ -826,7 +813,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        // An acknowledged audit must never survive a budget/TPS pause before its block is mutated.
         rollbackTickBudget.beginCommitted(plugin.getServer().getCurrentTick(),
                 System.nanoTime(), maximumWorkNanos());
         boolean applyPhysics = plugin.getConfig().getBoolean("apply-physics-during-rollback", false);
@@ -878,9 +864,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 try {
                     appliedEntityData = BlockEntitySnapshot.capture(block);
                 } catch (RuntimeException exception) {
-                    // The world mutation and entity restore have completed. Confirm the prepared
-                    // audit with the observable block state before failing so this change remains
-                    // visible and recoverable even when its post-mutation snapshot cannot be read.
                     results.put(candidate.change().sequence(),
                             new RollbackStepResult(candidate.change().sequence(), true, false,
                                     appliedData, null));
@@ -944,6 +927,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         persisted.whenComplete((ignored, throwable) -> onServerThread(() -> {
             if (throwable != null) {
                 Throwable persistenceFailure = unwrap(throwable);
+                if (persistenceFailure instanceof IllegalStateException
+                        && OPERATION_QUEUE_FULL.equals(persistenceFailure.getMessage())) {
+                    Bukkit.getScheduler().runTaskLater(plugin,
+                            () -> persistCompletedResultsBeforeFailure(
+                                    job, operator, results, undo, failure), 1L);
+                    return;
+                }
                 persistenceFailure.addSuppressed(failure);
                 failJob(job, operator, persistenceFailure);
                 return;
@@ -1007,7 +997,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 byte[] actualEntityData = BlockEntitySnapshot.capture(block);
                 if (matchesState(actualData, actualEntityData,
                         desired.getAsString(), change.targetEntityData())) {
-                    // The stale force attempt never mutated this coordinate; another actor completed it.
                     results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                 } else {
                     retryCandidates.add(new PreparedWorldChange(change, block, desired, actualData,
