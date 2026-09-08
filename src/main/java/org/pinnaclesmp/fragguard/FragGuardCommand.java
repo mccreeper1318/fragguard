@@ -643,12 +643,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     byte[] pendingBeforeEntityData = undo ? change.appliedEntityData() : change.beforeEntityData();
                     if (!matchesState(actualData, actualEntityData,
                             pendingBeforeData, pendingBeforeEntityData)) {
-                        // The server stopped after mutating the world but before atomically confirming
-                        // the audit and job progress. The observed result may differ from the requested
-                        // state when physics normalized it, so recover any state that moved away from
-                        // the durable pre-mutation snapshot.
-                        results.put(change.sequence(), new RollbackStepResult(
-                                change.sequence(), true, false, actualData, actualEntityData));
+                        // A pending audit proves that FragGuard intended a mutation, but it cannot prove
+                        // that FragGuard caused the live state now present after a crash. Another player,
+                        // plugin, physics/startup processing, or a later edit could have moved the block.
+                        // Fail closed so an unrelated live state is never claimed as FragGuard's applied
+                        // result and later overwritten by /fg undo.
+                        results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                         continue;
                     }
                 }
