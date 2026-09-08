@@ -15,7 +15,11 @@ record RollbackJobChange(
         boolean undone,
         byte[] beforeEntityData,
         byte[] targetEntityData,
-        byte[] expectedEntityData
+        byte[] expectedEntityData,
+        String appliedData,
+        byte[] appliedEntityData,
+        Long pendingAuditId,
+        boolean pendingAuditUndo
 ) {
     RollbackJobChange(
             int sequence,
@@ -32,7 +36,8 @@ record RollbackJobChange(
             boolean undone
     ) {
         this(sequence, worldName, x, y, z, beforeData, targetData, expectedData,
-                processed, applied, conflicted, undone, null, null, null);
+                processed, applied, conflicted, undone, null, null, null,
+                null, null, null, false);
     }
 
     RollbackJobChange(
@@ -48,7 +53,8 @@ record RollbackJobChange(
             boolean undone
     ) {
         this(sequence, worldName, x, y, z, beforeData, targetData, beforeData,
-                processed, applied, false, undone, null, null, null);
+                processed, applied, false, undone, null, null, null,
+                null, null, null, false);
     }
 
     RollbackJobChange withBeforeData(String blockData) {
@@ -57,6 +63,7 @@ record RollbackJobChange(
 
     RollbackJobChange withBeforeState(String blockData, byte[] entityData) {
         return new RollbackJobChange(sequence, worldName, x, y, z, blockData, targetData, expectedData,
-                processed, applied, conflicted, undone, entityData, targetEntityData, expectedEntityData);
+                processed, applied, conflicted, undone, entityData, targetEntityData, expectedEntityData,
+                appliedData, appliedEntityData, pendingAuditId, pendingAuditUndo);
     }
 }

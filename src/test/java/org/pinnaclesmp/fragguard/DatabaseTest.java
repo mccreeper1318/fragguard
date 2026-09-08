@@ -95,7 +95,7 @@ class DatabaseTest {
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
             try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
                 assertTrue(version.next());
-                assertEquals(2, version.getInt(1));
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
             }
             try (ResultSet history = statement.executeQuery(
                     "SELECT before_entity_data, after_entity_data FROM block_changes")) {
@@ -106,7 +106,8 @@ class DatabaseTest {
         }
 
         Path backup = onlyMigrationBackup();
-        assertTrue(backup.getFileName().toString().startsWith("fragguard.db.pre-migration-v1-to-v2-"));
+        assertTrue(backup.getFileName().toString().startsWith(
+                "fragguard.db.pre-migration-v1-to-v" + Database.SCHEMA_VERSION + "-"));
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + backup);
              Statement statement = connection.createStatement();
              ResultSet version = statement.executeQuery("PRAGMA user_version")) {
@@ -819,6 +820,101 @@ class DatabaseTest {
         assertEquals("UNDONE", undone.status());
         assertTrue(database.loadResumableJobsAsync().join().isEmpty());
         assertTrue(database.health().healthy());
+    }
+
+    @Test
+    void keepsCrashWindowAuditHiddenUntilTheWorldMutationIsCommitted() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 10, timestamp - 1_000L, timestamp, false,
+                List.of(new RollbackTarget("world", 4, 70, 4,
+                        "minecraft:stone", "minecraft:dirt"))).join();
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeData("minecraft:dirt"))).join();
+
+        BlockChange audit = RollbackAudit.create(job, "world", 4, 70, 4,
+                "minecraft:dirt", "minecraft:stone", false);
+        List<Long> ids = database.insertPendingRollbackAuditsAsync(job.id(), false,
+                List.of(new RollbackPendingAudit(change.sequence(), audit))).join();
+        assertEquals(1, ids.size());
+        assertEquals(0, database.lookupAsync("world", 4, 4, 1, 1, 10, 30).join().totalRows(),
+                "an audit prepared before the world mutation must not appear in history");
+
+        database.shutdown();
+        database = startDatabase();
+        RollbackJobChange recovered = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertEquals(ids.get(0), recovered.pendingAuditId());
+
+        database.markRollbackBatchAppliedAsync(job.id(), List.of(new RollbackStepResult(
+                recovered.sequence(), true, false, "minecraft:air", null))).join();
+        LookupPage committed = database.lookupAsync("world", 4, 4, 1, 1, 10, 30).join();
+        assertEquals(1, committed.totalRows());
+        assertEquals("minecraft:dirt", committed.rows().get(0).beforeData());
+        assertEquals("minecraft:air", committed.rows().get(0).afterData(),
+                "the committed audit must record the observed state, including physics corrections");
+
+        database.completeRollbackJobAsync(job.id(), false).join();
+        database.beginUndoAsync(job.id()).join();
+        RollbackJobChange undo = database.loadRollbackChangesAsync(job.id(), true).join().get(0);
+        assertEquals("minecraft:air", undo.appliedData(),
+                "undo must compare against the state the rollback actually left in the world");
+        assertNull(undo.pendingAuditId());
+    }
+
+    @Test
+    void retractsPendingCrashWindowAuditWhenTheMutationConflicts() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 10, timestamp - 1_000L, timestamp, false,
+                List.of(new RollbackTarget("world", 4, 70, 4,
+                        "minecraft:stone", "minecraft:dirt"))).join();
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeData("minecraft:dirt"))).join();
+        BlockChange audit = RollbackAudit.create(job, "world", 4, 70, 4,
+                "minecraft:dirt", "minecraft:stone", false);
+        database.insertPendingRollbackAuditsAsync(job.id(), false,
+                List.of(new RollbackPendingAudit(change.sequence(), audit))).join();
+
+        database.markRollbackBatchAppliedAsync(job.id(),
+                List.of(new RollbackStepResult(change.sequence(), false, true))).join();
+
+        assertEquals(0, database.lookupAsync("world", 4, 4, 1, 1, 10, 30).join().totalRows());
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(0, rows.getInt(1), "a retracted pending audit must not leak as an orphan row");
+        }
+    }
+
+    @Test
+    void deletingAPendingAuditAlsoClearsItsDurableJobLink() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
+                4, 4, 10, timestamp - 1_000L, timestamp, false,
+                List.of(new RollbackTarget("world", 4, 70, 4,
+                        "minecraft:stone", "minecraft:dirt"))).join();
+        RollbackJobChange change = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        database.prepareRollbackBatchAsync(job.id(),
+                List.of(change.withBeforeData("minecraft:dirt"))).join();
+        BlockChange audit = RollbackAudit.create(job, "world", 4, 70, 4,
+                "minecraft:dirt", "minecraft:stone", false);
+        List<Long> ids = database.insertPendingRollbackAuditsAsync(job.id(), false,
+                List.of(new RollbackPendingAudit(change.sequence(), audit))).join();
+
+        database.deleteRequiredAsync(ids).join();
+
+        RollbackJobChange recovered = database.loadRollbackChangesAsync(job.id(), false).join().get(0);
+        assertNull(recovered.pendingAuditId());
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(0, rows.getInt(1));
+        }
     }
 
     @Test

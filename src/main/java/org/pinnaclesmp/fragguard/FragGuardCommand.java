@@ -37,6 +37,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z")
             .withZone(ZoneId.systemDefault());
     private static final String OPERATION_QUEUE_FULL = "FragGuard's database operation queue is full.";
+    private static final byte[] UNKNOWN_ENTITY_STATE = new byte[]{0};
     private static final int MAX_FORCE_REVALIDATION_RETRIES = 8;
     private static final int MAX_AUDITED_CHANGES_PER_SLICE = 16;
 
@@ -624,9 +625,46 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 String normalizedDesired = desired.getAsString();
                 preparedBatch.add(change);
 
+                if (change.pendingAuditId() != null) {
+                    if (change.pendingAuditUndo() != undo) {
+                        throw new IllegalStateException("Rollback job #" + job.id() + " change "
+                                + change.sequence() + " has a pending audit for the wrong operation.");
+                    }
+                    if (undo && change.appliedData() == null) {
+                        // Legacy rows do not have a durable record of the physics-normalized rollback result.
+                        // A pending undo audit therefore cannot prove whether its world mutation happened
+                        // before a crash. Fail this coordinate closed and let a later /fg undo retry from a
+                        // fresh live snapshot instead of treating target_data as the pre-mutation state.
+                        results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
+                        continue;
+                    }
+                    String pendingBeforeData = undo
+                            ? Objects.requireNonNull(change.appliedData(), "Missing observed rollback state")
+                            : Objects.requireNonNull(change.beforeData(), "Missing prepared rollback state");
+                    byte[] pendingBeforeEntityData = undo ? change.appliedEntityData() : change.beforeEntityData();
+                    if (!matchesState(actualData, actualEntityData,
+                            pendingBeforeData, pendingBeforeEntityData)) {
+                        // A pending audit proves that FragGuard intended a mutation, but it cannot prove
+                        // that FragGuard caused the live state now present after a crash. Another player,
+                        // plugin, physics/startup processing, or a later edit could have moved the block.
+                        // Fail closed so an unrelated live state is never claimed as FragGuard's applied
+                        // result and later overwritten by /fg undo.
+                        results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
+                        continue;
+                    }
+                }
+
                 if (undo) {
                     if (matchesState(actualData, actualEntityData, normalizedDesired, desiredEntityData)) {
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, false));
+                    } else if (change.appliedData() != null
+                            && ((change.appliedEntityData() == null && actualEntityData != null)
+                            || !matchesState(actualData, actualEntityData,
+                                    change.appliedData(), change.appliedEntityData()))) {
+                        // A known applied block state paired with a missing entity snapshot means the
+                        // post-mutation capture failed. Do not let null act as a wildcard over inventories,
+                        // signs, or other supported block-entity data during undo conflict checking.
+                        results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                     } else {
                         candidates.add(new PreparedWorldChange(change, block, desired, actualData,
                                 actualEntityData, desiredEntityData));
@@ -651,7 +689,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             rollbackTickBudget.end(System.nanoTime());
         }
         if (failure != null) {
-            failJob(job, operator, failure);
+            persistCompletedResultsBeforeFailure(job, operator, results, undo, failure);
             return;
         }
 
@@ -721,7 +759,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
         prepared.whenComplete((ignored, throwable) -> onServerThread(() -> {
             if (throwable != null) {
-                failJob(job, operator, throwable);
+                persistCompletedResultsBeforeFailure(job, operator, results, undo, throwable);
                 return;
             }
 
@@ -746,24 +784,29 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        List<BlockChange> audits;
+        List<RollbackPendingAudit> audits;
         try {
             audits = slice.stream()
-                    .map(candidate -> RollbackAudit.create(
-                            job,
-                            candidate.block(),
-                            candidate.beforeData(),
-                            candidate.desired().getAsString(),
-                            candidate.beforeEntityData(),
-                            candidate.desiredEntityData(),
-                            undo
-                    ))
+                    .map(candidate -> new RollbackPendingAudit(
+                            candidate.change().sequence(),
+                            RollbackAudit.create(
+                                    job,
+                                    candidate.block(),
+                                    candidate.beforeData(),
+                                    candidate.desired().getAsString(),
+                                    candidate.beforeEntityData(),
+                                    candidate.desiredEntityData(),
+                                    undo
+                            )))
                     .toList();
+        } catch (RuntimeException exception) {
+            persistCompletedResultsBeforeFailure(job, operator, results, undo, exception);
+            return;
         } finally {
             rollbackTickBudget.end(System.nanoTime());
         }
 
-        persistRequiredAudits(job, operator, audits, auditIds -> applyPersistedCandidates(
+        persistPendingAudits(job, operator, undo, audits, results, auditIds -> applyPersistedCandidates(
                 job, operator, slice, auditIds, results, observedCorrections,
                 undo, forceAttempt, () -> persistAndApplyCandidateSlice(
                         job, operator, candidates, results, observedCorrections,
@@ -778,8 +821,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                           boolean undo, int forceAttempt,
                                           Runnable afterApplied) {
         if (auditIds.size() != candidates.size()) {
-            failJob(job, operator, new IllegalStateException(
-                    "Rollback audit persistence returned an unexpected number of record IDs."));
+            persistCompletedResultsBeforeFailure(job, operator, results, undo,
+                    new IllegalStateException(
+                            "Rollback audit persistence returned an unexpected number of record IDs."));
             return;
         }
 
@@ -817,32 +861,49 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         block.setBlockData(candidate.desired(), true);
                     }
                     String resultingData = block.getBlockData().getAsString();
-                    if (desiredData.equals(resultingData)) {
-                        BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
-                    } else {
-                        BlockEntitySnapshot.restoreIfCompatible(block, candidate.desiredEntityData());
-                    }
-                    if (!desiredData.equals(resultingData)) {
-                        observedCorrections.add(RollbackAudit.create(
-                                job,
-                                block,
-                                desiredData,
-                                resultingData,
-                                candidate.desiredEntityData(),
-                                BlockEntitySnapshot.capture(block),
-                                undo
-                        ));
+                    try {
+                        if (desiredData.equals(resultingData)) {
+                            BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
+                        } else {
+                            BlockEntitySnapshot.restoreIfCompatible(block, candidate.desiredEntityData());
+                        }
+                    } catch (RuntimeException exception) {
+                        if (recordRestoreFailureIfMutationObserved(candidate, block, actualData,
+                                actualEntityData, results, exception)) {
+                            index++;
+                        }
+                        throw exception;
                     }
                 } else {
-                    BlockLoggingSuppression.runSuppressed(() -> {
-                        if (!actualData.equals(desiredData)) {
-                            block.setBlockData(candidate.desired(), false);
+                    if (!actualData.equals(desiredData)) {
+                        BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(candidate.desired(), false));
+                    }
+                    try {
+                        BlockLoggingSuppression.runSuppressed(
+                                () -> BlockEntitySnapshot.restore(block, candidate.desiredEntityData()));
+                    } catch (RuntimeException exception) {
+                        if (recordRestoreFailureIfMutationObserved(candidate, block, actualData,
+                                actualEntityData, results, exception)) {
+                            index++;
                         }
-                        BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
-                    });
+                        throw exception;
+                    }
+                }
+                String appliedData = block.getBlockData().getAsString();
+                byte[] appliedEntityData;
+                try {
+                    appliedEntityData = BlockEntitySnapshot.capture(block);
+                } catch (RuntimeException exception) {
+                    // The world mutation and entity restore have completed. Confirm the prepared
+                    // audit with the observable block state before failing so this change remains
+                    // visible and recoverable even when its post-mutation snapshot cannot be read.
+                    recordUnknownAppliedEntityState(candidate, block, results);
+                    index++;
+                    throw exception;
                 }
                 results.put(candidate.change().sequence(),
-                        new RollbackStepResult(candidate.change().sequence(), true, false));
+                        new RollbackStepResult(candidate.change().sequence(), true, false,
+                                appliedData, appliedEntityData));
                 index++;
             }
         } catch (RuntimeException exception) {
@@ -856,27 +917,91 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 staleAuditIds.add(auditIds.get(remaining));
             }
             RuntimeException finalFailure = failure;
-            deleteRequiredAudits(job, operator, staleAuditIds, () ->
+            deleteRequiredAudits(job, operator, staleAuditIds, results, undo, () ->
                     persistObservedCorrections(job, operator, observedCorrections,
-                            () -> failJob(job, operator, finalFailure)));
+                            () -> persistCompletedResultsBeforeFailure(
+                                    job, operator, results, undo, finalFailure)));
             return;
         }
 
-        deleteRequiredAudits(job, operator, staleAuditIds, () ->
+        deleteRequiredAudits(job, operator, staleAuditIds, results, undo, () ->
                 persistObservedCorrections(job, operator, observedCorrections, () -> {
                     if (forceRetries.isEmpty()) {
                         afterApplied.run();
                         return;
                     }
                     if (forceAttempt >= MAX_FORCE_REVALIDATION_RETRIES) {
-                        failJob(job, operator, new IllegalStateException(
-                                "Could not obtain a stable live block state after "
-                                        + MAX_FORCE_REVALIDATION_RETRIES + " force revalidation attempts."));
+                        persistCompletedResultsBeforeFailure(job, operator, results, false,
+                                new IllegalStateException(
+                                        "Could not obtain a stable live block state after "
+                                                + MAX_FORCE_REVALIDATION_RETRIES
+                                                + " force revalidation attempts."));
                         return;
                     }
                     retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
                             forceAttempt + 1, afterApplied);
                 }));
+    }
+
+    private boolean recordRestoreFailureIfMutationObserved(PreparedWorldChange candidate, Block block,
+                                                            String beforeData, byte[] beforeEntityData,
+                                                            Map<Integer, RollbackStepResult> results,
+                                                            RuntimeException restoreFailure) {
+        String liveData = block.getBlockData().getAsString();
+        if (!liveData.equals(beforeData)) {
+            recordUnknownAppliedEntityState(candidate, block, results);
+            return true;
+        }
+
+        byte[] liveEntityData;
+        try {
+            liveEntityData = BlockEntitySnapshot.capture(block);
+        } catch (RuntimeException captureFailure) {
+            restoreFailure.addSuppressed(captureFailure);
+            return false;
+        }
+        if (!Arrays.equals(liveEntityData, beforeEntityData)) {
+            recordUnknownAppliedEntityState(candidate, block, results);
+            return true;
+        }
+        return false;
+    }
+
+    private void recordUnknownAppliedEntityState(PreparedWorldChange candidate, Block block,
+                                                 Map<Integer, RollbackStepResult> results) {
+        results.put(candidate.change().sequence(),
+                new RollbackStepResult(candidate.change().sequence(), true, false,
+                        block.getBlockData().getAsString(), UNKNOWN_ENTITY_STATE.clone()));
+    }
+
+    private void persistCompletedResultsBeforeFailure(RollbackJob job, Player operator,
+                                                      Map<Integer, RollbackStepResult> results,
+                                                      boolean undo, Throwable failure) {
+        List<RollbackStepResult> completedResults = List.copyOf(results.values());
+        if (completedResults.isEmpty()) {
+            failJob(job, operator, failure);
+            return;
+        }
+
+        CompletableFuture<Void> persisted = undo
+                ? database.markUndoBatchAppliedAsync(job.id(), completedResults)
+                : database.markRollbackBatchAppliedAsync(job.id(), completedResults);
+        persisted.whenComplete((ignored, throwable) -> onServerThread(() -> {
+            if (throwable != null) {
+                Throwable persistenceFailure = unwrap(throwable);
+                if (persistenceFailure instanceof IllegalStateException
+                        && OPERATION_QUEUE_FULL.equals(persistenceFailure.getMessage())) {
+                    Bukkit.getScheduler().runTaskLater(plugin,
+                            () -> persistCompletedResultsBeforeFailure(
+                                    job, operator, results, undo, failure), 1L);
+                    return;
+                }
+                persistenceFailure.addSuppressed(failure);
+                failJob(job, operator, persistenceFailure);
+                return;
+            }
+            failJob(job, operator, failure);
+        }));
     }
 
     private void persistObservedCorrections(RollbackJob job, Player operator,
@@ -948,7 +1073,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             rollbackTickBudget.end(System.nanoTime());
         }
         if (failure != null) {
-            failJob(job, operator, failure);
+            persistCompletedResultsBeforeFailure(job, operator, results, false, failure);
             return;
         }
 
@@ -986,7 +1111,35 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         }));
     }
 
+    private void persistPendingAudits(RollbackJob job, Player operator, boolean undo,
+                                      List<RollbackPendingAudit> audits,
+                                      Map<Integer, RollbackStepResult> results,
+                                      Consumer<List<Long>> afterPersisted) {
+        if (audits.isEmpty()) {
+            afterPersisted.accept(List.of());
+            return;
+        }
+
+        database.insertPendingRollbackAuditsAsync(job.id(), undo, audits)
+                .whenComplete((ids, throwable) -> onServerThread(() -> {
+                    if (throwable == null) {
+                        afterPersisted.accept(ids);
+                        return;
+                    }
+
+                    Throwable cause = unwrap(throwable);
+                    if (cause instanceof IllegalStateException
+                            && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
+                        Bukkit.getScheduler().runTaskLater(plugin,
+                                () -> persistPendingAudits(job, operator, undo, audits, results, afterPersisted), 1L);
+                        return;
+                    }
+                    persistCompletedResultsBeforeFailure(job, operator, results, undo, cause);
+                }));
+    }
+
     private void deleteRequiredAudits(RollbackJob job, Player operator, List<Long> auditIds,
+                                      Map<Integer, RollbackStepResult> results, boolean undo,
                                       Runnable afterDeleted) {
         if (auditIds.isEmpty()) {
             afterDeleted.run();
@@ -1000,10 +1153,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             Throwable cause = unwrap(throwable);
             if (cause instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
                 Bukkit.getScheduler().runTaskLater(plugin,
-                        () -> deleteRequiredAudits(job, operator, auditIds, afterDeleted), 1L);
+                        () -> deleteRequiredAudits(job, operator, auditIds, results, undo, afterDeleted), 1L);
                 return;
             }
-            failJob(job, operator, cause);
+            persistCompletedResultsBeforeFailure(job, operator, results, undo, cause);
         }));
     }
 
@@ -1015,7 +1168,18 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 : database.markRollbackBatchAppliedAsync(job.id(), results);
         persisted.whenComplete((ignored, throwable) -> onServerThread(() -> {
             if (throwable != null) {
-                failJob(job, operator, throwable);
+                Throwable cause = unwrap(throwable);
+                if (cause instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
+                    Bukkit.getScheduler().runTaskLater(plugin,
+                            () -> persistBatchResults(job, operator, changes, results,
+                                    nextIndex, undo, previousProgress), 1L);
+                    return;
+                }
+                Map<Integer, RollbackStepResult> completedResults = new HashMap<>();
+                for (RollbackStepResult result : results) {
+                    completedResults.put(result.sequence(), result);
+                }
+                persistCompletedResultsBeforeFailure(job, operator, completedResults, undo, cause);
                 return;
             }
             int progress = (int) ((nextIndex * 100L) / Math.max(1, changes.size()));
@@ -1207,6 +1371,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private static boolean matchesState(String actualData, byte[] actualEntityData,
                                         String expectedData, byte[] expectedEntityData) {
         return actualData.equals(expectedData)
+                && !Arrays.equals(expectedEntityData, UNKNOWN_ENTITY_STATE)
                 && (expectedEntityData == null || Arrays.equals(actualEntityData, expectedEntityData));
     }
 
