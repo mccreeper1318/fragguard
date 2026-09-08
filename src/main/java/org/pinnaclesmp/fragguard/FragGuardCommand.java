@@ -631,10 +631,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                 + change.sequence() + " has a pending audit for the wrong operation.");
                     }
                     if (undo && change.appliedData() == null) {
-                        // Legacy rows do not have a durable record of the physics-normalized rollback result.
-                        // A pending undo audit therefore cannot prove whether its world mutation happened
-                        // before a crash. Fail this coordinate closed and let a later /fg undo retry from a
-                        // fresh live snapshot instead of treating target_data as the pre-mutation state.
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                         continue;
                     }
@@ -644,11 +640,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     byte[] pendingBeforeEntityData = undo ? change.appliedEntityData() : change.beforeEntityData();
                     if (!matchesState(actualData, actualEntityData,
                             pendingBeforeData, pendingBeforeEntityData)) {
-                        // A pending audit proves that FragGuard intended a mutation, but it cannot prove
-                        // that FragGuard caused the live state now present after a crash. Another player,
-                        // plugin, physics/startup processing, or a later edit could have moved the block.
-                        // Fail closed so an unrelated live state is never claimed as FragGuard's applied
-                        // result and later overwritten by /fg undo.
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                         continue;
                     }
@@ -661,9 +652,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                             && ((change.appliedEntityData() == null && actualEntityData != null)
                             || !matchesState(actualData, actualEntityData,
                                     change.appliedData(), change.appliedEntityData()))) {
-                        // A known applied block state paired with a missing entity snapshot means the
-                        // post-mutation capture failed. Do not let null act as a wildcard over inventories,
-                        // signs, or other supported block-entity data during undo conflict checking.
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                     } else {
                         candidates.add(new PreparedWorldChange(change, block, desired, actualData,
@@ -827,7 +815,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        // An acknowledged audit must never survive a budget/TPS pause before its block is mutated.
         rollbackTickBudget.beginCommitted(plugin.getServer().getCurrentTick(),
                 System.nanoTime(), maximumWorkNanos());
         boolean applyPhysics = plugin.getConfig().getBoolean("apply-physics-during-rollback", false);
@@ -868,8 +855,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                             BlockEntitySnapshot.restoreIfCompatible(block, candidate.desiredEntityData());
                         }
                     } catch (RuntimeException exception) {
-                        recordUnknownAppliedEntityState(candidate, block, results);
-                        index++;
+                        if (recordRestoreFailureIfMutationObserved(candidate, block, actualData,
+                                actualEntityData, results, exception)) {
+                            index++;
+                        }
                         throw exception;
                     }
                 } else {
@@ -880,8 +869,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         BlockLoggingSuppression.runSuppressed(
                                 () -> BlockEntitySnapshot.restore(block, candidate.desiredEntityData()));
                     } catch (RuntimeException exception) {
-                        recordUnknownAppliedEntityState(candidate, block, results);
-                        index++;
+                        if (recordRestoreFailureIfMutationObserved(candidate, block, actualData,
+                                actualEntityData, results, exception)) {
+                            index++;
+                        }
                         throw exception;
                     }
                 }
@@ -890,9 +881,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 try {
                     appliedEntityData = BlockEntitySnapshot.capture(block);
                 } catch (RuntimeException exception) {
-                    // The world mutation and entity restore have completed. Confirm the prepared
-                    // audit with the observable block state before failing so this change remains
-                    // visible and recoverable even when its post-mutation snapshot cannot be read.
                     recordUnknownAppliedEntityState(candidate, block, results);
                     index++;
                     throw exception;
@@ -937,6 +925,30 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
                             forceAttempt + 1, afterApplied);
                 }));
+    }
+
+    private boolean recordRestoreFailureIfMutationObserved(PreparedWorldChange candidate, Block block,
+                                                            String beforeData, byte[] beforeEntityData,
+                                                            Map<Integer, RollbackStepResult> results,
+                                                            RuntimeException restoreFailure) {
+        String liveData = block.getBlockData().getAsString();
+        if (!liveData.equals(beforeData)) {
+            recordUnknownAppliedEntityState(candidate, block, results);
+            return true;
+        }
+
+        byte[] liveEntityData;
+        try {
+            liveEntityData = BlockEntitySnapshot.capture(block);
+        } catch (RuntimeException captureFailure) {
+            restoreFailure.addSuppressed(captureFailure);
+            return false;
+        }
+        if (!Arrays.equals(liveEntityData, beforeEntityData)) {
+            recordUnknownAppliedEntityState(candidate, block, results);
+            return true;
+        }
+        return false;
     }
 
     private void recordUnknownAppliedEntityState(PreparedWorldChange candidate, Block block,
@@ -1031,7 +1043,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 byte[] actualEntityData = BlockEntitySnapshot.capture(block);
                 if (matchesState(actualData, actualEntityData,
                         desired.getAsString(), change.targetEntityData())) {
-                    // The stale force attempt never mutated this coordinate; another actor completed it.
                     results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                 } else {
                     retryCandidates.add(new PreparedWorldChange(change, block, desired, actualData,
