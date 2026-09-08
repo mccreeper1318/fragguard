@@ -83,11 +83,11 @@ class RollbackPreparedFailureUndoRegressionTest {
         assertEquals(1, undo.conflictBlocks(),
                 "the abandoned prepared row should be recorded as a non-applied conflict");
 
+        String abandonedRowSql = "SELECT processed, applied, conflicted, pending_audit_id "
+                + "FROM rollback_job_changes WHERE job_id = " + job.id()
+                + " AND sequence = " + changes.get(1).sequence();
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
-             ResultSet row = statement.executeQuery("""
-                     SELECT processed, applied, conflicted, pending_audit_id
-                     FROM rollback_job_changes
-                     WHERE job_id = " + job.id() + " AND sequence = " + changes.get(1).sequence())) {
+             ResultSet row = statement.executeQuery(abandonedRowSql)) {
             assertTrue(row.next());
             assertEquals(1, row.getInt("processed"));
             assertEquals(0, row.getInt("applied"));
