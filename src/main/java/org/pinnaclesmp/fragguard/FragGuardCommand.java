@@ -903,14 +903,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 staleAuditIds.add(auditIds.get(remaining));
             }
             RuntimeException finalFailure = failure;
-            deleteRequiredAudits(job, operator, staleAuditIds, () ->
+            deleteRequiredAudits(job, operator, staleAuditIds, results, undo, () ->
                     persistObservedCorrections(job, operator, observedCorrections,
                             () -> persistCompletedResultsBeforeFailure(
                                     job, operator, results, undo, finalFailure)));
             return;
         }
 
-        deleteRequiredAudits(job, operator, staleAuditIds, () ->
+        deleteRequiredAudits(job, operator, staleAuditIds, results, undo, () ->
                 persistObservedCorrections(job, operator, observedCorrections, () -> {
                     if (forceRetries.isEmpty()) {
                         afterApplied.run();
@@ -1087,6 +1087,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     }
 
     private void deleteRequiredAudits(RollbackJob job, Player operator, List<Long> auditIds,
+                                      Map<Integer, RollbackStepResult> results, boolean undo,
                                       Runnable afterDeleted) {
         if (auditIds.isEmpty()) {
             afterDeleted.run();
@@ -1100,10 +1101,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             Throwable cause = unwrap(throwable);
             if (cause instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
                 Bukkit.getScheduler().runTaskLater(plugin,
-                        () -> deleteRequiredAudits(job, operator, auditIds, afterDeleted), 1L);
+                        () -> deleteRequiredAudits(job, operator, auditIds, results, undo, afterDeleted), 1L);
                 return;
             }
-            failJob(job, operator, cause);
+            persistCompletedResultsBeforeFailure(job, operator, results, undo, cause);
         }));
     }
 
