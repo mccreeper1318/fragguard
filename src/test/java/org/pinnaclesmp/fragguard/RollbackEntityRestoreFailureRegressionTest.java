@@ -108,6 +108,63 @@ class RollbackEntityRestoreFailureRegressionTest {
         }
     }
 
+    @Test
+    void entityOnlyRestoreFailureWithoutMutationRetractsCurrentAudit() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class);
+        Server server = mock(Server.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("apply-physics-during-rollback", false);
+        configuration.set("rollback-max-millis-per-tick", 50.0);
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getLogger()).thenReturn(Logger.getLogger("FragGuardTest"));
+        when(server.getCurrentTick()).thenReturn(100);
+
+        Database database = mock(Database.class);
+        when(database.deleteRequiredAsync(List.of(11L)))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        when(database.failRollbackJobAsync(eq(41L), anyString()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        FragGuardCommand command = new FragGuardCommand(plugin, database);
+        RollbackJob job = new RollbackJob(41L, 1_000L, UUID.randomUUID().toString(), "Builder",
+                UUID.randomUUID().toString(), "world", 0, 0, 20,
+                500L, "RUNNING", 1, 0, 0, 0, null);
+
+        BlockData desired = mock(BlockData.class);
+        when(desired.getAsString()).thenReturn("minecraft:chest");
+        Block block = mock(Block.class);
+        when(block.getBlockData()).thenReturn(desired);
+
+        byte[] beforeEntityData = new byte[]{1};
+        byte[] desiredEntityData = new byte[]{9};
+        RollbackJobChange change = new RollbackJobChange(
+                0, "world", 1, 64, 1,
+                "minecraft:chest", "minecraft:chest", false, false, false);
+        Object candidate = preparedChange(change, block, desired,
+                "minecraft:chest", beforeEntityData, desiredEntityData);
+
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return mock(BukkitTask.class);
+        });
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             MockedStatic<BlockEntitySnapshot> snapshots = mockStatic(BlockEntitySnapshot.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            snapshots.when(() -> BlockEntitySnapshot.capture(block)).thenReturn(beforeEntityData);
+            snapshots.when(() -> BlockEntitySnapshot.restore(block, desiredEntityData))
+                    .thenThrow(new IllegalStateException("simulated decode rejection"));
+
+            applyPersistedCandidates(command, job, candidate);
+
+            verify(database).deleteRequiredAsync(List.of(11L));
+            verify(database, never()).markRollbackBatchAppliedAsync(eq(41L), anyList());
+            verify(database).failRollbackJobAsync(eq(41L), anyString());
+        }
+    }
+
     private static Object preparedChange(RollbackJobChange change, Block block,
                                          BlockData desired, String beforeData,
                                          byte[] beforeEntityData, byte[] desiredEntityData) throws Exception {
