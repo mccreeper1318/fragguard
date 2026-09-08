@@ -18,8 +18,8 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -42,7 +42,7 @@ class RollbackUnknownEntityAuditRegressionTest {
     }
 
     @Test
-    void failedPostMutationEntityCaptureClearsPreparedAuditEntityPayload() throws Exception {
+    void failedPostMutationEntityCapturePersistsExplicitUnknownMarker() throws Exception {
         database = startDatabase();
         long timestamp = System.currentTimeMillis();
         RollbackJob job = database.createRollbackJobAsync(ACTOR_UUID.toString(), "Builder", "world",
@@ -61,19 +61,17 @@ class RollbackUnknownEntityAuditRegressionTest {
         database.insertPendingRollbackAuditsAsync(job.id(), false,
                 List.of(new RollbackPendingAudit(change.sequence(), audit))).join();
 
-        // A non-null applied block state with a null applied entity snapshot means the world mutation
-        // completed but post-mutation entity capture failed. The visible history must not retain the
-        // intended entity payload as though it had been observed.
+        byte[] unknownEntityState = new byte[]{0};
         database.markRollbackBatchAppliedAsync(job.id(),
                 List.of(new RollbackStepResult(change.sequence(), true, false,
-                        "minecraft:chest", null))).join();
+                        "minecraft:chest", unknownEntityState))).join();
 
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
              ResultSet row = statement.executeQuery(
                      "SELECT after_entity_data, rollback_pending FROM block_changes")) {
             assertTrue(row.next());
-            assertNull(row.getBytes("after_entity_data"),
-                    "an unverified post-mutation entity state must be stored as unknown, not the prepared target");
+            assertArrayEquals(unknownEntityState, row.getBytes("after_entity_data"),
+                    "an unverified post-mutation entity state must remain explicitly unknown in visible history");
             assertEquals(0, row.getInt("rollback_pending"));
         }
 
@@ -81,8 +79,8 @@ class RollbackUnknownEntityAuditRegressionTest {
              ResultSet row = statement.executeQuery(
                      "SELECT applied_entity_data FROM rollback_job_changes WHERE job_id = " + job.id())) {
             assertTrue(row.next());
-            assertNull(row.getBytes("applied_entity_data"),
-                    "the rollback job state and visible audit must agree that the entity snapshot is unknown");
+            assertArrayEquals(unknownEntityState, row.getBytes("applied_entity_data"),
+                    "the rollback job state and visible audit must carry the same explicit unknown marker");
         }
     }
 
