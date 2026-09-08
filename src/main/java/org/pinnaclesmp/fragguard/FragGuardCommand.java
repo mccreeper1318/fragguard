@@ -1147,7 +1147,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                     nextIndex, undo, previousProgress), 1L);
                     return;
                 }
-                failJob(job, operator, cause);
+                Map<Integer, RollbackStepResult> completedResults = new HashMap<>();
+                for (RollbackStepResult result : results) {
+                    completedResults.put(result.sequence(), result);
+                }
+                persistCompletedResultsBeforeFailure(job, operator, completedResults, undo, cause);
                 return;
             }
             int progress = (int) ((nextIndex * 100L) / Math.max(1, changes.size()));
