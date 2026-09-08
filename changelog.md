@@ -1,6 +1,6 @@
 # FG Changelog
 
-## 1.1.0
+## 26.2-1.1.0
 
 ### Added
 
@@ -16,7 +16,7 @@
 
 ### Changed
 
-- Adopted plain semantic release versions beginning with `1.1.0`; release tags may use `1.1.0`, `v1.1.0`, or matching `-beta.N` and `-rc.N` suffixes.
+- Adopted Paper-prefixed semantic release versions beginning with `26.2-1.1.0`; release tags may use `26.2-1.1.0`, `v26.2-1.1.0`, or matching `-beta.N` and `-rc.N` suffixes.
 - Event handlers now capture the before-state during the event and the actual resulting state on the next server tick while preserving the original event tick for coalescing.
 - Player, projectile-shooter, entity, and environmental changes now retain the most specific available actor and cause attribution.
 - Interaction logging now ignores temporary buttons, pressure plates, tripwires, and bed occupancy, and snapshots only containers whose structure can change through the interaction.
@@ -48,5 +48,5 @@
 - Fixed #18, #19, and #20 by updating and locking the identified runtime and build dependencies and validating the shaded plugin through CI.
 - Fixed #39 by requiring undo to match the exact block and block-entity state observed after rollback, leaving later player edits untouched as retryable conflicts, failing legacy pending-undo crash ambiguity closed instead of substituting the requested target, and refusing to treat a missing post-mutation entity snapshot as a wildcard over live inventory or text changes.
 - Fixed #40 by recording both the source and destination of liquid flow ticks so level loss, decay, retraction, and removal are retained in history.
-- Fixed #41 by hiding prepared rollback audits until their mutation is confirmed, durably linking them to job changes, failing ambiguous pending recovery closed instead of claiming unrelated live states, persisting unverified post-mutation entity state as an explicit fail-closed marker, only confirming restore-failure audits when the live block or block-entity state proves a mutation occurred, finalizing prepared-but-unapplied rows as non-applied conflicts when a rollback fails, retrying both exceptional and normal durable result commits under transient database operation-queue pressure, re-committing completed normal-batch results before finalizing non-queue commit failures, and preserving completed mutations across crashes, runtime failures, block-entity restoration or snapshot-capture errors, later-slice preparation or audit-insertion failures, stale-audit cleanup failures, retry failures, or force-revalidation exhaustion.
+- Fixed #41 by hiding prepared rollback audits until their mutation is confirmed, durably linking them to job changes, failing ambiguous pending recovery closed instead of claiming unrelated live states, persisting unverified post-mutation entity state as an explicit fail-closed marker, finalizing prepared-but-unapplied rows as non-applied conflicts when a rollback fails, retrying both exceptional and normal durable result commits under transient database operation-queue pressure, re-committing completed normal-batch results before finalizing non-queue commit failures, and preserving completed mutations across crashes, runtime failures, block-entity restoration or snapshot-capture errors, later-slice preparation or audit-insertion failures, stale-audit cleanup failures, retry failures, or force-revalidation exhaustion.
 - Fixed #42 by attributing TNT and projectile explosions to the responsible player when Paper exposes that causal source.
