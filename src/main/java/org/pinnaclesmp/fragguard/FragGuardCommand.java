@@ -629,12 +629,18 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         throw new IllegalStateException("Rollback job #" + job.id() + " change "
                                 + change.sequence() + " has a pending audit for the wrong operation.");
                     }
+                    if (undo && change.appliedData() == null) {
+                        // Legacy rows do not have a durable record of the physics-normalized rollback result.
+                        // A pending undo audit therefore cannot prove whether its world mutation happened
+                        // before a crash. Fail this coordinate closed and let a later /fg undo retry from a
+                        // fresh live snapshot instead of treating target_data as the pre-mutation state.
+                        results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
+                        continue;
+                    }
                     String pendingBeforeData = undo
-                            ? Objects.requireNonNullElse(change.appliedData(), change.targetData())
+                            ? Objects.requireNonNull(change.appliedData(), "Missing observed rollback state")
                             : Objects.requireNonNull(change.beforeData(), "Missing prepared rollback state");
-                    byte[] pendingBeforeEntityData = undo && change.appliedData() == null
-                            ? change.targetEntityData()
-                            : undo ? change.appliedEntityData() : change.beforeEntityData();
+                    byte[] pendingBeforeEntityData = undo ? change.appliedEntityData() : change.beforeEntityData();
                     if (!matchesState(actualData, actualEntityData,
                             pendingBeforeData, pendingBeforeEntityData)) {
                         // The server stopped after mutating the world but before atomically confirming
@@ -651,8 +657,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     if (matchesState(actualData, actualEntityData, normalizedDesired, desiredEntityData)) {
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, false));
                     } else if (change.appliedData() != null
-                            && !matchesState(actualData, actualEntityData,
-                                    change.appliedData(), change.appliedEntityData())) {
+                            && ((change.appliedEntityData() == null && actualEntityData != null)
+                            || !matchesState(actualData, actualEntityData,
+                                    change.appliedData(), change.appliedEntityData()))) {
+                        // A known applied block state paired with a missing entity snapshot means the
+                        // post-mutation capture failed. Do not let null act as a wildcard over inventories,
+                        // signs, or other supported block-entity data during undo conflict checking.
                         results.put(change.sequence(), new RollbackStepResult(change.sequence(), false, true));
                     } else {
                         candidates.add(new PreparedWorldChange(change, block, desired, actualData,
