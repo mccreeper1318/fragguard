@@ -675,16 +675,57 @@ final class Database {
     }
 
     CompletableFuture<Void> failRollbackJobAsync(long jobId, String reason) {
-        return submit(databaseConnection -> {
-            try (PreparedStatement statement = databaseConnection.prepareStatement(
-                    "UPDATE rollback_jobs SET status = 'FAILED', updated_at = ?, last_error = ? WHERE id = ?")) {
+        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            RollbackJob job = loadJob(databaseConnection, jobId);
+            int abandonedPrepared = 0;
+            if (job.status().equals("RUNNING")) {
+                try (PreparedStatement deletePendingAudits = databaseConnection.prepareStatement("""
+                             DELETE FROM block_changes
+                             WHERE rollback_pending = 1
+                               AND id IN (
+                                   SELECT pending_audit_id
+                                   FROM rollback_job_changes
+                                   WHERE job_id = ?
+                                     AND processed = 0
+                                     AND before_data IS NOT NULL
+                               )
+                             """);
+                     PreparedStatement markAbandoned = databaseConnection.prepareStatement("""
+                             UPDATE rollback_job_changes
+                             SET processed = 1,
+                                 applied = 0,
+                                 conflicted = 1,
+                                 pending_audit_id = NULL,
+                                 pending_audit_undo = 0
+                             WHERE job_id = ?
+                               AND processed = 0
+                               AND before_data IS NOT NULL
+                             """)) {
+                    deletePendingAudits.setLong(1, jobId);
+                    deletePendingAudits.executeUpdate();
+                    markAbandoned.setLong(1, jobId);
+                    abandonedPrepared = markAbandoned.executeUpdate();
+                }
+            }
+
+            try (PreparedStatement statement = databaseConnection.prepareStatement("""
+                    UPDATE rollback_jobs
+                    SET status = 'FAILED',
+                        updated_at = ?,
+                        last_error = ?,
+                        processed_blocks = processed_blocks + ?,
+                        conflict_blocks = conflict_blocks + ?
+                    WHERE id = ?
+                    """)) {
                 statement.setLong(1, System.currentTimeMillis());
                 statement.setString(2, reason);
-                statement.setLong(3, jobId);
+                statement.setInt(3, abandonedPrepared);
+                statement.setInt(4, abandonedPrepared);
+                statement.setLong(5, jobId);
                 statement.executeUpdate();
             }
             return null;
-        }, false);
+        }), false);
     }
 
     CompletableFuture<RollbackJob> beginUndoAsync(long jobId) {
