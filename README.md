@@ -81,7 +81,7 @@ Shows database health, bounded write/control queue usage, coalesced same-tick ch
 
 ## Database upgrades and recovery
 
-FragGuard records its SQLite schema version in `PRAGMA user_version`. Existing unversioned and version-1 databases are upgraded automatically to version 2 when the plugin starts. Before changing an existing schema, FragGuard creates a consistent SQLite snapshot with `VACUUM INTO`, verifies it with `PRAGMA quick_check`, and saves it under:
+FragGuard records its SQLite schema version in `PRAGMA user_version`. Existing unversioned, version-1, and version-2 databases are upgraded automatically to version 3 when the plugin starts. Before changing an existing schema, FragGuard creates a consistent SQLite snapshot with `VACUUM INTO`, verifies it with `PRAGMA quick_check`, and saves it under:
 
 ```text
 plugins/FragGuard/backups/fragguard.db.pre-migration-v2-to-v3-<timestamp>.bak
