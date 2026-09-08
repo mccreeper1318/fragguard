@@ -77,10 +77,13 @@ class RollbackUnknownEntityAuditRegressionTest {
             assertEquals(0, row.getInt("rollback_pending"));
         }
 
-        RollbackJobChange persisted = database.loadRollbackChangesAsync(job.id(), false).join().stream()
-                .findFirst().orElseThrow();
-        assertNull(persisted.appliedEntityData(),
-                "the rollback job state and visible audit must agree that the entity snapshot is unknown");
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet row = statement.executeQuery(
+                     "SELECT applied_entity_data FROM rollback_job_changes WHERE job_id = " + job.id())) {
+            assertTrue(row.next());
+            assertNull(row.getBytes("applied_entity_data"),
+                    "the rollback job state and visible audit must agree that the entity snapshot is unknown");
+        }
     }
 
     private Database startDatabase() throws Exception {
