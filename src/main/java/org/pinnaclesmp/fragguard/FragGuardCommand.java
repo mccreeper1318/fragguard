@@ -758,7 +758,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
         prepared.whenComplete((ignored, throwable) -> onServerThread(() -> {
             if (throwable != null) {
-                failJob(job, operator, throwable);
+                persistCompletedResultsBeforeFailure(job, operator, results, undo, throwable);
                 return;
             }
 
@@ -798,11 +798,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                     undo
                             )))
                     .toList();
+        } catch (RuntimeException exception) {
+            persistCompletedResultsBeforeFailure(job, operator, results, undo, exception);
+            return;
         } finally {
             rollbackTickBudget.end(System.nanoTime());
         }
 
-        persistPendingAudits(job, operator, undo, audits, auditIds -> applyPersistedCandidates(
+        persistPendingAudits(job, operator, undo, audits, results, auditIds -> applyPersistedCandidates(
                 job, operator, slice, auditIds, results, observedCorrections,
                 undo, forceAttempt, () -> persistAndApplyCandidateSlice(
                         job, operator, candidates, results, observedCorrections,
@@ -817,8 +820,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                                           boolean undo, int forceAttempt,
                                           Runnable afterApplied) {
         if (auditIds.size() != candidates.size()) {
-            failJob(job, operator, new IllegalStateException(
-                    "Rollback audit persistence returned an unexpected number of record IDs."));
+            persistCompletedResultsBeforeFailure(job, operator, results, undo,
+                    new IllegalStateException(
+                            "Rollback audit persistence returned an unexpected number of record IDs."));
             return;
         }
 
@@ -927,7 +931,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
     private void persistCompletedResultsBeforeFailure(RollbackJob job, Player operator,
                                                       Map<Integer, RollbackStepResult> results,
-                                                      boolean undo, RuntimeException failure) {
+                                                      boolean undo, Throwable failure) {
         List<RollbackStepResult> completedResults = List.copyOf(results.values());
         if (completedResults.isEmpty()) {
             failJob(job, operator, failure);
@@ -1057,6 +1061,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
     private void persistPendingAudits(RollbackJob job, Player operator, boolean undo,
                                       List<RollbackPendingAudit> audits,
+                                      Map<Integer, RollbackStepResult> results,
                                       Consumer<List<Long>> afterPersisted) {
         if (audits.isEmpty()) {
             afterPersisted.accept(List.of());
@@ -1074,10 +1079,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     if (cause instanceof IllegalStateException
                             && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
                         Bukkit.getScheduler().runTaskLater(plugin,
-                                () -> persistPendingAudits(job, operator, undo, audits, afterPersisted), 1L);
+                                () -> persistPendingAudits(job, operator, undo, audits, results, afterPersisted), 1L);
                         return;
                     }
-                    failJob(job, operator, cause);
+                    persistCompletedResultsBeforeFailure(job, operator, results, undo, cause);
                 }));
     }
 
