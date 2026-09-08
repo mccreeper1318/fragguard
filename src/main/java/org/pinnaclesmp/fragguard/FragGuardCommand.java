@@ -37,6 +37,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z")
             .withZone(ZoneId.systemDefault());
     private static final String OPERATION_QUEUE_FULL = "FragGuard's database operation queue is full.";
+    private static final byte[] UNKNOWN_ENTITY_STATE = new byte[]{0};
     private static final int MAX_FORCE_REVALIDATION_RETRIES = 8;
     private static final int MAX_AUDITED_CHANGES_PER_SLICE = 16;
 
@@ -860,18 +861,29 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                         block.setBlockData(candidate.desired(), true);
                     }
                     String resultingData = block.getBlockData().getAsString();
-                    if (desiredData.equals(resultingData)) {
-                        BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
-                    } else {
-                        BlockEntitySnapshot.restoreIfCompatible(block, candidate.desiredEntityData());
+                    try {
+                        if (desiredData.equals(resultingData)) {
+                            BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
+                        } else {
+                            BlockEntitySnapshot.restoreIfCompatible(block, candidate.desiredEntityData());
+                        }
+                    } catch (RuntimeException exception) {
+                        recordUnknownAppliedEntityState(candidate, block, results);
+                        index++;
+                        throw exception;
                     }
                 } else {
-                    BlockLoggingSuppression.runSuppressed(() -> {
-                        if (!actualData.equals(desiredData)) {
-                            block.setBlockData(candidate.desired(), false);
-                        }
-                        BlockEntitySnapshot.restore(block, candidate.desiredEntityData());
-                    });
+                    if (!actualData.equals(desiredData)) {
+                        BlockLoggingSuppression.runSuppressed(() -> block.setBlockData(candidate.desired(), false));
+                    }
+                    try {
+                        BlockLoggingSuppression.runSuppressed(
+                                () -> BlockEntitySnapshot.restore(block, candidate.desiredEntityData()));
+                    } catch (RuntimeException exception) {
+                        recordUnknownAppliedEntityState(candidate, block, results);
+                        index++;
+                        throw exception;
+                    }
                 }
                 String appliedData = block.getBlockData().getAsString();
                 byte[] appliedEntityData;
@@ -881,9 +893,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     // The world mutation and entity restore have completed. Confirm the prepared
                     // audit with the observable block state before failing so this change remains
                     // visible and recoverable even when its post-mutation snapshot cannot be read.
-                    results.put(candidate.change().sequence(),
-                            new RollbackStepResult(candidate.change().sequence(), true, false,
-                                    appliedData, null));
+                    recordUnknownAppliedEntityState(candidate, block, results);
                     index++;
                     throw exception;
                 }
@@ -927,6 +937,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                     retryForcedChanges(job, operator, forceRetries, results, observedCorrections,
                             forceAttempt + 1, afterApplied);
                 }));
+    }
+
+    private void recordUnknownAppliedEntityState(PreparedWorldChange candidate, Block block,
+                                                 Map<Integer, RollbackStepResult> results) {
+        results.put(candidate.change().sequence(),
+                new RollbackStepResult(candidate.change().sequence(), true, false,
+                        block.getBlockData().getAsString(), UNKNOWN_ENTITY_STATE.clone()));
     }
 
     private void persistCompletedResultsBeforeFailure(RollbackJob job, Player operator,
@@ -1123,7 +1140,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 : database.markRollbackBatchAppliedAsync(job.id(), results);
         persisted.whenComplete((ignored, throwable) -> onServerThread(() -> {
             if (throwable != null) {
-                failJob(job, operator, throwable);
+                Throwable cause = unwrap(throwable);
+                if (cause instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(cause.getMessage())) {
+                    Bukkit.getScheduler().runTaskLater(plugin,
+                            () -> persistBatchResults(job, operator, changes, results,
+                                    nextIndex, undo, previousProgress), 1L);
+                    return;
+                }
+                failJob(job, operator, cause);
                 return;
             }
             int progress = (int) ((nextIndex * 100L) / Math.max(1, changes.size()));
@@ -1315,6 +1339,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private static boolean matchesState(String actualData, byte[] actualEntityData,
                                         String expectedData, byte[] expectedEntityData) {
         return actualData.equals(expectedData)
+                && !Arrays.equals(expectedEntityData, UNKNOWN_ENTITY_STATE)
                 && (expectedEntityData == null || Arrays.equals(actualEntityData, expectedEntityData));
     }
 
