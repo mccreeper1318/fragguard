@@ -27,7 +27,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -75,10 +74,11 @@ class RollbackEntityRestoreFailureRegressionTest {
             return null;
         }).when(block).setBlockData(desired, false);
 
+        byte[] desiredEntityData = new byte[]{9};
         RollbackJobChange change = new RollbackJobChange(
                 0, "world", 1, 64, 1,
                 "minecraft:stone", "minecraft:chest", false, false, false);
-        Object candidate = preparedChange(change, block, desired, "minecraft:stone", null, new byte[]{9});
+        Object candidate = preparedChange(change, block, desired, "minecraft:stone", null, desiredEntityData);
 
         BukkitScheduler scheduler = mock(BukkitScheduler.class);
         when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
@@ -90,7 +90,7 @@ class RollbackEntityRestoreFailureRegressionTest {
              MockedStatic<BlockEntitySnapshot> snapshots = mockStatic(BlockEntitySnapshot.class)) {
             bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
             snapshots.when(() -> BlockEntitySnapshot.capture(block)).thenReturn(null);
-            snapshots.when(() -> BlockEntitySnapshot.restore(block, new byte[]{9}))
+            snapshots.when(() -> BlockEntitySnapshot.restore(block, desiredEntityData))
                     .thenThrow(new IllegalStateException("simulated restore rejection"));
 
             applyPersistedCandidates(command, job, candidate);
