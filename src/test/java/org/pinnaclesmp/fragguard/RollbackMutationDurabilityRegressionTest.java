@@ -44,6 +44,23 @@ class RollbackMutationDurabilityRegressionTest {
     }
 
     @Test
+    void normalBatchCommitFailurePreservesCompletedResultsBeforeFinalizingFailure() throws Exception {
+        String source = Files.readString(COMMAND_SOURCE);
+        int methodStart = source.indexOf("private void persistBatchResults");
+        int methodEnd = source.indexOf("private void failJob", methodStart);
+
+        assertTrue(methodStart >= 0 && methodEnd > methodStart);
+        String method = source.substring(methodStart, methodEnd);
+        assertTrue(method.contains("Map<Integer, RollbackStepResult> completedResults = new HashMap<>()"),
+                "normal commit failures must retain the completed results for a durable retry");
+        assertTrue(method.contains(
+                        "persistCompletedResultsBeforeFailure(job, operator, completedResults, undo, cause)"),
+                "non-queue commit failures must preserve completed results before failure finalization");
+        assertFalse(method.contains("failJob(job, operator, cause);"),
+                "persistBatchResults must not directly finalize a job after losing a completed-result commit");
+    }
+
+    @Test
     void explicitUnknownEntityMarkerNeverMatchesALiveState() throws Exception {
         Method matchesState = FragGuardCommand.class.getDeclaredMethod(
                 "matchesState", String.class, byte[].class, String.class, byte[].class);
