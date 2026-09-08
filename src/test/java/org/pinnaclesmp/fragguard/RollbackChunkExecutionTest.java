@@ -292,7 +292,7 @@ class RollbackChunkExecutionTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void recoversPendingRollbackAfterPhysicsNormalizesTheRequestedState() throws Exception {
+    void failsClosedWhenPendingRollbackCouldBePhysicsNormalizedOrExternallyEdited() throws Exception {
         FragGuardPlugin plugin = mock(FragGuardPlugin.class);
         Server server = mock(Server.class);
         YamlConfiguration configuration = new YamlConfiguration();
@@ -340,9 +340,11 @@ class RollbackChunkExecutionTest {
             ArgumentCaptor<List<RollbackStepResult>> captured = ArgumentCaptor.forClass(List.class);
             verify(database).markRollbackBatchAppliedAsync(eq(41L), captured.capture());
             RollbackStepResult recovered = captured.getValue().get(0);
-            assertTrue(recovered.changed());
-            assertFalse(recovered.conflicted());
-            assertEquals(normalizedData, recovered.appliedData());
+            assertFalse(recovered.changed(),
+                    "restart recovery must not claim an ambiguous live state as FragGuard's mutation");
+            assertTrue(recovered.conflicted(),
+                    "an ambiguous pending rollback must remain a conflict");
+            assertEquals(null, recovered.appliedData());
         }
     }
 
