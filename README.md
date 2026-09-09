@@ -135,7 +135,7 @@ apply-physics-during-rollback: false
 
 ## Build
 
-Requires Java 25. The Gradle 9.3.0 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
+Requires Java 25. The Gradle 9.7.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
 FragGuard versions use the Paper compatibility line followed by the plugin semantic version. For example, `26.2-1.1.1` means FragGuard `1.1.1` for Paper `26.2`. Release tags may optionally start with `v`, and prereleases append suffixes such as `-beta.1` or `-rc.1`.
 
