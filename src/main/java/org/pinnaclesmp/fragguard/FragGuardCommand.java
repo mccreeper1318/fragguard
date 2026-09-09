@@ -1203,9 +1203,22 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         plugin.getLogger().log(Level.SEVERE, "FragGuard rollback job #" + job.id() + " failed", cause);
         message(operator, "&cRollback job #" + job.id() + " failed: " + reason
                 + " &7Saved changes can be reversed with &f/fg undo " + job.id());
-        database.failRollbackJobAsync(job.id(), reason).exceptionally(failure -> {
-            plugin.getLogger().log(Level.SEVERE, "Could not persist failure of rollback job #" + job.id(), unwrap(failure));
-            return null;
+        persistFailedJobState(job, reason);
+    }
+
+    private void persistFailedJobState(RollbackJob job, String reason) {
+        database.failRollbackJobAsync(job.id(), reason).whenComplete((ignored, throwable) -> {
+            if (throwable == null) {
+                return;
+            }
+            Throwable failure = unwrap(throwable);
+            if (failure instanceof IllegalStateException && OPERATION_QUEUE_FULL.equals(failure.getMessage())) {
+                Bukkit.getScheduler().runTaskLater(plugin,
+                        () -> persistFailedJobState(job, reason), 1L);
+                return;
+            }
+            plugin.getLogger().log(Level.SEVERE,
+                    "Could not persist failure of rollback job #" + job.id(), failure);
         });
     }
 
