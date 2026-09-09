@@ -9,11 +9,10 @@ updates:
       day: "monday"
     open-pull-requests-limit: 10
     ignore:
-      # Paper's 26.2-rc-2.build.9-alpha line is a regression from the currently pinned
-      # 26.2.build.62-beta line, despite Dependabot ordering it as an upgrade.
+      # Paper's repository version ordering does not map cleanly to Dependabot's
+      # upgrade ordering (for example, 26.2-rc-2.build.*-alpha is older than the
+      # currently pinned 26.2.build.62-beta line). Review Paper API updates manually.
       - dependency-name: "io.papermc.paper:paper-api"
-        versions:
-          - "26.2-rc-2.build.9-alpha"
     groups:
       routine-gradle-updates:
         applies-to: "version-updates"
