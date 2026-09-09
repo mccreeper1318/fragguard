@@ -1,5 +1,12 @@
 # FG Changelog
 
+## 26.2-1.1.1
+
+### Changed
+
+- Started the 26.2-1.1.1 maintenance release line and updated the project/build documentation to produce `FragGuard-26.2-1.1.1.jar`.
+- Dependabot version-update pull requests now target the long-lived `dev` branch so dependency and GitHub Actions updates can be validated before they reach `main`.
+
 ## 26.2-1.1.0
 
 ### Added
