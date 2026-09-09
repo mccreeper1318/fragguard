@@ -4,11 +4,24 @@ retention-days: 30
 # How often old records are removed from SQLite.
 cleanup-interval-minutes: 60
 
+# Bound memory usage while SQLite writes are grouped into transactions.
+database-write-queue-capacity: 20000
+database-operation-queue-capacity: 256
+database-write-batch-size: 500
+database-query-timeout-seconds: 15
+database-shutdown-timeout-seconds: 15
+# Extra grace period after an active SQLite statement is cancelled during shutdown.
+database-shutdown-cancel-timeout-seconds: 5
+
+# How quickly FragGuard notices and reports degraded logging to online operators.
+database-health-check-interval-seconds: 5
+database-operator-warning-interval-seconds: 60
+
 # What FragGuard should log.
 log-explosions: true
-# Includes fire spreading and blocks destroyed by fire.
+# Includes initial ignition, fire spreading, and blocks destroyed by fire.
 log-fire-spread: true
-# Includes natural liquid flow and player bucket water/lava placement/removal.
+# Includes natural liquid flow, player buckets, sponge absorption, and dispenser buckets.
 log-liquid-flow: true
 log-pistons: true
 
@@ -19,8 +32,19 @@ max-lookup-radius: 150
 # Rollback safety settings.
 # Increase these if you trust your server hardware and know the radius can be large.
 max-rollback-radius: 100
+# Retain a hard block cap as a secondary safeguard alongside the time budget.
 rollback-blocks-per-tick: 500
+# Maximum combined rollback/undo work on the main thread during one server tick.
+rollback-max-millis-per-tick: 4.0
+# Pause rollback/undo work while the server's recent TPS falls below this value; 0 disables pausing.
+rollback-minimum-tps: 18.0
 rollback-max-blocks-per-command: 50000
+# Maximum combined block-entity snapshot bytes loaded by one rollback preview or rollback/undo job (64 MiB).
+rollback-max-snapshot-bytes-per-command: 67108864
+# Reject previews, execution, and recovery jobs that span more than this many existing chunks.
+rollback-max-chunks-per-command: 256
+# Preview tokens expire before a rollback can be confirmed.
+rollback-confirmation-timeout-seconds: 60
 
 # Usually false is safer for rollback because it avoids triggering gravity/neighbor updates everywhere.
 apply-physics-during-rollback: false
