@@ -6,6 +6,9 @@
 
 - Started the 26.2-1.1.1 maintenance release line and updated the project/build documentation to produce `FragGuard-26.2-1.1.1.jar`.
 - Dependabot version-update pull requests now target the long-lived `dev` branch so dependency and GitHub Actions updates can be validated before they reach `main`.
+- Updated the Gradle wrapper from `9.3.0` to `9.7.1`, SLF4J NOP from `2.0.18` to `2.0.19`, and SQLite JDBC from `3.53.2.1` to `3.53.4.0`, with regenerated dependency locks and full Java 25 CI validation.
+- Updated pinned GitHub Actions to `actions/checkout@7.0.1`, `actions/setup-java@6.0.0`, `gradle/actions/setup-gradle@6.3.0`, `actions/upload-artifact@7.0.1`, and `actions/download-artifact@8.0.1`.
+- Kept Paper API pinned at `26.2.build.62-beta` and disabled Dependabot version updates for `io.papermc.paper:paper-api` because Paper's repository version syntax caused Dependabot to propose older `26.2-rc-2.build.*-alpha` coordinates as upgrades; Paper API updates are reviewed manually instead.
 
 ## 26.2-1.1.0
 
