@@ -1,6 +1,7 @@
 # This is a Gradle generated file for dependency locking.
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
+# To regenerate this file, run: ./gradlew :dependencies --write-locks
 biz.aQute.bnd:biz.aQute.bnd.annotation:7.1.0=compileClasspath,testCompileClasspath
 com.google.auto.service:auto-service-annotations:1.1.1=compileClasspath,testCompileClasspath
 com.google.code.gson:gson:2.14.0=compileClasspath,testCompileClasspath,testRuntimeClasspath
@@ -69,8 +70,8 @@ org.osgi:org.osgi.annotation.versioning:1.1.2=compileClasspath,testCompileClassp
 org.osgi:org.osgi.resource:1.0.0=compileClasspath,testCompileClasspath
 org.osgi:org.osgi.service.serviceloader:1.0.0=compileClasspath,testCompileClasspath
 org.slf4j:jcl-over-slf4j:1.7.36=testRuntimeClasspath
-org.slf4j:slf4j-api:2.0.18=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
-org.slf4j:slf4j-nop:2.0.18=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+org.slf4j:slf4j-api:2.0.19=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+org.slf4j:slf4j-nop:2.0.19=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.xerial:sqlite-jdbc:3.53.2.1=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.yaml:snakeyaml:2.2=compileClasspath,testCompileClasspath,testRuntimeClasspath
 empty=annotationProcessor,shadow,testAnnotationProcessor
