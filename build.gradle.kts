@@ -14,11 +14,11 @@ java {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:26.2.build.62-beta")
+    compileOnly("io.papermc.paper:paper-api:26.2-rc-2.build.9-alpha")
     implementation("org.xerial:sqlite-jdbc:3.53.2.1")
     implementation("org.slf4j:slf4j-nop:2.0.18")
 
-    testImplementation("io.papermc.paper:paper-api:26.2.build.62-beta")
+    testImplementation("io.papermc.paper:paper-api:26.2-rc-2.build.9-alpha")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
     testImplementation("org.mockito:mockito-core:5.23.0")
