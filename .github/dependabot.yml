@@ -8,6 +8,11 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    ignore:
+      # Paper's repository version ordering does not map cleanly to Dependabot's
+      # upgrade ordering; older 26.2-rc-2.build.*-alpha coordinates were proposed
+      # as upgrades from the newer 26.2.build.* line. Review Paper API updates manually.
+      - dependency-name: "io.papermc.paper:paper-api"
     groups:
       routine-gradle-updates:
         applies-to: "version-updates"
