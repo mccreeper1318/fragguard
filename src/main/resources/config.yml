@@ -9,6 +9,11 @@ database-write-queue-capacity: 20000
 database-operation-queue-capacity: 256
 database-write-batch-size: 500
 database-query-timeout-seconds: 15
+# Slow startup work (including migration backups/schema maintenance) reports progress instead of failing at 30s.
+database-startup-warning-seconds: 30
+# 0 disables the hard startup cutoff so large databases can finish initializing safely.
+# Set this above 0 only if you explicitly want FragGuard to abort SQLite startup after that many seconds.
+database-startup-timeout-seconds: 0
 database-shutdown-timeout-seconds: 15
 # Extra grace period after an active SQLite statement is cancelled during shutdown.
 database-shutdown-cancel-timeout-seconds: 5

@@ -67,6 +67,7 @@ final class Database {
     private volatile boolean workerStopped = true;
     private volatile int activeWriteBatchSize;
     private volatile String lastError = "";
+    private volatile String startupStage = "starting database worker";
     private volatile long lastWarningAt;
     private volatile Statement activeStatement;
     private volatile CompletableFuture<?> activeQuery;
@@ -101,21 +102,39 @@ final class Database {
         walCheckpointCompleted = false;
         workerStopped = false;
         activeWriteBatchSize = 0;
+        startupStage = "starting database worker";
         running = true;
         worker = new Thread(() -> runWorker(started, loadedWorlds), "FragGuard-Database");
         worker.setDaemon(true);
         worker.start();
 
+        long warningSeconds = Math.max(1L,
+                plugin.getConfig().getLong("database-startup-warning-seconds", 30L));
+        long timeoutSeconds = Math.max(0L,
+                plugin.getConfig().getLong("database-startup-timeout-seconds", 0L));
         try {
-            started.get(30, TimeUnit.SECONDS);
+            DatabaseStartupAwaiter.await(
+                    started,
+                    TimeUnit.SECONDS.toMillis(warningSeconds),
+                    timeoutSeconds == 0L ? 0L : TimeUnit.SECONDS.toMillis(timeoutSeconds),
+                    () -> startupStage,
+                    plugin.getLogger()::warning);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             running = false;
             throw new SQLException("Interrupted while starting FragGuard's database", exception);
-        } catch (ExecutionException | TimeoutException exception) {
+        } catch (ExecutionException exception) {
             running = false;
-            Throwable cause = exception instanceof ExecutionException ? exception.getCause() : exception;
-            throw new SQLException("Could not start FragGuard's database worker", cause);
+            throw new SQLException("Could not start FragGuard's database worker", exception.getCause());
+        } catch (TimeoutException exception) {
+            running = false;
+            Thread databaseWorker = worker;
+            if (databaseWorker != null) {
+                databaseWorker.interrupt();
+            }
+            throw new SQLException("Timed out after " + timeoutSeconds
+                    + " seconds while starting FragGuard's database worker (current step: "
+                    + startupStage + ").", exception);
         }
     }
 
@@ -747,9 +766,12 @@ final class Database {
     }
 
     private void runWorker(CompletableFuture<Void> started, List<WorldIdentity> loadedWorlds) {
+        startupStage = "opening SQLite database";
         try (Connection databaseConnection = DriverManager.getConnection(jdbcUrl)) {
             connection = databaseConnection;
+            startupStage = "initializing SQLite schema";
             initializeSchema(databaseConnection, loadedWorlds);
+            startupStage = "ready";
             started.complete(null);
 
             while (running || !writeQueue.isEmpty() || !operationQueue.isEmpty()) {
