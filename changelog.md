@@ -1,5 +1,11 @@
 # FG Changelog
 
+## 26.2-1.1.2
+
+### Fixed
+
+- Fixed FragGuard aborting startup after an arbitrary 30-second SQLite initialization deadline. Slow database opens, migration backups, and schema maintenance now emit periodic progress warnings and continue waiting by default; server owners can opt into a hard cutoff with `database-startup-timeout-seconds`.
+
 ## 26.2-1.1.1
 
 ### Changed
