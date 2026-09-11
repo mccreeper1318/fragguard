@@ -89,6 +89,8 @@ plugins/FragGuard/backups/fragguard.db.pre-migration-v2-to-v3-<timestamp>.bak
 
 The filename uses the database's actual starting version, so an unversioned database instead creates a `v0-to-v3` backup. Every migration and its schema-version update run in a single transaction. If the backup cannot be created or verified, or if the migration fails, FragGuard refuses to start instead of continuing with a partially upgraded database. A newer database schema is also rejected rather than silently opened by an older FragGuard release.
 
+Large databases can take longer than 30 seconds to open, back up, verify, or migrate. FragGuard reports periodic startup progress instead of treating that duration as a failure. `database-startup-timeout-seconds` defaults to `0`, which disables an arbitrary hard cutoff; set it above `0` only if you explicitly want SQLite initialization aborted after that many seconds.
+
 Before upgrading, stop the server and copy the entire `plugins/FragGuard` directory to a separate location. Do not copy only `fragguard.db` while the server is running: active SQLite changes can still be in `fragguard.db-wal`.
 
 To restore a pre-migration backup:
@@ -112,6 +114,8 @@ database-write-queue-capacity: 20000
 database-operation-queue-capacity: 256
 database-write-batch-size: 500
 database-query-timeout-seconds: 15
+database-startup-warning-seconds: 30
+database-startup-timeout-seconds: 0
 database-shutdown-timeout-seconds: 15
 
 log-explosions: true
@@ -137,7 +141,7 @@ apply-physics-during-rollback: false
 
 Requires Java 25. The Gradle 9.7.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-FragGuard versions use the Paper compatibility line followed by the plugin semantic version. For example, `26.2-1.1.1` means FragGuard `1.1.1` for Paper `26.2`. Release tags may optionally start with `v`, and prereleases append suffixes such as `-beta.1` or `-rc.1`.
+FragGuard versions use the Paper compatibility line followed by the plugin semantic version. For example, `26.2-1.1.2` means FragGuard `1.1.2` for Paper `26.2`. Release tags may optionally start with `v`, and prereleases append suffixes such as `-beta.1` or `-rc.1`.
 
 ```bash
 ./gradlew build
@@ -148,7 +152,7 @@ Dependencies are pinned and the committed Gradle lock state is checked by CI so 
 The plugin JAR will be in:
 
 ```text
-build/libs/FragGuard-26.2-1.1.1.jar
+build/libs/FragGuard-26.2-1.1.2.jar
 ```
 
 Put that JAR into your server's `plugins` folder and restart the Paper server.
