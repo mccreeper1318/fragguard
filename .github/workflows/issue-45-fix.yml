@@ -31,17 +31,10 @@ jobs:
           from pathlib import Path
           path = Path('.github/issue-45-fix.py')
           text = path.read_text()
-          old = '''        boolean handledByTntPrime = brokenBlock.getBlockData() instanceof TNT tntData
-                  && tntData.isUnstable()
-                  && plugin.getConfig().getBoolean(\\"log-explosions\\", true);
-          '''
-          new = '''        boolean handledByTntPrime = brokenBlock.getType() == Material.TNT
-                  && brokenBlock.getBlockData() instanceof TNT tntData
-                  && tntData.isUnstable()
-                  && plugin.getConfig().getBoolean(\\"log-explosions\\", true);
-          '''
+          old = 'boolean handledByTntPrime = brokenBlock.getBlockData() instanceof TNT tntData'
+          new = 'boolean handledByTntPrime = brokenBlock.getType() == Material.TNT\n                && brokenBlock.getBlockData() instanceof TNT tntData'
           if text.count(old) != 1:
-              raise SystemExit(f'expected one unstable-TNT generated block, found {text.count(old)}')
+              raise SystemExit(f'expected one unstable-TNT check, found {text.count(old)}')
           path.write_text(text.replace(old, new, 1))
           PY
           python .github/issue-45-fix.py
