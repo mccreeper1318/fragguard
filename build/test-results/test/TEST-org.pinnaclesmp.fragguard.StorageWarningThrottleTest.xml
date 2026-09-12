@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.StorageWarningThrottleTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.961Z" hostname="runnervmlun5p" time="0.001">
+<testsuite name="org.pinnaclesmp.fragguard.StorageWarningThrottleTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:10.551Z" hostname="runnervmlun5p" time="0.002">
   <properties/>
   <testcase name="repeatedWarningWaitsForConfiguredInterval()" classname="org.pinnaclesmp.fragguard.StorageWarningThrottleTest" time="0.001"/>
   <testcase name="firstDegradedWarningIsImmediate()" classname="org.pinnaclesmp.fragguard.StorageWarningThrottleTest" time="0.0"/>

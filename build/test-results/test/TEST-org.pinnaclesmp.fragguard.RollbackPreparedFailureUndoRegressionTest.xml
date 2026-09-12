@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackPreparedFailureUndoRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.873Z" hostname="runnervmlun5p" time="0.02">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackPreparedFailureUndoRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:10.460Z" hostname="runnervmlun5p" time="0.023">
   <properties/>
-  <testcase name="failedRollbackExcludesPreparedButUnappliedRowsFromUndo()" classname="org.pinnaclesmp.fragguard.RollbackPreparedFailureUndoRegressionTest" time="0.02"/>
+  <testcase name="failedRollbackExcludesPreparedButUnappliedRowsFromUndo()" classname="org.pinnaclesmp.fragguard.RollbackPreparedFailureUndoRegressionTest" time="0.022"/>
   <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+  <system-err><![CDATA[Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
 ]]></system-err>
 </testsuite>

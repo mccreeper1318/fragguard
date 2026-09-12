@@ -8,6 +8,7 @@
 - Fixed timed-out queries falsely marking storage unhealthy by separating expected timeout and SQLite interrupt results from genuine database failures.
 - Fixed redstone-primed TNT removal bypassing block history by logging `TNTPrimeEvent` transitions with specific cause attribution and suppressing duplicate generic history.
 - Fixed dragon egg teleports being partially logged by recording the source and destination together under a dedicated teleport action.
+- Fixed completed rollback jobs and snapshots accumulating indefinitely by expiring terminal jobs after the configured retention while preserving active and recoverable failed jobs.
 
 ## 26.2-1.1.2
 

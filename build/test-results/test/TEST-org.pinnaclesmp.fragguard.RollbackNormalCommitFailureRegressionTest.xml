@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackNormalCommitFailureRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.860Z" hostname="runnervmlun5p" time="0.006">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackNormalCommitFailureRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:10.451Z" hostname="runnervmlun5p" time="0.005">
   <properties/>
-  <testcase name="nonQueueCommitFailureRecommitsCompletedResultsBeforeFailureFinalization()" classname="org.pinnaclesmp.fragguard.RollbackNormalCommitFailureRegressionTest" time="0.006"/>
+  <testcase name="nonQueueCommitFailureRecommitsCompletedResultsBeforeFailureFinalization()" classname="org.pinnaclesmp.fragguard.RollbackNormalCommitFailureRegressionTest" time="0.005"/>
   <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
+  <system-err><![CDATA[Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
 SEVERE: FragGuard rollback job #41 failed
 java.lang.IllegalStateException: simulated commit failure
 	at org.pinnaclesmp.fragguard.RollbackNormalCommitFailureRegressionTest.lambda$nonQueueCommitFailureRecommitsCompletedResultsBeforeFailureFinalization$0(RollbackNormalCommitFailureRegressionTest.java:40)
@@ -13,7 +13,7 @@ java.lang.IllegalStateException: simulated commit failure
 	at org.mockito.internal.handler.InvocationNotifierHandler.handle(InvocationNotifierHandler.java:34)
 	at org.mockito.internal.creation.bytebuddy.access.MockMethodInterceptor.doIntercept(MockMethodInterceptor.java:84)
 	at org.mockito.internal.creation.bytebuddy.MockMethodAdvice.handle(MockMethodAdvice.java:143)
-	at org.pinnaclesmp.fragguard.Database.markRollbackBatchAppliedAsync(Database.java:665)
+	at org.pinnaclesmp.fragguard.Database.markRollbackBatchAppliedAsync(Database.java:717)
 	at org.pinnaclesmp.fragguard.FragGuardCommand.persistBatchResults(FragGuardCommand.java:1168)
 	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
 	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
@@ -111,7 +111,7 @@ java.lang.IllegalStateException: simulated commit failure
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.run(GradleWorkerMain.java:69)
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.main(GradleWorkerMain.java:74)
 
-Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.FragGuardCommand message
+Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.FragGuardCommand message
 INFO: Rollback job #41 failed: simulated commit failure Saved changes can be reversed with /fg undo 41
 ]]></system-err>
 </testsuite>

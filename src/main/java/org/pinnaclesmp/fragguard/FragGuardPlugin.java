@@ -82,13 +82,28 @@ public final class FragGuardPlugin extends JavaPlugin {
         return Math.max(1, getConfig().getInt("retention-days", 30));
     }
 
+    int getRollbackJobRetentionDays() {
+        return Math.max(1, getConfig().getInt("rollback-job-retention-days", getRetentionDays()));
+    }
+
     private void scheduleCleanup() {
         int intervalMinutes = Math.max(1, getConfig().getInt("cleanup-interval-minutes", 60));
         long ticks = TimeUnit.MINUTES.toSeconds(intervalMinutes) * 20L;
 
-        Runnable cleanup = () -> database.cleanupOldRecordsAsync(getRetentionDays()).thenAccept(deleted -> {
-            if (deleted > 0) {
-                getLogger().info("Deleted " + deleted + " old block log records.");
+        Runnable cleanup = () -> database.cleanupOldRecordsAsync(
+                getRetentionDays(),
+                getRollbackJobRetentionDays()
+        ).whenComplete((deleted, throwable) -> {
+            if (throwable != null) {
+                getLogger().log(Level.WARNING, "FragGuard retention cleanup failed.", throwable);
+                return;
+            }
+            if (deleted.blockRecordsDeleted() > 0) {
+                getLogger().info("Deleted " + deleted.blockRecordsDeleted() + " old block log records.");
+            }
+            if (deleted.rollbackJobsDeleted() > 0) {
+                getLogger().info("Deleted " + deleted.rollbackJobsDeleted()
+                        + " expired rollback job(s) and their saved snapshots.");
             }
         });
 

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.937Z" hostname="runnervmlun5p" time="0.004">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:10.523Z" hostname="runnervmlun5p" time="0.003">
   <properties/>
   <testcase name="rejectsOverlappingWorkSlices()" classname="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" time="0.001"/>
-  <testcase name="committedAuditSliceFinishesEvenWhenTheTickBudgetWasAlreadyUsed()" classname="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" time="0.0"/>
+  <testcase name="committedAuditSliceFinishesEvenWhenTheTickBudgetWasAlreadyUsed()" classname="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" time="0.001"/>
   <testcase name="acceptsNegativeMonotonicClockValues()" classname="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" time="0.0"/>
-  <testcase name="sharesTheTimeLimitAcrossSeparateSlicesInTheSameServerTick()" classname="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" time="0.001"/>
+  <testcase name="sharesTheTimeLimitAcrossSeparateSlicesInTheSameServerTick()" classname="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" time="0.0"/>
   <testcase name="restoresTheFullTimeBudgetAtTheNextServerTick()" classname="org.pinnaclesmp.fragguard.RollbackTickBudgetTest" time="0.0"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>

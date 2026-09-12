@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.DurationParserTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.365Z" hostname="runnervmlun5p" time="0.007">
+<testsuite name="org.pinnaclesmp.fragguard.DurationParserTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:09.919Z" hostname="runnervmlun5p" time="0.009">
   <properties/>
   <testcase name="acceptsDurationExactlyAtRetentionLimit()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.001"/>
   <testcase name="parsesNormalDurationsExactly()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.001"/>
-  <testcase name="rejectsUnitMultiplicationOverflow()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.0"/>
-  <testcase name="rejectsAccumulationOverflow()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.001"/>
-  <testcase name="stopsWhenRetentionLimitIsExceeded()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.001"/>
+  <testcase name="rejectsUnitMultiplicationOverflow()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.001"/>
+  <testcase name="rejectsAccumulationOverflow()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.003"/>
+  <testcase name="stopsWhenRetentionLimitIsExceeded()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.0"/>
   <testcase name="rejectsNumericValuesThatDoNotFitInLong()" classname="org.pinnaclesmp.fragguard.DurationParserTest" time="0.001"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>

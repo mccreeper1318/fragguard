@@ -426,15 +426,67 @@ final class Database {
                 droppedWrites.get(), coalescedWrites.get(), healthy, lastError);
     }
 
-    CompletableFuture<Integer> cleanupOldRecordsAsync(int retentionDays) {
-        return submit(databaseConnection -> {
-            long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
+    CompletableFuture<DatabaseCleanupResult> cleanupOldRecordsAsync(
+            int retentionDays,
+            int rollbackJobRetentionDays
+    ) {
+        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            long now = System.currentTimeMillis();
+            long blockCutoff = now - TimeUnit.DAYS.toMillis(Math.max(1, retentionDays));
+            long rollbackJobCutoff = now - TimeUnit.DAYS.toMillis(Math.max(1, rollbackJobRetentionDays));
+
+            int deletedBlockRecords;
             try (PreparedStatement statement = databaseConnection.prepareStatement(
                     "DELETE FROM block_changes WHERE happened_at < ? AND rollback_pending = 0")) {
-                statement.setLong(1, cutoff);
-                return statement.executeUpdate();
+                statement.setLong(1, blockCutoff);
+                deletedBlockRecords = statement.executeUpdate();
             }
-        }, false);
+
+            String terminalJobCondition = """
+                    updated_at < ?
+                    AND (
+                        status IN ('COMPLETED', 'UNDONE')
+                        OR (
+                            status = 'FAILED'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM rollback_job_changes
+                                WHERE job_id = rollback_jobs.id
+                                  AND before_data IS NOT NULL
+                                  AND conflicted = 0
+                                  AND undone = 0
+                            )
+                        )
+                    )
+                    """;
+
+            try (PreparedStatement statement = databaseConnection.prepareStatement("""
+                    DELETE FROM block_changes
+                    WHERE rollback_pending = 1
+                      AND id IN (
+                          SELECT pending_audit_id
+                          FROM rollback_job_changes
+                          WHERE pending_audit_id IS NOT NULL
+                            AND job_id IN (
+                                SELECT id
+                                FROM rollback_jobs
+                                WHERE %s
+                            )
+                      )
+                    """.formatted(terminalJobCondition))) {
+                statement.setLong(1, rollbackJobCutoff);
+                statement.executeUpdate();
+            }
+
+            int deletedRollbackJobs;
+            try (PreparedStatement statement = databaseConnection.prepareStatement(
+                    "DELETE FROM rollback_jobs WHERE " + terminalJobCondition)) {
+                statement.setLong(1, rollbackJobCutoff);
+                deletedRollbackJobs = statement.executeUpdate();
+            }
+
+            return new DatabaseCleanupResult(deletedBlockRecords, deletedRollbackJobs);
+        }), false);
     }
 
     CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,

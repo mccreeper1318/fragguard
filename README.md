@@ -69,7 +69,7 @@ Confirmation tokens are tied to the operator and expire after 60 seconds by defa
 /fg undo <job-id>
 ```
 
-Rollback and undo progress is stored in SQLite. Interrupted jobs automatically resume after a server restart, and overlapping jobs in the same world are rejected. Changes are processed in consecutive same-chunk batches without changing saved sequence order, existing chunks load asynchronously without generating terrain, and temporary chunk tickets prevent an active chunk from unloading during audit persistence. Main-thread work respects both a per-tick time budget and block cap, and pauses automatically while server TPS is below the configured minimum.
+Rollback and undo progress is stored in SQLite. Interrupted jobs automatically resume after a server restart, and overlapping jobs in the same world are rejected. Completed rollback jobs remain available for `/fg undo` until `rollback-job-retention-days`; expired completed/undone and permanently failed jobs are deleted with their saved snapshots, while active and recoverable failed jobs are retained. Changes are processed in consecutive same-chunk batches without changing saved sequence order, existing chunks load asynchronously without generating terrain, and temporary chunk tickets prevent an active chunk from unloading during audit persistence. Main-thread work respects both a per-tick time budget and block cap, and pauses automatically while server TPS is below the configured minimum.
 
 ### Storage status
 
@@ -110,6 +110,7 @@ World history and rollback jobs use the world's UUID as their identity while ret
 ```yaml
 retention-days: 30
 cleanup-interval-minutes: 60
+rollback-job-retention-days: 30
 database-write-queue-capacity: 20000
 database-operation-queue-capacity: 256
 database-write-batch-size: 500

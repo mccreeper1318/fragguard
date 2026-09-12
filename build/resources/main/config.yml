@@ -4,6 +4,10 @@ retention-days: 30
 # How often old records are removed from SQLite.
 cleanup-interval-minutes: 60
 
+# How long completed/undone rollback jobs remain available before their saved snapshots are deleted.
+# Recoverable failed jobs are kept so /fg undo can still finish them.
+rollback-job-retention-days: 30
+
 # Bound memory usage while SQLite writes are grouped into transactions.
 database-write-queue-capacity: 20000
 database-operation-queue-capacity: 256

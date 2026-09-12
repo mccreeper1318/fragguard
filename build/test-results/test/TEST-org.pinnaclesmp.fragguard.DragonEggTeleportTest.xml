@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.pinnaclesmp.fragguard.DragonEggTeleportTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:09.887Z" hostname="runnervmlun5p" time="0.032">
+  <properties/>
+  <testcase name="dragonEggPlayerInteractionDefersHistoryToTeleportEvent()" classname="org.pinnaclesmp.fragguard.DragonEggTeleportTest" time="0.003"/>
+  <testcase name="recordsBothEndsOfDragonEggTeleportEvenWhenLiquidLoggingIsDisabled()" classname="org.pinnaclesmp.fragguard.DragonEggTeleportTest" time="0.007"/>
+  <testcase name="lookupRollbackAndUndoPlansKeepExactlyOneDragonEgg()" classname="org.pinnaclesmp.fragguard.DragonEggTeleportTest" time="0.022"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
+Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
+Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
+Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
+]]></system-err>
+</testsuite>

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.869Z" hostname="runnervmlun5p" time="0.003">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:10.458Z" hostname="runnervmlun5p" time="0.002">
   <properties/>
   <testcase name="completedForceResultsArePersistedBeforeRetryPreparationFailure()" classname="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" time="0.001"/>
   <testcase name="recoveredResultsArePersistedBeforePreparationFailure()" classname="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" time="0.001"/>

@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
@@ -21,11 +21,6 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
-
-      - name: Apply issue #47 fix
-        run: python3 .github/issue-47-fix.py
 
       - name: Set up Java 25
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
@@ -138,18 +133,6 @@ jobs:
             ${{ steps.plugin.outputs.jar }}
             ${{ steps.plugin.outputs.checksum }}
           if-no-files-found: error
-
-      - name: Commit validated issue #47 fix
-        if: success()
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git show HEAD^:.github/workflows/build.yml > .github/workflows/build.yml
-          rm -f .github/issue-47-fix.py
-          git add -A
-          git commit -m "Fix rollback job retention cleanup (#47) [skip ci]"
-          git push origin HEAD:dev
 
       - name: Upload generated dependency lock for diagnosis
         if: failure()

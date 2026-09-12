@@ -1,27 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" tests="19" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.413Z" hostname="runnervmlun5p" time="0.403">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" tests="19" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:09.964Z" hostname="runnervmlun5p" time="0.424">
   <properties/>
-  <testcase name="undoRejectsAPlayerEditMadeAfterRollback()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.025"/>
-  <testcase name="releasesCompletedChunkBeforeLowTpsPausesTheNextChunk()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.012"/>
-  <testcase name="persistsOnlyTheActiveUndoSliceBeforeLowTpsDefersLaterCandidates()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.059"/>
-  <testcase name="persistsUndoPhysicsCorrectionsBeforeLowTpsDefersTheNextSlice()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.01"/>
-  <testcase name="preservesCurrentAuditWhenPostMutationSnapshotCaptureFails()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.049"/>
+  <testcase name="undoRejectsAPlayerEditMadeAfterRollback()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.02"/>
+  <testcase name="releasesCompletedChunkBeforeLowTpsPausesTheNextChunk()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.014"/>
+  <testcase name="persistsOnlyTheActiveUndoSliceBeforeLowTpsDefersLaterCandidates()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.069"/>
+  <testcase name="persistsUndoPhysicsCorrectionsBeforeLowTpsDefersTheNextSlice()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.013"/>
+  <testcase name="preservesCurrentAuditWhenPostMutationSnapshotCaptureFails()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.047"/>
   <testcase name="pausesBelowTheConfiguredTpsAndResumesAfterRecovery()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.004"/>
-  <testcase name="persistsOnlyTheActiveRollbackSliceBeforeTheTickBudgetDefersLaterCandidates()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.069"/>
+  <testcase name="persistsOnlyTheActiveRollbackSliceBeforeTheTickBudgetDefersLaterCandidates()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.074"/>
   <testcase name="retainsActiveChunkWhenLowTpsPausesMoreChangesInTheSameChunk()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.002"/>
-  <testcase name="restoresCompatibleUndoInventoryAfterPhysicsNormalizesChestState()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.006"/>
-  <testcase name="appliesConfiguredSnapshotByteBudgetToRollbackAndUndoJobLoads()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.004"/>
-  <testcase name="persistsRollbackPhysicsCorrectionsBeforeTheTickBudgetDefersTheNextSlice()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.069"/>
-  <testcase name="loadsExistingChunksAsynchronouslyWithoutGeneratingTerrain()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.048"/>
-  <testcase name="persistsRollbackPhysicsCorrectionsBeforeLowTpsDefersTheNextSlice()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.008"/>
+  <testcase name="restoresCompatibleUndoInventoryAfterPhysicsNormalizesChestState()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.007"/>
+  <testcase name="appliesConfiguredSnapshotByteBudgetToRollbackAndUndoJobLoads()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.003"/>
+  <testcase name="persistsRollbackPhysicsCorrectionsBeforeTheTickBudgetDefersTheNextSlice()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.073"/>
+  <testcase name="loadsExistingChunksAsynchronouslyWithoutGeneratingTerrain()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.052"/>
+  <testcase name="persistsRollbackPhysicsCorrectionsBeforeLowTpsDefersTheNextSlice()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.012"/>
   <testcase name="persistsOnlyTheActiveRollbackSliceBeforeLowTpsDefersLaterCandidates()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.011"/>
-  <testcase name="persistsCompletedCandidatePrefixBeforeFailingTheJob()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.008"/>
-  <testcase name="reportsRollbackPreviewSnapshotLimitsWithoutLoggingAStorageFailure()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.003"/>
-  <testcase name="sharesChunkTicketsUntilEveryJobReleasesTheSameChunk()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.004"/>
-  <testcase name="restoresCompatibleRollbackInventoryAfterPhysicsNormalizesChestState()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.004"/>
-  <testcase name="failsClosedWhenPendingRollbackCouldBePhysicsNormalizedOrExternallyEdited()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.002"/>
+  <testcase name="persistsCompletedCandidatePrefixBeforeFailingTheJob()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.007"/>
+  <testcase name="reportsRollbackPreviewSnapshotLimitsWithoutLoggingAStorageFailure()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.002"/>
+  <testcase name="sharesChunkTicketsUntilEveryJobReleasesTheSameChunk()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.002"/>
+  <testcase name="restoresCompatibleRollbackInventoryAfterPhysicsNormalizesChestState()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.002"/>
+  <testcase name="failsClosedWhenPendingRollbackCouldBePhysicsNormalizedOrExternallyEdited()" classname="org.pinnaclesmp.fragguard.RollbackChunkExecutionTest" time="0.003"/>
   <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
+  <system-err><![CDATA[Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
 SEVERE: FragGuard rollback job #41 failed
 java.lang.IllegalStateException: simulated snapshot failure
 	at org.pinnaclesmp.fragguard.BlockEntitySnapshot.capture(BlockEntitySnapshot.java:52)
@@ -122,9 +122,9 @@ java.lang.IllegalStateException: simulated snapshot failure
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.run(GradleWorkerMain.java:69)
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.main(GradleWorkerMain.java:74)
 
-Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.FragGuardCommand message
+Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.FragGuardCommand message
 INFO: Rollback job #41 failed: simulated snapshot failure Saved changes can be reversed with /fg undo 41
-Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
+Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
 SEVERE: FragGuard rollback job #41 failed
 java.lang.IllegalStateException: simulated mutation failure
 	at org.pinnaclesmp.fragguard.RollbackChunkExecutionTest.lambda$persistsCompletedCandidatePrefixBeforeFailingTheJob$2(RollbackChunkExecutionTest.java:389)
@@ -135,7 +135,7 @@ java.lang.IllegalStateException: simulated mutation failure
 	at org.mockito.internal.creation.bytebuddy.access.MockMethodInterceptor.doIntercept(MockMethodInterceptor.java:84)
 	at org.mockito.internal.creation.bytebuddy.access.MockMethodInterceptor.doIntercept(MockMethodInterceptor.java:58)
 	at org.mockito.internal.creation.bytebuddy.access.MockMethodInterceptor$DispatcherDefaultingToRealMethod.interceptAbstract(MockMethodInterceptor.java:163)
-	at org.bukkit.block.Block$MockitoMock$3Gc74QJ7.setBlockData(Unknown Source)
+	at org.bukkit.block.Block$MockitoMock$V54gmah6.setBlockData(Unknown Source)
 	at org.pinnaclesmp.fragguard.FragGuardCommand.lambda$applyPersistedCandidates$0(FragGuardCommand.java:879)
 	at org.pinnaclesmp.fragguard.BlockLoggingSuppression.runSuppressed(BlockLoggingSuppression.java:17)
 	at org.pinnaclesmp.fragguard.FragGuardCommand.applyPersistedCandidates(FragGuardCommand.java:879)
@@ -235,7 +235,7 @@ java.lang.IllegalStateException: simulated mutation failure
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.run(GradleWorkerMain.java:69)
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.main(GradleWorkerMain.java:74)
 
-Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.FragGuardCommand message
+Sep 12, 2026 10:16:10 PM org.pinnaclesmp.fragguard.FragGuardCommand message
 INFO: Rollback job #41 failed: simulated mutation failure Saved changes can be reversed with /fg undo 41
 ]]></system-err>
 </testsuite>

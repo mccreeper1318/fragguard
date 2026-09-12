@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RadiusParserTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.377Z" hostname="runnervmlun5p" time="0.003">
+<testsuite name="org.pinnaclesmp.fragguard.RadiusParserTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:09.933Z" hostname="runnervmlun5p" time="0.003">
   <properties/>
-  <testcase name="missingRadiusRemainsOptional()" classname="org.pinnaclesmp.fragguard.RadiusParserTest" time="0.0"/>
+  <testcase name="missingRadiusRemainsOptional()" classname="org.pinnaclesmp.fragguard.RadiusParserTest" time="0.001"/>
   <testcase name="overflowingRadiusIsAnError()" classname="org.pinnaclesmp.fragguard.RadiusParserTest" time="0.001"/>
-  <testcase name="parsesShortAndLongRadiusOptions()" classname="org.pinnaclesmp.fragguard.RadiusParserTest" time="0.001"/>
-  <testcase name="malformedRadiusIsAnError()" classname="org.pinnaclesmp.fragguard.RadiusParserTest" time="0.0"/>
+  <testcase name="parsesShortAndLongRadiusOptions()" classname="org.pinnaclesmp.fragguard.RadiusParserTest" time="0.0"/>
+  <testcase name="malformedRadiusIsAnError()" classname="org.pinnaclesmp.fragguard.RadiusParserTest" time="0.001"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
