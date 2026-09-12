@@ -26,10 +26,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 3;
+    static final int SCHEMA_VERSION = 4;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
-    private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
     private static final String AREA_FILTER = """
             rollback_pending = 0
             AND world_uuid IN (?, ?)
@@ -237,7 +236,7 @@ final class Database {
             }
 
             PendingBlockChange existing = coalescedChanges.get(key);
-            if (existing != null) {
+            if (existing != null && canCoalesce(existing.change, change)) {
                 existing.change = merge(existing.change, change, serverTick);
                 coalescedWrites.incrementAndGet();
                 return;
@@ -886,6 +885,7 @@ final class Database {
                     case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
                     case 1 -> migrateBlockEntitySchema(databaseConnection);
                     case 2 -> migrateRollbackSafetySchema(databaseConnection);
+                    case 3 -> migrateAttributionCoalescingSchema(databaseConnection);
                     default -> throw new SQLException("No FragGuard database migration exists for schema version "
                             + previousVersion + ".");
                 }
@@ -1008,8 +1008,8 @@ final class Database {
                     ON block_changes(world_uuid, chunk_x, chunk_z, happened_at)
                     """);
             statement.executeUpdate("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_fg_tick_coalesce
-                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
+                    CREATE INDEX IF NOT EXISTS idx_fg_tick_coalesce
+                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick, id)
                     """);
             statement.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS rollback_jobs (
@@ -1104,6 +1104,16 @@ final class Database {
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_id", "INTEGER");
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_undo",
                 "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    private void migrateAttributionCoalescingSchema(Connection databaseConnection) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");
+            statement.executeUpdate("""
+                    CREATE INDEX idx_fg_tick_coalesce
+                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick, id)
+                    """);
+        }
     }
 
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
@@ -1260,19 +1270,44 @@ final class Database {
 
         try {
             long persistedCoalesces = inTransaction(connection, () -> {
-                long existingRows = countPersistedCoalesceConflicts(connection, batch);
-                try (PreparedStatement statement = connection.prepareStatement("""
+                long coalesces = 0L;
+                try (PreparedStatement update = connection.prepareStatement("""
+                        UPDATE block_changes
+                        SET after_data = ?, after_entity_data = ?
+                        WHERE id = (
+                            SELECT id FROM block_changes
+                            WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?
+                              AND coalesce_session = ? AND server_tick = ?
+                            ORDER BY id DESC
+                            LIMIT 1
+                        )
+                          AND actor_uuid = ?
+                          AND actor_name = ?
+                          AND action = ?
+                          AND after_data = ?
+                          AND ((after_entity_data IS NULL AND ? IS NULL) OR after_entity_data = ?)
+                        """);
+                     PreparedStatement insert = connection.prepareStatement("""
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                          before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick,
                          before_entity_data, after_entity_data)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(world_uuid, x, y, z, coalesce_session, server_tick) DO UPDATE SET
-                            actor_uuid = excluded.actor_uuid,
-                            actor_name = excluded.actor_name,
-                            action = excluded.action,
-                            after_data = excluded.after_data,
-                            after_entity_data = excluded.after_entity_data
+                        """);
+                     PreparedStatement deleteNoOp = connection.prepareStatement("""
+                        DELETE FROM block_changes
+                        WHERE id = (
+                            SELECT id FROM block_changes
+                            WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?
+                              AND coalesce_session = ? AND server_tick = ?
+                            ORDER BY id DESC
+                            LIMIT 1
+                        )
+                          AND actor_uuid = ?
+                          AND actor_name = ?
+                          AND action = ?
+                          AND before_data = after_data
+                          AND before_entity_data IS after_entity_data
                         """)) {
                     for (PendingBlockChange pending : batch) {
                         BlockChange change = pending.change;
@@ -1280,47 +1315,57 @@ final class Database {
                                 change.afterData(), change.afterEntityData())) {
                             continue;
                         }
-                        statement.setLong(1, change.happenedAt());
-                        statement.setString(2, change.actorUuid());
-                        statement.setString(3, change.actorName());
-                        statement.setString(4, change.worldName());
-                        statement.setInt(5, change.x());
-                        statement.setInt(6, change.y());
-                        statement.setInt(7, change.z());
-                        statement.setString(8, change.action().storageId());
-                        statement.setString(9, change.beforeData());
-                        statement.setString(10, change.afterData());
-                        statement.setString(11, pending.worldUuid);
-                        statement.setInt(12, change.x() >> 4);
-                        statement.setInt(13, change.z() >> 4);
-                        statement.setString(14, coalesceSession);
-                        statement.setLong(15, pending.key.tick());
-                        statement.setBytes(16, change.beforeEntityData());
-                        statement.setBytes(17, change.afterEntityData());
-                        statement.addBatch();
-                    }
-                    statement.executeBatch();
-                }
 
-                try (PreparedStatement statement = connection.prepareStatement("""
-                        DELETE FROM block_changes
-                        WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?
-                          AND coalesce_session = ? AND server_tick = ?
-                          AND before_data = after_data
-                          AND before_entity_data IS after_entity_data
-                        """)) {
-                    for (PendingBlockChange pending : batch) {
-                        statement.setString(1, pending.worldUuid);
-                        statement.setInt(2, pending.key.x());
-                        statement.setInt(3, pending.key.y());
-                        statement.setInt(4, pending.key.z());
-                        statement.setString(5, coalesceSession);
-                        statement.setLong(6, pending.key.tick());
-                        statement.addBatch();
+                        update.setString(1, change.afterData());
+                        update.setBytes(2, change.afterEntityData());
+                        update.setString(3, pending.worldUuid);
+                        update.setInt(4, pending.key.x());
+                        update.setInt(5, pending.key.y());
+                        update.setInt(6, pending.key.z());
+                        update.setString(7, coalesceSession);
+                        update.setLong(8, pending.key.tick());
+                        update.setString(9, change.actorUuid());
+                        update.setString(10, change.actorName());
+                        update.setString(11, change.action().storageId());
+                        update.setString(12, change.beforeData());
+                        update.setBytes(13, change.beforeEntityData());
+                        update.setBytes(14, change.beforeEntityData());
+                        if (update.executeUpdate() == 1) {
+                            coalesces++;
+                            deleteNoOp.setString(1, pending.worldUuid);
+                            deleteNoOp.setInt(2, pending.key.x());
+                            deleteNoOp.setInt(3, pending.key.y());
+                            deleteNoOp.setInt(4, pending.key.z());
+                            deleteNoOp.setString(5, coalesceSession);
+                            deleteNoOp.setLong(6, pending.key.tick());
+                            deleteNoOp.setString(7, change.actorUuid());
+                            deleteNoOp.setString(8, change.actorName());
+                            deleteNoOp.setString(9, change.action().storageId());
+                            deleteNoOp.executeUpdate();
+                            continue;
+                        }
+
+                        insert.setLong(1, change.happenedAt());
+                        insert.setString(2, change.actorUuid());
+                        insert.setString(3, change.actorName());
+                        insert.setString(4, change.worldName());
+                        insert.setInt(5, change.x());
+                        insert.setInt(6, change.y());
+                        insert.setInt(7, change.z());
+                        insert.setString(8, change.action().storageId());
+                        insert.setString(9, change.beforeData());
+                        insert.setString(10, change.afterData());
+                        insert.setString(11, pending.worldUuid);
+                        insert.setInt(12, change.x() >> 4);
+                        insert.setInt(13, change.z() >> 4);
+                        insert.setString(14, coalesceSession);
+                        insert.setLong(15, pending.key.tick());
+                        insert.setBytes(16, change.beforeEntityData());
+                        insert.setBytes(17, change.afterEntityData());
+                        insert.executeUpdate();
                     }
-                    statement.executeBatch();
                 }
-                return existingRows;
+                return coalesces;
             });
             synchronized (coalescedChanges) {
                 completedWrites.addAndGet(batch.size());
@@ -1344,57 +1389,6 @@ final class Database {
                 activeWriteBatchSize = 0;
             }
         }
-    }
-
-    private long countPersistedCoalesceConflicts(Connection databaseConnection,
-                                                  List<PendingBlockChange> batch) throws SQLException {
-        List<PendingBlockChange> candidates = batch.stream()
-                .filter(pending -> !pending.change.beforeData().equals(pending.change.afterData()))
-                .toList();
-        long conflicts = 0L;
-        for (int offset = 0; offset < candidates.size(); offset += COALESCE_CONFLICT_QUERY_BATCH_SIZE) {
-            int end = Math.min(candidates.size(), offset + COALESCE_CONFLICT_QUERY_BATCH_SIZE);
-            StringBuilder values = new StringBuilder();
-            for (int index = offset; index < end; index++) {
-                if (!values.isEmpty()) {
-                    values.append(", ");
-                }
-                values.append("(?, ?, ?, ?, ?, ?)");
-            }
-
-            String sql = """
-                    WITH incoming(world_uuid, x, y, z, coalesce_session, server_tick) AS (
-                        VALUES %s
-                    )
-                    SELECT COUNT(*)
-                    FROM incoming
-                    JOIN block_changes existing
-                      ON existing.world_uuid = incoming.world_uuid
-                     AND existing.x = incoming.x
-                     AND existing.y = incoming.y
-                     AND existing.z = incoming.z
-                     AND existing.coalesce_session = incoming.coalesce_session
-                     AND existing.server_tick = incoming.server_tick
-                    """.formatted(values);
-            try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
-                int parameter = 1;
-                for (int index = offset; index < end; index++) {
-                    PendingBlockChange pending = candidates.get(index);
-                    statement.setString(parameter++, pending.worldUuid);
-                    statement.setInt(parameter++, pending.key.x());
-                    statement.setInt(parameter++, pending.key.y());
-                    statement.setInt(parameter++, pending.key.z());
-                    statement.setString(parameter++, coalesceSession);
-                    statement.setLong(parameter++, pending.key.tick());
-                }
-                try (ResultSet rows = statement.executeQuery()) {
-                    if (rows.next()) {
-                        conflicts += rows.getLong(1);
-                    }
-                }
-            }
-        }
-        return conflicts;
     }
 
     private <T> void executeOperation(DatabaseOperation<T> operation) {
@@ -1764,6 +1758,14 @@ final class Database {
         } finally {
             databaseConnection.setAutoCommit(previousAutoCommit);
         }
+    }
+
+    private static boolean canCoalesce(BlockChange previous, BlockChange latest) {
+        return Objects.equals(previous.actorUuid(), latest.actorUuid())
+                && Objects.equals(previous.actorName(), latest.actorName())
+                && previous.action() == latest.action()
+                && sameState(previous.afterData(), previous.afterEntityData(),
+                        latest.beforeData(), latest.beforeEntityData());
     }
 
     private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {

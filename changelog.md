@@ -1,5 +1,11 @@
 # FG Changelog
 
+## 26.3-1.1.3
+
+### Fixed
+
+- Fixed #43 by preserving distinct same-tick history when different actors or actions modify the same coordinate. Coalescing now applies only to consecutive, state-contiguous transitions with matching attribution and action across both queued and already-flushed writes, while compatible net-no-op chains are still removed.
+
 ## 26.2-1.1.2
 
 ### Fixed

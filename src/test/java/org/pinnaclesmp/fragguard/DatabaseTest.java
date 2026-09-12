@@ -473,6 +473,63 @@ class DatabaseTest {
     }
 
     @Test
+    void preservesDifferentActorsAndInterveningSameTickChangesInMemory() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");
+
+        database.insertAsync(new BlockChange(timestamp, 910L, ACTOR_UUID.toString(), "Builder", "world",
+                10, 64, 10, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));
+        database.insertAsync(new BlockChange(timestamp + 1L, 910L, otherActor.toString(), "OtherBuilder", "world",
+                10, 64, 10, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));
+        database.insertAsync(new BlockChange(timestamp + 2L, 910L, ACTOR_UUID.toString(), "Builder", "world",
+                10, 64, 10, ChangeAction.BREAK, "minecraft:grass_block", "minecraft:gold_block"));
+
+        LookupPage page = database.lookupAsync("world", 10, 10, 1, 1, 15, 30).join();
+
+        assertEquals(3, page.totalRows(),
+                "a compatible actor must not coalesce across an intervening actor in the same tick");
+        assertEquals(0, database.health().coalescedWrites());
+    }
+
+    @Test
+    void preservesDifferentActorsAcrossSeparateDatabaseFlushes() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");
+
+        database.insertAsync(new BlockChange(timestamp, 911L, ACTOR_UUID.toString(), "Builder", "world",
+                11, 64, 11, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));
+        database.lookupAsync("world", 11, 11, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 1L, 911L, otherActor.toString(), "OtherBuilder", "world",
+                11, 64, 11, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));
+        LookupPage page = database.lookupAsync("world", 11, 11, 1, 1, 15, 30).join();
+
+        assertEquals(2, page.totalRows());
+        assertEquals(0, database.health().coalescedWrites(),
+                "cross-flush writes from different actors must stay distinct");
+    }
+
+    @Test
+    void preservesDifferentActionsAcrossSeparateDatabaseFlushes() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+
+        database.insertAsync(new BlockChange(timestamp, 912L, ACTOR_UUID.toString(), "Builder", "world",
+                12, 64, 12, ChangeAction.BREAK, "minecraft:stone", "minecraft:air"));
+        database.lookupAsync("world", 12, 12, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 1L, 912L, ACTOR_UUID.toString(), "Builder", "world",
+                12, 64, 12, ChangeAction.PLACE, "minecraft:air", "minecraft:stone"));
+        LookupPage page = database.lookupAsync("world", 12, 12, 1, 1, 15, 30).join();
+
+        assertEquals(2, page.totalRows());
+        assertEquals(0, database.health().coalescedWrites(),
+                "cross-flush writes with different actions must stay distinct");
+    }
+
+    @Test
     void removesSameTickNetNoOpAcrossSeparateDatabaseFlushes() throws Exception {
         database = startDatabase();
         long timestamp = System.currentTimeMillis();
@@ -695,6 +752,37 @@ class DatabaseTest {
             assertTrue(row.next());
             assertEquals("REMOVED_FUTURE_ACTION", row.getString("action"),
                     "unknown action identifiers must remain recoverable in the underlying history");
+        }
+    }
+
+    @Test
+    void migratesVersionThreeTickCoalescingIndexToOrderedNonUniqueHistory() throws Exception {
+        database = startDatabase();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX idx_fg_tick_coalesce
+                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
+                    """);
+            statement.execute("PRAGMA user_version=3");
+        }
+
+        database = startDatabase();
+        try (Connection connection = openDatabase();
+             Statement statement = connection.createStatement();
+             ResultSet indexes = statement.executeQuery("PRAGMA index_list(block_changes)")) {
+            boolean found = false;
+            while (indexes.next()) {
+                if ("idx_fg_tick_coalesce".equals(indexes.getString("name"))) {
+                    found = true;
+                    assertEquals(0, indexes.getInt("unique"),
+                            "schema v4 must replace the old one-row-per-coordinate/tick uniqueness rule");
+                }
+            }
+            assertTrue(found);
         }
     }
 
