@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" tests="14" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:53:58.408Z" hostname="runnervmlun5p" time="0.514">
+  <properties/>
+  <testcase name="skipsSnapshotWhenPhysicsReplacesTheBlockWithAnIncompatibleState()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.003"/>
+  <testcase name="roundTripsBothSignSidesColorsGlowWaxAndComponents()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.126"/>
+  <testcase name="rejectsOversizedSignLineCollectionsDuringCapture()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.003"/>
+  <testcase name="rejectsOversizedPlayerHeadProfileCollectionsDuringCapture()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.069"/>
+  <testcase name="roundTripsContainerItemsAndBooksThroughPaperBinarySerialization()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.004"/>
+  <testcase name="restoresDecoratedPotInventoryAndEveryNamedSherdSide()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.067"/>
+  <testcase name="rejectsOversizedBannerPatternCollectionsBeforeAccessingTheRegistry()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.034"/>
+  <testcase name="ignoresUnsupportedBlocksAndRejectsUnknownSnapshotFormats()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.004"/>
+  <testcase name="restoresPlayerHeadUuidNameAndSignedTextureProperties()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.034"/>
+  <testcase name="restoresLecternBookBeforeItsSavedPage()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.006"/>
+  <testcase name="rejectsOversizedInventoriesBeforeCapturingAnUnrestorableSnapshot()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.011"/>
+  <testcase name="restoresSerializedInventoriesAtTheMaximumSupportedSize()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.14"/>
+  <testcase name="restoresCompatibleInventoryAfterPhysicsNormalizesItsBlockState()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.005"/>
+  <testcase name="restoresUnpatternedBannersAndCustomNamesWithoutStartingTheServerRegistry()" classname="org.pinnaclesmp.fragguard.BlockEntitySnapshotTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

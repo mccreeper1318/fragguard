@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.pinnaclesmp.fragguard.DatabaseShutdownTest" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:53:58.926Z" hostname="runnervmlun5p" time="0.4">
+  <properties/>
+  <testcase name="shutdownDrainsCurrentTickWritesAndCheckpointsWal()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.378"/>
+  <testcase name="liveWorkerWriteBatchIsReportedAsUnconfirmed()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.002"/>
+  <testcase name="abandonedWritesAreNotCountedAsDrained()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.001"/>
+  <testcase name="activeDatabaseErrorIsVisibleEvenWhileWorkerIsReachable()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.005"/>
+  <testcase name="liveWorkerOperationIsIncludedInRemainingOperations()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.002"/>
+  <testcase name="anyKnownDroppedWriteKeepsStorageVisiblyDegraded()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.002"/>
+  <testcase name="claimedBatchRemainsPartOfAtomicShutdownOutstandingCount()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.002"/>
+  <testcase name="priorSessionWriteLossPreventsCleanShutdown()" classname="org.pinnaclesmp.fragguard.DatabaseShutdownTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[Sep 12, 2026 9:53:59 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
+Sep 12, 2026 9:53:59 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
+Sep 12, 2026 9:53:59 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
+Sep 12, 2026 9:53:59 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
+]]></system-err>
+</testsuite>

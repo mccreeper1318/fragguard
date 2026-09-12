@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.pinnaclesmp.fragguard.BlockChangeListenerTest" tests="76" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:53:54.173Z" hostname="runnervmlun5p" time="4.233">
+  <properties/>
+  <testcase name="recordsBothEndsOfAFluidFlowTick()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="2.336"/>
+  <testcase name="recordsEntityBlockChangesWithEntityIdentityAndCause()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.548"/>
+  <testcase name="recordsStructureAndFertilizationChangesWithAvailablePlayerAttribution()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.079"/>
+  <testcase name="&quot;fire spread with specialized listener first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.045"/>
+  <testcase name="&quot;fire spread with generic listeners first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.009"/>
+  <testcase name="&quot;natural spread with specialized listener first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;natural spread with generic listeners first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.006"/>
+  <testcase name="coalescesMultipleBreakEventsFromTheSamePlayerInOneTick()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.056"/>
+  <testcase name="&quot;lever activation persists after the interaction&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.046"/>
+  <testcase name="&quot;farmland trampling remains a tracked physical block change&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.006"/>
+  <testcase name="&quot;specialized listener runs first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.009"/>
+  <testcase name="&quot;generic listeners run first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.005"/>
+  <testcase name="recordsBooksRemovedThroughLecternUiAfterAnUnchangedOpen()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.176"/>
+  <testcase name="playerInteractionDefersTntRemovalToTntPrimeEvent()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.031"/>
+  <testcase name="&quot;remove a book from a chiseled bookshelf&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.025"/>
+  <testcase name="&quot;insert a book into a chiseled bookshelf&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.016"/>
+  <testcase name="&quot;remove a book from a lectern&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;insert a book into a lectern&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;remove a music disc from a jukebox&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;insert a music disc into a jukebox&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;player-primed TNT&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.031"/>
+  <testcase name="&quot;player-launched projectile&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="recordsInitialIgnitionAfterApplicationWithPlayerAttribution()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.027"/>
+  <testcase name="&quot;waterlogged block&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;ice becoming water&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;player-fired flaming arrow&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.005"/>
+  <testcase name="&quot;player-launched fireball&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.005"/>
+  <testcase name="&quot;player-launched small fireball&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="keepsSingleBlockPlacementOnTheOrdinaryBranch()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.029"/>
+  <testcase name="&quot;specialized listener runs first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.005"/>
+  <testcase name="&quot;generic listeners run first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;redstone priming&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.006"/>
+  <testcase name="&quot;fire priming&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;player-fired projectile priming&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;entity explosion priming&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;direct player priming&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;door&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.012"/>
+  <testcase name="&quot;bed&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.016"/>
+  <testcase name="&quot;chest&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;trapped chest&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;barrel&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;hopper&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;furnace&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;shulker box&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;dispenser&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;dropper&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;brewing stand&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;crafter&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;stone button press&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;oak button press&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;polished blackstone button press&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;stone pressure-plate activation&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;oak pressure-plate activation&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;polished blackstone pressure-plate activation&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;light weighted pressure-plate activation&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;heavy weighted pressure-plate activation&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="&quot;tripwire activation resets after the player leaves&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;red-bed foot occupancy resets after the player leaves&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;blue-bed head occupancy resets after the player leaves&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="recordsEverySpongeAffectedBlockIncludingTheSponge()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.034"/>
+  <testcase name="&quot;non-player projectile shooter&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.007"/>
+  <testcase name="&quot;unknown projectile shooter&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="coalescesPhysicsChangesIntoThePendingPlayerBreak()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.032"/>
+  <testcase name="recordsPlayerInteractionsThatActuallyChangeBlockData()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.004"/>
+  <testcase name="recordsDispenserBucketChangesAtTheFacingBlock()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.059"/>
+  <testcase name="&quot;bed&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.026"/>
+  <testcase name="&quot;door&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.002"/>
+  <testcase name="&quot;tall plant&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;pointed dripstone&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="recordsNaturalGrowthFadeFormSpreadAndDecayAsActualTransitions()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.052"/>
+  <testcase name="doesNotRecordLecternBookRemovalWhileLoggingIsSuppressed()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="explosionDefersTntCoordinateToTntPrimeEvent()" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.006"/>
+  <testcase name="&quot;entity formation with specialized listener first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.024"/>
+  <testcase name="&quot;entity formation with generic listeners first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.003"/>
+  <testcase name="&quot;player formation with specialized listener first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.002"/>
+  <testcase name="&quot;player formation with generic listeners first&quot;" classname="org.pinnaclesmp.fragguard.BlockChangeListenerTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[Mockito is currently self-attaching to enable the inline-mock-maker. This will no longer work in future releases of the JDK. Please add Mockito as an agent to your build as described in Mockito's documentation: https://javadoc.io/doc/org.mockito/mockito-core/latest/org.mockito/org/mockito/Mockito.html#0.3
+WARNING: A Java agent has been loaded dynamically (/home/runner/.gradle/caches/modules-2/files-2.1/net.bytebuddy/byte-buddy-agent/1.17.7/fbf3d6d649ed37fc9e9c59480a05be0a26e3c2da/byte-buddy-agent-1.17.7.jar)
+WARNING: If a serviceability tool is in use, please run with -XX:+EnableDynamicAgentLoading to hide this warning
+WARNING: If a serviceability tool is not in use, please run with -Djdk.instrument.traceUsage for more information
+WARNING: Dynamic loading of agents will be disallowed by default in a future release
+]]></system-err>
+</testsuite>

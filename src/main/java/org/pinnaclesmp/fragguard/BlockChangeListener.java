@@ -13,6 +13,7 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.type.Bed;
 import org.bukkit.block.data.type.Door;
+import org.bukkit.block.data.type.TNT;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
@@ -41,6 +42,7 @@ import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.block.LeavesDecayEvent;
 import org.bukkit.event.block.SpongeAbsorbEvent;
+import org.bukkit.event.block.TNTPrimeEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
@@ -134,7 +136,13 @@ final class BlockChangeListener implements Listener {
         }
 
         Block brokenBlock = event.getBlock();
-        captureBefore(pendingBreak.beforeStates, brokenBlock);
+        boolean handledByTntPrime = brokenBlock.getType() == Material.TNT
+                && brokenBlock.getBlockData() instanceof TNT tntData
+                && tntData.isUnstable()
+                && plugin.getConfig().getBoolean("log-explosions", true);
+        if (!handledByTntPrime) {
+            captureBefore(pendingBreak.beforeStates, brokenBlock);
+        }
         for (BlockFace face : PLAYER_BREAK_NEIGHBORS) {
             captureBefore(pendingBreak.beforeStates, brokenBlock.getRelative(face));
         }
@@ -176,6 +184,10 @@ final class BlockChangeListener implements Listener {
         }
 
         Block burnedBlock = event.getBlock();
+        if (burnedBlock.getType() == Material.TNT
+                && plugin.getConfig().getBoolean("log-explosions", true)) {
+            return;
+        }
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureBefore(beforeStates, burnedBlock);
         logAfterServerAppliesChange(beforeStates, ChangeAction.FIRE_BURN, "Fire Burn");
@@ -309,6 +321,24 @@ final class BlockChangeListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onTntPrime(TNTPrimeEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        if (!plugin.getConfig().getBoolean("log-explosions", true)) {
+            return;
+        }
+
+        Actor actor = actorForTntPrime(event);
+        logBlockAfterServerAppliesChange(
+                event.getBlock(),
+                ChangeAction.TNT_PRIME,
+                actor.uuid(),
+                actor.name()
+        );
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     void onEntityExplode(EntityExplodeEvent event) {
         if (BlockLoggingSuppression.isSuppressed()) {
             return;
@@ -318,7 +348,11 @@ final class BlockChangeListener implements Listener {
         }
 
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
-        event.blockList().forEach(block -> captureBefore(beforeStates, block));
+        for (Block block : event.blockList()) {
+            if (block.getType() != Material.TNT) {
+                captureBefore(beforeStates, block);
+            }
+        }
 
         Actor actor = actorForEntity(event.getEntity(), "Explosion");
         logAfterServerAppliesChange(
@@ -339,7 +373,11 @@ final class BlockChangeListener implements Listener {
         }
 
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
-        event.blockList().forEach(block -> captureBefore(beforeStates, block));
+        for (Block block : event.blockList()) {
+            if (block.getType() != Material.TNT) {
+                captureBefore(beforeStates, block);
+            }
+        }
 
         BlockState explodedState = event.getExplodedBlockState();
         if (explodedState != null && explodedState.getType() != Material.AIR) {
@@ -499,6 +537,9 @@ final class BlockChangeListener implements Listener {
         }
 
         Material material = clickedBlock.getType();
+        if (material == Material.TNT && plugin.getConfig().getBoolean("log-explosions", true)) {
+            return;
+        }
         if (isTransientInteraction(material)) {
             return;
         }
@@ -872,6 +913,23 @@ final class BlockChangeListener implements Listener {
 
     private boolean isPlaceableBucket(Material material) {
         return material.name().endsWith("_BUCKET") && material != Material.MILK_BUCKET;
+    }
+
+    private Actor actorForTntPrime(TNTPrimeEvent event) {
+        String causeLabel = "TNT Prime: " + readableEnum(event.getCause().name());
+        Entity primingEntity = event.getPrimingEntity();
+        if (primingEntity != null) {
+            return actorForEntity(primingEntity, causeLabel);
+        }
+
+        Block primingBlock = event.getPrimingBlock();
+        if (primingBlock != null) {
+            return new Actor(
+                    SYSTEM_UUID,
+                    causeLabel + ": " + readableEnum(primingBlock.getType().name())
+            );
+        }
+        return new Actor(SYSTEM_UUID, causeLabel);
     }
 
     private Actor actorForEntity(Entity entity, String causeLabel) {

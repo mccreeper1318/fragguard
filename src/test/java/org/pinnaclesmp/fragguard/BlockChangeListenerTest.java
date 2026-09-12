@@ -32,6 +32,7 @@ import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.block.LeavesDecayEvent;
 import org.bukkit.event.block.SpongeAbsorbEvent;
+import org.bukkit.event.block.TNTPrimeEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
@@ -134,6 +135,128 @@ class BlockChangeListenerTest {
         return Stream.of(
                 Arguments.of("player-primed TNT", tnt),
                 Arguments.of("player-launched projectile", projectile)
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("tntPrimeCases")
+    void recordsTntPrimeRemovalWithSpecificAttribution(
+            String caseName,
+            TNTPrimeEvent.PrimeCause cause,
+            Entity primingEntity,
+            Material primingBlockType,
+            String expectedActorUuid,
+            String expectedActorName
+    ) {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block tnt = harness.block(8, 64, 8, "minecraft:tnt[unstable=false]", "minecraft:air");
+            when(tnt.getType()).thenReturn(Material.TNT);
+            Block primingBlock = null;
+            if (primingBlockType != null) {
+                primingBlock = mock(Block.class);
+                when(primingBlock.getType()).thenReturn(primingBlockType);
+            }
+
+            TNTPrimeEvent event = mock(TNTPrimeEvent.class);
+            when(event.getBlock()).thenReturn(tnt);
+            when(event.getCause()).thenReturn(cause);
+            when(event.getPrimingEntity()).thenReturn(primingEntity);
+            when(event.getPrimingBlock()).thenReturn(primingBlock);
+
+            harness.listener.onTntPrime(event);
+            verify(harness.database, never()).insertAsync(any());
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.TNT_PRIME, change.action());
+            assertEquals(expectedActorUuid, change.actorUuid());
+            assertEquals(expectedActorName, change.actorName());
+            assertEquals("minecraft:tnt[unstable=false]", change.beforeData());
+            assertEquals("minecraft:air", change.afterData());
+        }
+    }
+
+    @Test
+    void playerInteractionDefersTntRemovalToTntPrimeEvent() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            Block tnt = harness.block(9, 64, 9, "minecraft:tnt[unstable=false]", "minecraft:air");
+            when(tnt.getType()).thenReturn(Material.TNT);
+
+            harness.listener.onPlayerInteract(harness.interactEvent(tnt));
+            verify(harness.database, never()).insertAsync(any());
+            verify(harness.scheduler, never()).runTask(eq(harness.plugin), any(Runnable.class));
+
+            TNTPrimeEvent prime = mock(TNTPrimeEvent.class);
+            when(prime.getBlock()).thenReturn(tnt);
+            when(prime.getCause()).thenReturn(TNTPrimeEvent.PrimeCause.PLAYER);
+            when(prime.getPrimingEntity()).thenReturn(harness.player);
+            harness.listener.onTntPrime(prime);
+            harness.runNextTick();
+
+            BlockChange change = harness.captureSingleChange();
+            assertEquals(ChangeAction.TNT_PRIME, change.action());
+            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
+            assertEquals("Builder", change.actorName());
+        }
+    }
+
+    @Test
+    void explosionDefersTntCoordinateToTntPrimeEvent() {
+        try (DeferredChangeHarness harness = new DeferredChangeHarness()) {
+            UUID creeperUuid = UUID.fromString("55fdc0a2-f639-4f37-87fb-802ca6f386d2");
+            Entity creeper = mock(Entity.class);
+            when(creeper.getUniqueId()).thenReturn(creeperUuid);
+            when(creeper.getType()).thenReturn(EntityType.CREEPER);
+
+            Block tnt = harness.block(10, 64, 10, "minecraft:tnt[unstable=false]", "minecraft:air");
+            Block stone = harness.block(11, 64, 10, "minecraft:stone", "minecraft:air");
+            when(tnt.getType()).thenReturn(Material.TNT);
+            when(stone.getType()).thenReturn(Material.STONE);
+
+            EntityExplodeEvent explosion = mock(EntityExplodeEvent.class);
+            when(explosion.getEntity()).thenReturn(creeper);
+            when(explosion.blockList()).thenReturn(new ArrayList<>(List.of(tnt, stone)));
+            harness.listener.onEntityExplode(explosion);
+
+            TNTPrimeEvent prime = mock(TNTPrimeEvent.class);
+            when(prime.getBlock()).thenReturn(tnt);
+            when(prime.getCause()).thenReturn(TNTPrimeEvent.PrimeCause.EXPLOSION);
+            when(prime.getPrimingEntity()).thenReturn(creeper);
+            harness.listener.onTntPrime(prime);
+            harness.runAllTasks();
+
+            ArgumentCaptor<BlockChange> changes = ArgumentCaptor.forClass(BlockChange.class);
+            verify(harness.database, times(2)).insertAsync(changes.capture());
+            assertEquals(List.of(ChangeAction.EXPLOSION, ChangeAction.TNT_PRIME),
+                    changes.getAllValues().stream().map(BlockChange::action).toList());
+            assertEquals(List.of(11, 10), changes.getAllValues().stream().map(BlockChange::x).toList());
+        }
+    }
+
+    private static Stream<Arguments> tntPrimeCases() {
+        Player player = mock(Player.class);
+        when(player.getUniqueId()).thenReturn(PLAYER_UUID);
+        when(player.getName()).thenReturn("Builder");
+
+        Projectile projectile = mock(Projectile.class);
+        when(projectile.getShooter()).thenReturn(player);
+
+        UUID creeperUuid = UUID.fromString("d5817df9-f062-4f5e-a0dd-ac328f570fa7");
+        Entity creeper = mock(Entity.class);
+        when(creeper.getUniqueId()).thenReturn(creeperUuid);
+        when(creeper.getType()).thenReturn(EntityType.CREEPER);
+
+        return Stream.of(
+                Arguments.of("redstone priming", TNTPrimeEvent.PrimeCause.REDSTONE, null,
+                        Material.REDSTONE_WIRE, "SYSTEM", "TNT Prime: Redstone: Redstone Wire"),
+                Arguments.of("fire priming", TNTPrimeEvent.PrimeCause.FIRE, null,
+                        Material.FIRE, "SYSTEM", "TNT Prime: Fire: Fire"),
+                Arguments.of("player-fired projectile priming", TNTPrimeEvent.PrimeCause.PROJECTILE, projectile,
+                        null, PLAYER_UUID.toString(), "Builder"),
+                Arguments.of("entity explosion priming", TNTPrimeEvent.PrimeCause.EXPLOSION, creeper,
+                        null, creeperUuid.toString(), "TNT Prime: Explosion: Creeper"),
+                Arguments.of("direct player priming", TNTPrimeEvent.PrimeCause.PLAYER, player,
+                        null, PLAYER_UUID.toString(), "Builder")
         );
     }
 

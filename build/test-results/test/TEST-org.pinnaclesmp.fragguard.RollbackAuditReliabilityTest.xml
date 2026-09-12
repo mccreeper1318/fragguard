@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.pinnaclesmp.fragguard.RollbackAuditReliabilityTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.389Z" hostname="runnervmlun5p" time="0.019">
+  <properties/>
+  <testcase name="observedRollbackAuditRecordsRequestedToActualTransition()" classname="org.pinnaclesmp.fragguard.RollbackAuditReliabilityTest" time="0.002"/>
+  <testcase name="requiredRollbackAuditsBypassGameplayQueueAndRemainDistinct()" classname="org.pinnaclesmp.fragguard.RollbackAuditReliabilityTest" time="0.016"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
+Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
+Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
+Sep 12, 2026 9:54:00 PM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
+]]></system-err>
+</testsuite>

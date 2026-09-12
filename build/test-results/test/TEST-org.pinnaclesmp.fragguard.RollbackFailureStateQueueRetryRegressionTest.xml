@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.pinnaclesmp.fragguard.RollbackFailureStateQueueRetryRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-12T21:54:00.837Z" hostname="runnervmlun5p" time="0.006">
+  <properties/>
+  <testcase name="terminalFailureStateRetriesTransientOperationQueuePressure()" classname="org.pinnaclesmp.fragguard.RollbackFailureStateQueueRetryRegressionTest" time="0.006"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

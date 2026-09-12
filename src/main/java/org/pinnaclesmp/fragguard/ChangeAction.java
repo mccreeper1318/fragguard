@@ -7,6 +7,7 @@ enum ChangeAction {
     PLACE("block.place", "PLACE"),
     BREAK("block.break", "BREAK"),
     EXPLOSION("block.explosion", "EXPLOSION"),
+    TNT_PRIME("block.tnt_prime", "TNT_PRIME"),
     FIRE_SPREAD("fire.spread", "FIRE_SPREAD"),
     FIRE_BURN("fire.burn", "FIRE_BURN"),
     FIRE_IGNITE("fire.ignite", "FIRE_IGNITE"),
@@ -69,6 +70,7 @@ enum ChangeAction {
             case PLACE -> "placed";
             case BREAK -> "destroyed";
             case EXPLOSION -> "exploded";
+            case TNT_PRIME -> "primed";
             case FIRE_SPREAD -> "spread";
             case FIRE_BURN -> "burned";
             case FIRE_IGNITE -> "ignited";

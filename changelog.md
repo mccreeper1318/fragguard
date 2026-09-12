@@ -6,6 +6,7 @@
 
 - Fixed #43 by preserving distinct same-tick history when different actors or actions modify the same coordinate. Coalescing now applies only to consecutive, state-contiguous transitions with matching attribution and action across both queued and already-flushed writes, while compatible net-no-op chains are still removed.
 - Fixed #44 so expected timed-query cancellations no longer mark SQLite storage unhealthy or emit storage-failure warnings. FragGuard now distinguishes its own timeout cancellation, JDBC query timeouts, and SQLite `SQLITE_INTERRUPT` results from genuine database failures.
+- Fixed #45 by recording TNT blocks when they are primed by redstone, fire, projectiles, entities, players, unstable block breaks, or explosions. TNT priming now captures the actual next-tick block state with the most specific available cause attribution, while specialized TNT history owns the transition so generic interaction, burn, break, and explosion handlers do not duplicate it.
 
 ## 26.2-1.1.2
 
