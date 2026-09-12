@@ -9,6 +9,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1213,6 +1214,7 @@ final class Database {
             future.orTimeout(queryTimeoutSeconds, TimeUnit.SECONDS);
             future.whenComplete((result, throwable) -> {
                 if ((future.isCancelled() || throwable instanceof TimeoutException) && activeQuery == future) {
+                    operation.cancellationRequested = true;
                     cancelActiveStatement();
                 }
             });
@@ -1402,7 +1404,9 @@ final class Database {
             healthy = true;
             lastError = "";
         } catch (Throwable exception) {
-            if (exception instanceof SQLException) {
+            if (exception instanceof SQLException sqlException
+                    && !isExpectedTimedQueryCancellation(operation.timedQuery,
+                    operation.cancellationRequested, sqlException)) {
                 healthy = false;
                 lastError = exception.getMessage();
                 warnStorage("FragGuard database operation failed; check SQLite storage health.", exception);
@@ -1760,6 +1764,31 @@ final class Database {
         }
     }
 
+    static boolean isExpectedTimedQueryCancellation(boolean timedQuery, boolean cancellationRequested,
+                                                    SQLException exception) {
+        if (!timedQuery) {
+            return false;
+        }
+        if (cancellationRequested || exception instanceof SQLTimeoutException) {
+            return true;
+        }
+
+        for (SQLException current = exception; current != null; current = current.getNextException()) {
+            if (current instanceof SQLTimeoutException || current.getErrorCode() == 9) {
+                return true;
+            }
+        }
+        for (Throwable cause = exception.getCause(); cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLTimeoutException) {
+                return true;
+            }
+            if (cause instanceof SQLException sqlCause && sqlCause.getErrorCode() == 9) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean canCoalesce(BlockChange previous, BlockChange latest) {
         return Objects.equals(previous.actorUuid(), latest.actorUuid())
                 && Objects.equals(previous.actorName(), latest.actorName())
@@ -1882,6 +1911,7 @@ final class Database {
         private final SqlOperation<T> work;
         private final CompletableFuture<T> future;
         private final boolean timedQuery;
+        private volatile boolean cancellationRequested;
 
         private DatabaseOperation(long writeBarrier, SqlOperation<T> work,
                                   CompletableFuture<T> future, boolean timedQuery) {

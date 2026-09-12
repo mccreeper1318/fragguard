@@ -14,6 +14,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.util.Arrays;
 import java.util.List;
@@ -283,6 +284,25 @@ class DatabaseTest {
         assertEquals(2, database.rollbackTargetsAsync("world", 0, 0, 3,
                 timestamp - 3_000L, timestamp, 10, 12L).join().size(),
                 "the database worker must remain usable after rejecting an oversized preview");
+    }
+
+    @Test
+    void treatsTimedQueryTimeoutAndSqliteInterruptAsExpectedCancellation() {
+        assertTrue(Database.isExpectedTimedQueryCancellation(true, true,
+                new SQLException("cancelled by timeout")),
+                "the future timeout path must not be classified as a storage failure");
+        assertTrue(Database.isExpectedTimedQueryCancellation(true, false,
+                new SQLTimeoutException("query timed out")),
+                "a JDBC timeout from the driver is an expected timed-query outcome");
+        assertTrue(Database.isExpectedTimedQueryCancellation(true, false,
+                new SQLException("interrupted", null, 9)),
+                "SQLite SQLITE_INTERRUPT is the normal result of cancelling a timed query");
+        assertFalse(Database.isExpectedTimedQueryCancellation(true, false,
+                new SQLException("disk I/O error", null, 10)),
+                "genuine SQLite storage failures must still degrade health");
+        assertFalse(Database.isExpectedTimedQueryCancellation(false, true,
+                new SQLException("interrupted", null, 9)),
+                "non-timed database operations must not suppress SQLite failures");
     }
 
     @Test
