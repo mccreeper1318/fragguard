@@ -540,7 +540,7 @@ final class BlockChangeListener implements Listener {
         if (material == Material.TNT && plugin.getConfig().getBoolean("log-explosions", true)) {
             return;
         }
-        if (isTransientInteraction(material)) {
+        if (material == Material.DRAGON_EGG || isTransientInteraction(material)) {
             return;
         }
 
@@ -585,12 +585,21 @@ final class BlockChangeListener implements Listener {
         if (BlockLoggingSuppression.isSuppressed()) {
             return;
         }
-        if (!plugin.getConfig().getBoolean("log-liquid-flow", true)) {
+
+        Material sourceType = event.getBlock().getType();
+        if (sourceType == Material.DRAGON_EGG) {
+            Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
+            captureBefore(beforeStates, event.getBlock());
+            captureBefore(beforeStates, event.getToBlock());
+            logAfterServerAppliesChange(
+                    beforeStates,
+                    ChangeAction.DRAGON_EGG_TELEPORT,
+                    "Dragon Egg Teleport"
+            );
             return;
         }
 
-        Material sourceType = event.getBlock().getType();
-        if (!isLiquid(sourceType)) {
+        if (!plugin.getConfig().getBoolean("log-liquid-flow", true) || !isLiquid(sourceType)) {
             return;
         }
 

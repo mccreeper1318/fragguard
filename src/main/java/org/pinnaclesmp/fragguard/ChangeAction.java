@@ -15,6 +15,7 @@ enum ChangeAction {
     LIQUID_REMOVE("liquid.remove", "LIQUID_REMOVE"),
     LIQUID_FLOW("liquid.flow", "LIQUID_FLOW"),
     LIQUID_BREAK("liquid.break", "LIQUID_BREAK"),
+    DRAGON_EGG_TELEPORT("block.dragon_egg_teleport", "DRAGON_EGG_TELEPORT"),
     SPONGE_ABSORB("liquid.sponge_absorb", "SPONGE_ABSORB"),
     DISPENSER_LIQUID_PLACE("liquid.dispenser_place", "DISPENSER_LIQUID_PLACE"),
     DISPENSER_LIQUID_REMOVE("liquid.dispenser_remove", "DISPENSER_LIQUID_REMOVE"),
@@ -78,6 +79,7 @@ enum ChangeAction {
             case LIQUID_REMOVE -> "removed liquid from";
             case LIQUID_FLOW -> "flowed into";
             case LIQUID_BREAK -> "destroyed";
+            case DRAGON_EGG_TELEPORT -> "teleported";
             case SPONGE_ABSORB -> "absorbed water from";
             case DISPENSER_LIQUID_PLACE -> "dispensed liquid into";
             case DISPENSER_LIQUID_REMOVE -> "removed liquid from";
