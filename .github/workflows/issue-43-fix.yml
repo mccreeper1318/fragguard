@@ -1,0 +1,140 @@
+name: Apply issue 43 fix
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - .github/workflows/issue-43-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@v6
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Apply issue 43 changes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          db_path = Path('src/main/java/org/pinnaclesmp/fragguard/Database.java')
+          db = db_path.read_text()
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              return text.replace(old, new, 1)
+
+          db = replace_once(
+              db,
+              '    static final int SCHEMA_VERSION = 3;\n',
+              '    static final int SCHEMA_VERSION = 4;\n',
+              'schema version',
+          )
+          db = replace_once(
+              db,
+              '    private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;\n',
+              '',
+              'obsolete coalesce conflict batch constant',
+          )
+
+          db = replace_once(
+              db,
+              '''            PendingBlockChange existing = coalescedChanges.get(key);\n            if (existing != null) {\n                existing.change = merge(existing.change, change, serverTick);\n                coalescedWrites.incrementAndGet();\n                return;\n            }\n''',
+              '''            PendingBlockChange existing = coalescedChanges.get(key);\n            if (existing != null && canCoalesce(existing.change, change)) {\n                existing.change = merge(existing.change, change, serverTick);\n                coalescedWrites.incrementAndGet();\n                return;\n            }\n''',
+              'in-memory coalesce compatibility guard',
+          )
+
+          db = replace_once(
+              db,
+              '''                    case 1 -> migrateBlockEntitySchema(databaseConnection);\n                    case 2 -> migrateRollbackSafetySchema(databaseConnection);\n''',
+              '''                    case 1 -> migrateBlockEntitySchema(databaseConnection);\n                    case 2 -> migrateRollbackSafetySchema(databaseConnection);\n                    case 3 -> migrateAttributionCoalescingSchema(databaseConnection);\n''',
+              'schema migration dispatch',
+          )
+
+          db = replace_once(
+              db,
+              '''            statement.executeUpdate("""\n                    CREATE UNIQUE INDEX IF NOT EXISTS idx_fg_tick_coalesce\n                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)\n                    """);\n''',
+              '''            statement.executeUpdate("""\n                    CREATE INDEX IF NOT EXISTS idx_fg_tick_coalesce\n                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick, id)\n                    """);\n''',
+              'initial coalesce index',
+          )
+
+          migration_marker = '    private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)\n'
+          migration_method = '''    private void migrateAttributionCoalescingSchema(Connection databaseConnection) throws SQLException {\n        try (Statement statement = databaseConnection.createStatement()) {\n            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");\n            statement.executeUpdate("""\n                    CREATE INDEX idx_fg_tick_coalesce\n                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick, id)\n                    """);\n        }\n    }\n\n'''
+          if migration_marker not in db:
+              raise SystemExit('coalesce migration insertion marker not found')
+          db = db.replace(migration_marker, migration_method + migration_marker, 1)
+
+          transaction_start = db.index('            long persistedCoalesces = inTransaction(connection, () -> {')
+          transaction_end = db.index('            synchronized (coalescedChanges) {', transaction_start)
+          replacement_transaction = '''            long persistedCoalesces = inTransaction(connection, () -> {\n                long coalesces = 0L;\n                try (PreparedStatement update = connection.prepareStatement("""\n                        UPDATE block_changes\n                        SET after_data = ?, after_entity_data = ?\n                        WHERE id = (\n                            SELECT id FROM block_changes\n                            WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?\n                              AND coalesce_session = ? AND server_tick = ?\n                            ORDER BY id DESC\n                            LIMIT 1\n                        )\n                          AND actor_uuid = ?\n                          AND actor_name = ?\n                          AND action = ?\n                          AND after_data = ?\n                          AND ((after_entity_data IS NULL AND ? IS NULL) OR after_entity_data = ?)\n                        """);\n                     PreparedStatement insert = connection.prepareStatement("""\n                        INSERT INTO block_changes\n                        (happened_at, actor_uuid, actor_name, world, x, y, z, action,\n                         before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick,\n                         before_entity_data, after_entity_data)\n                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                        """);\n                     PreparedStatement deleteNoOp = connection.prepareStatement("""\n                        DELETE FROM block_changes\n                        WHERE id = (\n                            SELECT id FROM block_changes\n                            WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?\n                              AND coalesce_session = ? AND server_tick = ?\n                            ORDER BY id DESC\n                            LIMIT 1\n                        )\n                          AND actor_uuid = ?\n                          AND actor_name = ?\n                          AND action = ?\n                          AND before_data = after_data\n                          AND before_entity_data IS after_entity_data\n                        """)) {\n                    for (PendingBlockChange pending : batch) {\n                        BlockChange change = pending.change;\n                        if (sameState(change.beforeData(), change.beforeEntityData(),\n                                change.afterData(), change.afterEntityData())) {\n                            continue;\n                        }\n\n                        update.setString(1, change.afterData());\n                        update.setBytes(2, change.afterEntityData());\n                        update.setString(3, pending.worldUuid);\n                        update.setInt(4, pending.key.x());\n                        update.setInt(5, pending.key.y());\n                        update.setInt(6, pending.key.z());\n                        update.setString(7, coalesceSession);\n                        update.setLong(8, pending.key.tick());\n                        update.setString(9, change.actorUuid());\n                        update.setString(10, change.actorName());\n                        update.setString(11, change.action().storageId());\n                        update.setString(12, change.beforeData());\n                        update.setBytes(13, change.beforeEntityData());\n                        update.setBytes(14, change.beforeEntityData());\n                        if (update.executeUpdate() == 1) {\n                            coalesces++;\n                            deleteNoOp.setString(1, pending.worldUuid);\n                            deleteNoOp.setInt(2, pending.key.x());\n                            deleteNoOp.setInt(3, pending.key.y());\n                            deleteNoOp.setInt(4, pending.key.z());\n                            deleteNoOp.setString(5, coalesceSession);\n                            deleteNoOp.setLong(6, pending.key.tick());\n                            deleteNoOp.setString(7, change.actorUuid());\n                            deleteNoOp.setString(8, change.actorName());\n                            deleteNoOp.setString(9, change.action().storageId());\n                            deleteNoOp.executeUpdate();\n                            continue;\n                        }\n\n                        insert.setLong(1, change.happenedAt());\n                        insert.setString(2, change.actorUuid());\n                        insert.setString(3, change.actorName());\n                        insert.setString(4, change.worldName());\n                        insert.setInt(5, change.x());\n                        insert.setInt(6, change.y());\n                        insert.setInt(7, change.z());\n                        insert.setString(8, change.action().storageId());\n                        insert.setString(9, change.beforeData());\n                        insert.setString(10, change.afterData());\n                        insert.setString(11, pending.worldUuid);\n                        insert.setInt(12, change.x() >> 4);\n                        insert.setInt(13, change.z() >> 4);\n                        insert.setString(14, coalesceSession);\n                        insert.setLong(15, pending.key.tick());\n                        insert.setBytes(16, change.beforeEntityData());\n                        insert.setBytes(17, change.afterEntityData());\n                        insert.executeUpdate();\n                    }\n                }\n                return coalesces;\n            });\n'''
+          db = db[:transaction_start] + replacement_transaction + db[transaction_end:]
+
+          conflict_method_start = db.index('    private long countPersistedCoalesceConflicts(')
+          conflict_method_end = db.index('    private <T> void executeOperation', conflict_method_start)
+          db = db[:conflict_method_start] + db[conflict_method_end:]
+
+          merge_marker = '    private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {\n'
+          compatibility_method = '''    private static boolean canCoalesce(BlockChange previous, BlockChange latest) {\n        return Objects.equals(previous.actorUuid(), latest.actorUuid())\n                && Objects.equals(previous.actorName(), latest.actorName())\n                && previous.action() == latest.action()\n                && sameState(previous.afterData(), previous.afterEntityData(),\n                        latest.beforeData(), latest.beforeEntityData());\n    }\n\n'''
+          if merge_marker not in db:
+              raise SystemExit('coalesce compatibility method insertion marker not found')
+          db = db.replace(merge_marker, compatibility_method + merge_marker, 1)
+          db_path.write_text(db)
+
+          test_path = Path('src/test/java/org/pinnaclesmp/fragguard/DatabaseTest.java')
+          tests = test_path.read_text()
+          test_marker = '''    @Test\n    void removesSameTickNetNoOpAcrossSeparateDatabaseFlushes() throws Exception {\n'''
+          new_tests = '''    @Test\n    void preservesDifferentActorsAndInterveningSameTickChangesInMemory() throws Exception {\n        database = startDatabase();\n        long timestamp = System.currentTimeMillis();\n        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");\n\n        database.insertAsync(new BlockChange(timestamp, 910L, ACTOR_UUID.toString(), "Builder", "world",\n                10, 64, 10, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));\n        database.insertAsync(new BlockChange(timestamp + 1L, 910L, otherActor.toString(), "OtherBuilder", "world",\n                10, 64, 10, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));\n        database.insertAsync(new BlockChange(timestamp + 2L, 910L, ACTOR_UUID.toString(), "Builder", "world",\n                10, 64, 10, ChangeAction.BREAK, "minecraft:grass_block", "minecraft:gold_block"));\n\n        LookupPage page = database.lookupAsync("world", 10, 10, 1, 1, 15, 30).join();\n\n        assertEquals(3, page.totalRows(),\n                "a compatible actor must not coalesce across an intervening actor in the same tick");\n        assertEquals(0, database.health().coalescedWrites());\n    }\n\n    @Test\n    void preservesDifferentActorsAcrossSeparateDatabaseFlushes() throws Exception {\n        database = startDatabase();\n        long timestamp = System.currentTimeMillis();\n        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");\n\n        database.insertAsync(new BlockChange(timestamp, 911L, ACTOR_UUID.toString(), "Builder", "world",\n                11, 64, 11, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));\n        database.lookupAsync("world", 11, 11, 1, 1, 15, 30).join();\n\n        database.insertAsync(new BlockChange(timestamp + 1L, 911L, otherActor.toString(), "OtherBuilder", "world",\n                11, 64, 11, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));\n        LookupPage page = database.lookupAsync("world", 11, 11, 1, 1, 15, 30).join();\n\n        assertEquals(2, page.totalRows());\n        assertEquals(0, database.health().coalescedWrites(),\n                "cross-flush writes from different actors must stay distinct");\n    }\n\n    @Test\n    void preservesDifferentActionsAcrossSeparateDatabaseFlushes() throws Exception {\n        database = startDatabase();\n        long timestamp = System.currentTimeMillis();\n\n        database.insertAsync(new BlockChange(timestamp, 912L, ACTOR_UUID.toString(), "Builder", "world",\n                12, 64, 12, ChangeAction.BREAK, "minecraft:stone", "minecraft:air"));\n        database.lookupAsync("world", 12, 12, 1, 1, 15, 30).join();\n\n        database.insertAsync(new BlockChange(timestamp + 1L, 912L, ACTOR_UUID.toString(), "Builder", "world",\n                12, 64, 12, ChangeAction.PLACE, "minecraft:air", "minecraft:stone"));\n        LookupPage page = database.lookupAsync("world", 12, 12, 1, 1, 15, 30).join();\n\n        assertEquals(2, page.totalRows());\n        assertEquals(0, database.health().coalescedWrites(),\n                "cross-flush writes with different actions must stay distinct");\n    }\n\n'''
+          if test_marker not in tests:
+              raise SystemExit('database regression-test insertion marker not found')
+          tests = tests.replace(test_marker, new_tests + test_marker, 1)
+
+          migration_test_marker = '''    @Test\n    void refusesToOpenNewerDatabaseSchemasWithoutChangingThem() throws Exception {\n'''
+          migration_test = '''    @Test\n    void migratesVersionThreeTickCoalescingIndexToOrderedNonUniqueHistory() throws Exception {\n        database = startDatabase();\n        database.shutdown();\n        database = null;\n\n        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {\n            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");\n            statement.executeUpdate("""\n                    CREATE UNIQUE INDEX idx_fg_tick_coalesce\n                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)\n                    """);\n            statement.execute("PRAGMA user_version=3");\n        }\n\n        database = startDatabase();\n        try (Connection connection = openDatabase();\n             Statement statement = connection.createStatement();\n             ResultSet indexes = statement.executeQuery("PRAGMA index_list(block_changes)")) {\n            boolean found = false;\n            while (indexes.next()) {\n                if ("idx_fg_tick_coalesce".equals(indexes.getString("name"))) {\n                    found = true;\n                    assertEquals(0, indexes.getInt("unique"),\n                            "schema v4 must replace the old one-row-per-coordinate/tick uniqueness rule");\n                }\n            }\n            assertTrue(found);\n        }\n    }\n\n'''
+          if migration_test_marker not in tests:
+              raise SystemExit('migration regression-test insertion marker not found')
+          tests = tests.replace(migration_test_marker, migration_test + migration_test_marker, 1)
+          test_path.write_text(tests)
+
+          changelog_path = Path('changelog.md')
+          changelog = changelog_path.read_text()
+          changelog_marker = '# FG Changelog\n\n'
+          changelog_entry = '''## 26.3-1.1.3\n\n### Fixed\n\n- Fixed #43 by preserving distinct same-tick history when different actors or actions modify the same coordinate. Coalescing now applies only to consecutive, state-contiguous transitions with matching attribution and action across both queued and already-flushed writes, while compatible net-no-op chains are still removed.\n\n'''
+          if not changelog.startswith(changelog_marker):
+              raise SystemExit('changelog header not found')
+          changelog = changelog_marker + changelog_entry + changelog[len(changelog_marker):]
+          changelog_path.write_text(changelog)
+          PY
+
+      - name: Run tests
+        run: ./gradlew test --no-daemon
+
+      - name: Commit issue 43 fix
+        shell: bash
+        run: |
+          rm .github/workflows/issue-43-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main/java/org/pinnaclesmp/fragguard/Database.java \
+                  src/test/java/org/pinnaclesmp/fragguard/DatabaseTest.java \
+                  changelog.md \
+                  .github/workflows/issue-43-fix.yml
+          git commit -m "Fix same-tick actor/action coalescing (#43)"
+          git push origin HEAD:dev
