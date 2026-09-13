@@ -23,8 +23,8 @@ database-startup-timeout-seconds: 0
 database-migration-space-preflight-enabled: true
 # Extra free-space margin beyond the estimated backup/index working set.
 database-migration-space-safety-mib: 256
-# Auto-pruning only applies to backups this version has explicitly marked as verified.
-# At least one verified full migration backup is always retained.
+# Auto-pruning only applies to backups this version has explicitly created and marked as verified;
+# older/unmarked backups are never deleted automatically. At least one verified full migration backup is retained.
 database-migration-backup-retention-count: 1
 database-shutdown-timeout-seconds: 15
 # Extra grace period after an active SQLite statement is cancelled during shutdown.
