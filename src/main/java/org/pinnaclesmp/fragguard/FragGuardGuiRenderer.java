@@ -10,12 +10,15 @@ import org.bukkit.inventory.meta.ItemMeta;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
 final class FragGuardGuiRenderer {
     static final int RESULTS_PER_PAGE = 36;
+    private static final int MAX_BLOCK_ENTITY_DETAIL_LINES = 8;
+    private static final int MAX_LORE_DETAIL_LENGTH = 72;
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("MMM d, yyyy h:mm:ss a")
             .withZone(ZoneId.systemDefault());
 
@@ -141,20 +144,60 @@ final class FragGuardGuiRenderer {
 
     private static ItemStack rawEventItem(LookupRow row) {
         String material = LookupActivityGrouper.materialKey(row);
-        return item(icon(material),
-                "&b" + actor(row.actorName()) + " &7" + row.action().displayPastTense() + " &f"
-                        + LookupActivityGrouper.displayMaterial(material),
+        List<String> lore = new ArrayList<>(List.of(
                 "&7Time: &f" + TIME.format(Instant.ofEpochMilli(row.happenedAt())),
                 "&7Location: &f" + row.x() + " " + row.y() + " " + row.z(),
-                "&7Before: &f" + state(row.beforeData()), "&7After: &f" + state(row.afterData()));
+                "&7Before: &f" + state(row.beforeData()),
+                "&7After: &f" + state(row.afterData())));
+        appendBlockEntityDetails(lore, row);
+        return item(icon(material),
+                "&b" + actor(row.actorName()) + " &7" + row.action().displayPastTense() + " &f"
+                        + LookupActivityGrouper.displayMaterial(material), lore);
+    }
+
+    private static void appendBlockEntityDetails(List<String> lore, LookupRow row) {
+        if (!row.blockEntityChanged()) {
+            return;
+        }
+        lore.add("");
+        lore.add("&6Block entity data changed");
+        appendSnapshot(lore, "Before", row.beforeEntityData());
+        appendSnapshot(lore, "After", row.afterEntityData());
+    }
+
+    private static void appendSnapshot(List<String> lore, String label, byte[] payload) {
+        if (payload == null) {
+            lore.add("&7" + label + ": &fNone");
+            return;
+        }
+        BlockEntitySnapshot.SnapshotDescription description = BlockEntitySnapshot.describe(payload);
+        lore.add("&7" + label + ": &f" + description.type());
+        int lines = Math.min(MAX_BLOCK_ENTITY_DETAIL_LINES, description.details().size());
+        for (int index = 0; index < lines; index++) {
+            lore.add("&8  " + truncate(description.details().get(index)));
+        }
+        if (description.details().size() > lines) {
+            lore.add("&8  ... and " + (description.details().size() - lines) + " more detail line(s)");
+        }
+    }
+
+    private static String truncate(String value) {
+        if (value.length() <= MAX_LORE_DETAIL_LENGTH) {
+            return value;
+        }
+        return value.substring(0, MAX_LORE_DETAIL_LENGTH - 3) + "...";
     }
 
     private static ItemStack item(Material material, String name, String... lore) {
+        return item(material, name, Arrays.asList(lore));
+    }
+
+    private static ItemStack item(Material material, String name, List<String> lore) {
         ItemStack stack = new ItemStack(material);
         ItemMeta meta = stack.getItemMeta();
         meta.setDisplayName(color(name));
-        if (lore.length > 0) {
-            meta.setLore(Arrays.stream(lore).map(FragGuardGuiRenderer::color).toList());
+        if (!lore.isEmpty()) {
+            meta.setLore(lore.stream().map(FragGuardGuiRenderer::color).toList());
         }
         stack.setItemMeta(meta);
         return stack;
