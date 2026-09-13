@@ -145,6 +145,10 @@ final class FragGuardGui implements Listener {
         long requestGeneration = session.lookupRequests.begin();
         UUID playerId = player.getUniqueId();
         int rowLimit = Math.max(250, plugin.getConfig().getInt("gui-lookup-max-rows", 5000));
+        long maxGapMillis = Math.max(0L,
+                plugin.getConfig().getLong("gui-activity-max-gap-millis", 2500L));
+        int maxDistance = Math.max(0,
+                plugin.getConfig().getInt("gui-activity-max-distance", 6));
         TimePreset preset = times().get(session.timeIndex);
         long cutoff = System.currentTimeMillis() - preset.millis();
         int centerX = player.getLocation().getBlockX();
@@ -154,7 +158,14 @@ final class FragGuardGui implements Listener {
         player.closeInventory();
         player.sendMessage(color("&7Loading FragGuard lookup..."));
         database.lookupSinceAsync(world, centerX, centerZ, session.radius, 1, rowLimit, cutoff)
-                .whenComplete((page, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                .thenApplyAsync(page -> {
+                    if (page.totalRows() > rowLimit) {
+                        return new PreparedLookup(page.totalRows(), null);
+                    }
+                    return new PreparedLookup(page.totalRows(),
+                            LookupResultSnapshot.fromRows(page.rows(), maxGapMillis, maxDistance));
+                })
+                .whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
                             || !session.lookupRequests.isCurrent(requestGeneration)) {
                         return;
@@ -164,13 +175,13 @@ final class FragGuardGui implements Listener {
                         openSetup(player, session);
                         return;
                     }
-                    if (page.totalRows() > rowLimit) {
+                    if (prepared.totalRows() > rowLimit) {
                         player.sendMessage(color("&cThat window contains more than " + rowLimit + " relevant records."));
                         player.sendMessage(color("&7FragGuard will not show a partial GUI result as complete. Narrow the radius or time."));
                         openSetup(player, session);
                         return;
                     }
-                    session.rows = page.rows();
+                    session.results = prepared.results();
                     session.grouped = true;
                     session.page = 0;
                     session.detail = null;
@@ -190,11 +201,8 @@ final class FragGuardGui implements Listener {
 
     private void renderResults(Player player, Session session) {
         session.screen = Screen.RESULTS;
-        List<LookupActivity> activities = LookupActivityGrouper.group(session.rows,
-                Math.max(0L, plugin.getConfig().getLong("gui-activity-max-gap-millis", 2500L)),
-                Math.max(0, plugin.getConfig().getInt("gui-activity-max-distance", 6)));
         FragGuardGuiRenderer.RenderedResults rendered = FragGuardGuiRenderer.results(
-                session.rows, activities, session.grouped, session.page);
+                session.results.rows(), session.results.activities(), session.grouped, session.page);
         session.page = rendered.page();
         session.visibleActivities = rendered.visibleActivities();
         open(player, session, rendered.inventory());
@@ -342,6 +350,9 @@ final class FragGuardGui implements Listener {
     private record TimePreset(String label, long millis) {
     }
 
+    private record PreparedLookup(int totalRows, LookupResultSnapshot results) {
+    }
+
     private static final class Session {
         private final LookupRequestGeneration lookupRequests = new LookupRequestGeneration();
         private Screen screen;
@@ -351,7 +362,7 @@ final class FragGuardGui implements Listener {
         private boolean grouped;
         private int page;
         private int rawPage;
-        private List<LookupRow> rows = List.of();
+        private LookupResultSnapshot results = LookupResultSnapshot.empty();
         private List<LookupActivity> visibleActivities = List.of();
         private LookupActivity detail;
 
@@ -362,7 +373,7 @@ final class FragGuardGui implements Listener {
             grouped = true;
             page = 0;
             rawPage = 0;
-            rows = List.of();
+            results = LookupResultSnapshot.empty();
             visibleActivities = List.of();
             detail = null;
         }
