@@ -17,15 +17,10 @@
 
 ### Fixed
 
-- Fixed #68 by eliminating the persistent same-tick coalescing index from schema v4. The v3→v4 migration now only verifies the database, removes the obsolete derived index, and advances the schema without a full backup or replacement index build; cross-flush coalescing now uses bounded current-session row-ID tracking, while full data-changing migrations retain verified backups, failed-backup cleanup, conservative retention, and filesystem-space preflight warnings that do not misrepresent managed-host quotas.
-- Fixed #64 by preparing each GUI lookup's condensed activities once off the Bukkit server thread, caching an immutable exact-row/activity snapshot in the session, and reusing that snapshot for paging, grouped/raw toggles, and returns from detail screens instead of repeatedly sorting and regrouping thousands of rows.
-- Fixed #62 by assigning GUI lookups a per-session generation identity so obsolete asynchronous success or failure callbacks cannot overwrite a newer investigation, reopen a reset session, or return after the player has left.
-- Fixed #63 by applying the GUI's selected time cutoff directly to SQLite count and result queries, so short lookup windows do not scan/count unrelated retained history and `gui-lookup-max-rows` applies to the selected GUI window while command lookup behavior remains unchanged.
-
-## 26.3-1.1.3
-
-### Fixed
-
+- Fixed the schema-v4 migration exhausting storage on large databases by eliminating the persistent same-tick coalescing index. The v3→v4 migration now only verifies the database, removes the obsolete derived index, and advances the schema without a full backup or replacement index build; cross-flush coalescing now uses bounded current-session row-ID tracking, while full data-changing migrations retain verified backups, failed-backup cleanup, conservative retention, and filesystem-space preflight warnings that do not misrepresent managed-host quotas.
+- Fixed large GUI lookups being repeatedly sorted and regrouped on the Bukkit server thread by preparing each lookup's condensed activities once off-thread, caching an immutable exact-row/activity snapshot in the session, and reusing that snapshot for paging, grouped/raw toggles, and returns from detail screens.
+- Fixed stale asynchronous GUI lookup callbacks overwriting newer investigations, reopening reset sessions, or returning after the player has left by assigning lookups a per-session generation identity.
+- Fixed short GUI lookup windows scanning and counting unrelated retained history by applying the selected time cutoff directly to SQLite count and result queries, while keeping command lookup behavior unchanged.
 - Fixed same-tick coalescing merging different actors and actions by only combining consecutive, state-contiguous changes with matching attribution and action.
 - Fixed timed-out queries falsely marking storage unhealthy by separating expected timeout and SQLite interrupt results from genuine database failures.
 - Fixed redstone-primed TNT removal bypassing block history by logging `TNTPrimeEvent` transitions with specific cause attribution and suppressing duplicate generic history.
