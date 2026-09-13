@@ -153,7 +153,7 @@ final class FragGuardGui implements Listener {
 
         player.closeInventory();
         player.sendMessage(color("&7Loading FragGuard lookup..."));
-        database.lookupAsync(world, centerX, centerZ, session.radius, 1, rowLimit, plugin.getRetentionDays())
+        database.lookupSinceAsync(world, centerX, centerZ, session.radius, 1, rowLimit, cutoff)
                 .whenComplete((page, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
                             || !session.lookupRequests.isCurrent(requestGeneration)) {
@@ -164,18 +164,13 @@ final class FragGuardGui implements Listener {
                         openSetup(player, session);
                         return;
                     }
-                    boolean complete = page.totalRows() <= rowLimit;
-                    if (!complete && !page.rows().isEmpty()) {
-                        long oldestLoaded = page.rows().get(page.rows().size() - 1).happenedAt();
-                        complete = oldestLoaded < cutoff;
-                    }
-                    if (!complete) {
+                    if (page.totalRows() > rowLimit) {
                         player.sendMessage(color("&cThat window contains more than " + rowLimit + " relevant records."));
                         player.sendMessage(color("&7FragGuard will not show a partial GUI result as complete. Narrow the radius or time."));
                         openSetup(player, session);
                         return;
                     }
-                    session.rows = page.rows().stream().filter(row -> row.happenedAt() >= cutoff).toList();
+                    session.rows = page.rows();
                     session.grouped = true;
                     session.page = 0;
                     session.detail = null;
