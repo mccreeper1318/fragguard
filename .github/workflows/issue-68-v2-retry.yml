@@ -1,0 +1,73 @@
+name: Retry issue 68 index removal fix
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - ".github/workflows/issue-68-v2-retry.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Set up Java 25
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Correct helper test reference
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/issue68-v2.py')
+          text = path.read_text()
+          old = 'void migratesVersionThreeTickCoalescingIndexToOrderedNonUniqueHistory() throws Exception {'
+          new = 'void migratesVersionThreeTickCoalescingIndexWithoutFullDatabaseBackup() throws Exception {'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one stale migration-test name, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Apply issue 68 revision
+        run: python3 .github/scripts/issue68-v2.py
+
+      - name: Remove helper files from resulting commit
+        run: git rm .github/workflows/issue-68-v2.yml .github/workflows/issue-68-v2-retry.yml .github/scripts/issue68-v2.py
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          git diff --check
+          grep -n "removes the obsolete persistent coalescing" README.md
+          if grep -n "CREATE INDEX.*idx_fg_tick_coalesce" src/main/java/org/pinnaclesmp/fragguard/Database.java; then
+            echo "Persistent coalescing index creation still exists."
+            exit 1
+          fi
+          grep -n "PersistedCoalesceCandidate" src/main/java/org/pinnaclesmp/fragguard/Database.java
+
+      - name: Build and test patched tree
+        run: ./gradlew --no-daemon clean test
+
+      - name: Commit issue 68 revision
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Eliminate persistent coalescing index (#68)"
+          git push origin HEAD:dev
