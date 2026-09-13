@@ -7,6 +7,7 @@ import io.papermc.paper.registry.RegistryAccess;
 import io.papermc.paper.registry.RegistryKey;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.DyeColor;
 import org.bukkit.Material;
 import org.bukkit.Nameable;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
@@ -44,6 +46,7 @@ final class BlockEntitySnapshot {
     private static final int MAGIC = 0x46474245;
     private static final int MAX_ITEM_BYTES = 16 * 1024 * 1024;
     private static final int MAX_COLLECTION_SIZE = 4_096;
+    private static final int MAX_DESCRIBED_INVENTORY_SLOTS = 6;
 
     private BlockEntitySnapshot() {
     }
@@ -89,6 +92,53 @@ final class BlockEntitySnapshot {
             throw new IllegalStateException("Could not serialize " + kind + " block-entity data", exception);
         }
         return bytes.toByteArray();
+    }
+
+    static SnapshotDescription describe(byte[] payload) {
+        if (payload == null) {
+            return new SnapshotDescription("None", List.of(), true);
+        }
+
+        try (DataInputStream input = new DataInputStream(new GZIPInputStream(new ByteArrayInputStream(payload)))) {
+            if (input.readInt() != MAGIC) {
+                throw new IOException("Invalid block-entity snapshot header");
+            }
+            int version = input.readUnsignedByte();
+            if (version != FORMAT_VERSION) {
+                throw new IOException("Unsupported block-entity snapshot format version " + version);
+            }
+
+            Kind kind = Kind.valueOf(input.readUTF());
+            List<String> details = new ArrayList<>();
+            Component customName = readComponent(input);
+            if (customName != null) {
+                details.add("Custom name: " + plain(customName));
+            }
+
+            switch (kind) {
+                case SIGN -> describeSign(input, details);
+                case BANNER -> describeBanner(input, details);
+                case SKULL -> describeSkull(input, details);
+                case LECTERN -> {
+                    describeInventory(input, details);
+                    details.add("Page index: " + input.readInt());
+                }
+                case DECORATED_POT -> {
+                    describeInventory(input, details);
+                    int count = readCollectionSize(input, "decorated-pot sides");
+                    for (int index = 0; index < count; index++) {
+                        String side = pretty(input.readUTF());
+                        String material = pretty(input.readUTF());
+                        details.add(side + " sherd: " + material);
+                    }
+                }
+                case INVENTORY -> describeInventory(input, details);
+            }
+            return new SnapshotDescription(kind.displayName(), details, true);
+        } catch (IOException | RuntimeException exception) {
+            return new SnapshotDescription("Stored block entity",
+                    List.of("Stored snapshot could not be decoded."), false);
+        }
     }
 
     static void restore(Block block, byte[] payload) {
@@ -171,6 +221,23 @@ final class BlockEntitySnapshot {
         }
     }
 
+    private static void describeSign(DataInputStream input, List<String> details) throws IOException {
+        details.add("Waxed: " + yesNo(input.readBoolean()));
+        for (Side side : new Side[]{Side.FRONT, Side.BACK}) {
+            String color = pretty(input.readUTF());
+            boolean glowing = input.readBoolean();
+            int count = readCollectionSize(input, "sign lines");
+            List<String> lines = new ArrayList<>(count);
+            for (int index = 0; index < count; index++) {
+                Component line = readComponent(input);
+                lines.add(line == null ? "" : plain(line));
+            }
+            String text = String.join(" | ", lines).trim();
+            details.add(pretty(side.name()) + ": " + (text.isBlank() ? "(blank)" : text));
+            details.add(pretty(side.name()) + " style: " + color + (glowing ? ", glowing" : ""));
+        }
+    }
+
     private static void readSign(DataInputStream input, Sign sign) throws IOException {
         sign.setWaxed(input.readBoolean());
         for (Side side : new Side[]{Side.FRONT, Side.BACK}) {
@@ -198,6 +265,21 @@ final class BlockEntitySnapshot {
         for (Pattern pattern : patterns) {
             output.writeUTF(pattern.getColor().name());
             output.writeUTF(registry.getKeyOrThrow(pattern.getPattern()).toString());
+        }
+    }
+
+    private static void describeBanner(DataInputStream input, List<String> details) throws IOException {
+        int count = readCollectionSize(input, "banner patterns");
+        details.add("Patterns: " + count);
+        for (int index = 0; index < count; index++) {
+            String color = pretty(input.readUTF());
+            String pattern = pretty(input.readUTF().replace("minecraft:", ""));
+            if (index < 6) {
+                details.add("Pattern " + (index + 1) + ": " + color + " " + pattern);
+            }
+        }
+        if (count > 6) {
+            details.add("... and " + (count - 6) + " more pattern(s)");
         }
     }
 
@@ -244,6 +326,24 @@ final class BlockEntitySnapshot {
         }
     }
 
+    private static void describeSkull(DataInputStream input, List<String> details) throws IOException {
+        if (!input.readBoolean()) {
+            details.add("Profile: none");
+            return;
+        }
+        String uuid = readNullableString(input);
+        String name = readNullableString(input);
+        details.add("Profile name: " + Objects.requireNonNullElse(name, "unknown"));
+        details.add("Profile UUID: " + Objects.requireNonNullElse(uuid, "unknown"));
+        int count = readCollectionSize(input, "skull profile properties");
+        for (int index = 0; index < count; index++) {
+            input.readUTF();
+            input.readUTF();
+            readNullableString(input);
+        }
+        details.add("Profile properties: " + count);
+    }
+
     private static void readSkull(DataInputStream input, Skull skull) throws IOException {
         if (!input.readBoolean()) {
             skull.setProfile(null);
@@ -266,6 +366,35 @@ final class BlockEntitySnapshot {
         validateInventoryLength(items.length);
         output.writeInt(items.length);
         output.write(items);
+    }
+
+    private static void describeInventory(DataInputStream input, List<String> details) throws IOException {
+        int length = input.readInt();
+        validateInventoryLength(length);
+        byte[] items = input.readNBytes(length);
+        if (items.length != length) {
+            throw new IOException("Incomplete serialized inventory");
+        }
+        ItemStack[] contents = ItemStack.deserializeItemsFromBytes(items);
+        int nonEmpty = 0;
+        for (ItemStack item : contents) {
+            if (item != null && item.getType() != null && !item.getType().isAir()) {
+                nonEmpty++;
+            }
+        }
+        details.add("Items: " + nonEmpty + " non-empty slot(s)");
+        int described = 0;
+        for (int slot = 0; slot < contents.length && described < MAX_DESCRIBED_INVENTORY_SLOTS; slot++) {
+            ItemStack item = contents[slot];
+            if (item == null || item.getType() == null || item.getType().isAir()) {
+                continue;
+            }
+            details.add("Slot " + (slot + 1) + ": " + item.getAmount() + "x " + pretty(item.getType().name()));
+            described++;
+        }
+        if (nonEmpty > described) {
+            details.add("... and " + (nonEmpty - described) + " more occupied slot(s)");
+        }
     }
 
     private static void readInventory(DataInputStream input, TileStateInventoryHolder holder) throws IOException {
@@ -291,6 +420,35 @@ final class BlockEntitySnapshot {
     private static Component readComponent(DataInputStream input) throws IOException {
         String value = readNullableString(input);
         return value == null ? null : GsonComponentSerializer.gson().deserialize(value);
+    }
+
+    private static String plain(Component component) {
+        return PlainTextComponentSerializer.plainText().serialize(component);
+    }
+
+    private static String yesNo(boolean value) {
+        return value ? "Yes" : "No";
+    }
+
+    private static String pretty(String value) {
+        if (value == null || value.isBlank()) {
+            return "Unknown";
+        }
+        String cleaned = value.replace("minecraft:", "").toLowerCase(Locale.ROOT);
+        StringBuilder result = new StringBuilder();
+        for (String word : cleaned.split("_")) {
+            if (word.isBlank()) {
+                continue;
+            }
+            if (result.length() > 0) {
+                result.append(' ');
+            }
+            result.append(Character.toUpperCase(word.charAt(0)));
+            if (word.length() > 1) {
+                result.append(word.substring(1));
+            }
+        }
+        return result.length() == 0 ? "Unknown" : result.toString();
     }
 
     private static void writeNullableString(DataOutputStream output, String value) throws IOException {
@@ -322,13 +480,29 @@ final class BlockEntitySnapshot {
         }
     }
 
+    record SnapshotDescription(String type, List<String> details, boolean readable) {
+        SnapshotDescription {
+            details = List.copyOf(details);
+        }
+    }
+
     private enum Kind {
-        SIGN,
-        BANNER,
-        SKULL,
-        LECTERN,
-        DECORATED_POT,
-        INVENTORY;
+        SIGN("Sign"),
+        BANNER("Banner"),
+        SKULL("Player head"),
+        LECTERN("Lectern"),
+        DECORATED_POT("Decorated pot"),
+        INVENTORY("Container");
+
+        private final String displayName;
+
+        Kind(String displayName) {
+            this.displayName = displayName;
+        }
+
+        private String displayName() {
+            return displayName;
+        }
 
         private static Kind of(BlockState state) {
             if (state instanceof Sign) {
