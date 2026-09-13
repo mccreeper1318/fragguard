@@ -8,13 +8,25 @@ import java.util.Locale;
 import java.util.Map;
 
 final class LookupActivityGrouper {
+    static final long DEFAULT_MAX_DURATION_MILLIS = 15_000L;
+    static final int DEFAULT_MAX_SPAN = 24;
+
     private LookupActivityGrouper() {
     }
 
     static List<LookupActivity> group(List<LookupRow> rows, long maxGapMillis, int maxDistance) {
+        return group(rows, maxGapMillis, maxDistance, DEFAULT_MAX_DURATION_MILLIS, DEFAULT_MAX_SPAN);
+    }
+
+    static List<LookupActivity> group(List<LookupRow> rows, long maxGapMillis, int maxDistance,
+                                      long maxDurationMillis, int maxSpan) {
         if (rows.isEmpty()) {
             return List.of();
         }
+        long localGap = Math.max(0L, maxGapMillis);
+        int localDistance = Math.max(0, maxDistance);
+        long totalDuration = Math.max(0L, maxDurationMillis);
+        int totalSpan = Math.max(0, maxSpan);
         List<LookupRow> ordered = rows.stream()
                 .sorted(Comparator.comparingLong(LookupRow::happenedAt).reversed())
                 .toList();
@@ -23,7 +35,7 @@ final class LookupActivityGrouper {
         for (LookupRow row : ordered) {
             Key key = new Key(row.actorName(), row.action(), materialKey(row));
             MutableActivity current = active.get(key);
-            if (current == null || !current.canAppend(row, Math.max(0L, maxGapMillis), Math.max(0, maxDistance))) {
+            if (current == null || !current.canAppend(row, localGap, localDistance, totalDuration, totalSpan)) {
                 if (current != null) {
                     finished.add(current);
                 }
@@ -111,12 +123,26 @@ final class LookupActivityGrouper {
             rows.add(first);
         }
 
-        private boolean canAppend(LookupRow row, long maxGapMillis, int maxDistance) {
+        private boolean canAppend(LookupRow row, long maxGapMillis, int maxDistance,
+                                  long maxDurationMillis, int maxSpan) {
             long gap = Math.max(0L, oldestAt - row.happenedAt());
-            return gap <= maxGapMillis
-                    && Math.abs(row.x() - lastX) <= maxDistance
-                    && Math.abs(row.y() - lastY) <= maxDistance
-                    && Math.abs(row.z() - lastZ) <= maxDistance;
+            long duration = Math.max(0L, newestAt - row.happenedAt());
+            if (gap > maxGapMillis || duration > maxDurationMillis
+                    || Math.abs((long) row.x() - lastX) > maxDistance
+                    || Math.abs((long) row.y() - lastY) > maxDistance
+                    || Math.abs((long) row.z() - lastZ) > maxDistance) {
+                return false;
+            }
+
+            int proposedMinX = Math.min(minX, row.x());
+            int proposedMinY = Math.min(minY, row.y());
+            int proposedMinZ = Math.min(minZ, row.z());
+            int proposedMaxX = Math.max(maxX, row.x());
+            int proposedMaxY = Math.max(maxY, row.y());
+            int proposedMaxZ = Math.max(maxZ, row.z());
+            return (long) proposedMaxX - proposedMinX <= maxSpan
+                    && (long) proposedMaxY - proposedMinY <= maxSpan
+                    && (long) proposedMaxZ - proposedMinZ <= maxSpan;
         }
 
         private void append(LookupRow row) {
