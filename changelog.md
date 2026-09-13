@@ -15,6 +15,11 @@
 - Advanced the plugin feature version to `26.3-1.2.0` while intentionally keeping development on Paper API `26.2.build.121-stable` and `api-version: '26.2'` until Paper 26.3 is stable enough for release.
 - `/fg` with no arguments now opens the GUI; `/fg lookup`, `/fg rollback`, `/fg undo`, `/fg status`, and `/fg help` remain available through the existing command path.
 
+### Fixed
+
+- Fixed #62 by assigning GUI lookups a per-session generation identity so obsolete asynchronous success or failure callbacks cannot overwrite a newer investigation, reopen a reset session, or return after the player has left.
+- Fixed #63 by applying the GUI's selected time cutoff directly to SQLite count and result queries, so short lookup windows do not scan/count unrelated retained history and `gui-lookup-max-rows` applies to the selected GUI window while command lookup behavior remains unchanged.
+
 ## 26.3-1.1.3
 
 ### Fixed
