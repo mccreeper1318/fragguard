@@ -1,0 +1,33 @@
+name: Apply issue 66 database patch
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - .github/workflows/issue66-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Patch database lookup rows
+        run: python3 tools/issue66_patch.py
+
+      - name: Commit patch and remove helpers
+        run: |
+          git config user.name "Kevin"
+          git config user.email "261039506+mccreeper1318@users.noreply.github.com"
+          git add src/main/java/org/pinnaclesmp/fragguard/Database.java
+          git rm tools/issue66_patch.py .github/workflows/issue66-patch.yml
+          git commit -m "Load block-entity snapshots in GUI lookup (#66)"
+          git push origin HEAD:dev
