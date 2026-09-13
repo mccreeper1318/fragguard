@@ -27,7 +27,7 @@ jobs:
           path = Path("src/main/java/org/pinnaclesmp/fragguard/Database.java")
           text = path.read_text()
           anchor = (
-              "    CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ, int radius,\n"
+              "    CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,\n"
               "                                                                   int radius, long targetTimestamp,\n"
               "                                                                   long snapshotTimestamp, int maxBlocks) {\n"
           )
