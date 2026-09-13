@@ -12,13 +12,22 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 public final class FragGuardPlugin extends JavaPlugin {
+    static final int DEFAULT_GUI_LOOKUP_MAX_ROWS = 5000;
+
     private Database database;
     private boolean storageWarningActive;
     private long lastStorageWarningAt;
+    private int guiLookupMaxRows = DEFAULT_GUI_LOOKUP_MAX_ROWS;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        int configuredGuiLookupMaxRows = getConfig().getInt("gui-lookup-max-rows", DEFAULT_GUI_LOOKUP_MAX_ROWS);
+        guiLookupMaxRows = resolveGuiLookupMaxRows(configuredGuiLookupMaxRows);
+        if (configuredGuiLookupMaxRows <= 0) {
+            getLogger().warning("Invalid gui-lookup-max-rows value " + configuredGuiLookupMaxRows
+                    + "; the value must be at least 1. Using the default of " + DEFAULT_GUI_LOOKUP_MAX_ROWS + ".");
+        }
         database = new Database(this);
         try {
             database.init();
@@ -68,6 +77,14 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     int getRollbackJobRetentionDays() {
         return Math.max(1, getConfig().getInt("rollback-job-retention-days", getRetentionDays()));
+    }
+
+    int getGuiLookupMaxRows() {
+        return guiLookupMaxRows;
+    }
+
+    static int resolveGuiLookupMaxRows(int configuredValue) {
+        return configuredValue > 0 ? configuredValue : DEFAULT_GUI_LOOKUP_MAX_ROWS;
     }
 
     private void scheduleCleanup() {
