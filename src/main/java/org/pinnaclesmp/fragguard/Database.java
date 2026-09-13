@@ -4,6 +4,7 @@ import org.bukkit.World;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -13,6 +14,7 @@ import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -935,8 +937,13 @@ final class Database {
                     + ". Upgrade FragGuard instead of opening this database with an older plugin.");
         }
 
-        if (schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection)) {
-            createMigrationBackup(databaseConnection, schemaVersion);
+        boolean existingSchema = schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection);
+        File migrationBackup = null;
+        if (existingSchema && MigrationStoragePolicy.requiresFullBackup(schemaVersion)) {
+            migrationBackup = createMigrationBackup(databaseConnection, schemaVersion);
+        } else if (existingSchema && schemaVersion == 3) {
+            plugin.getLogger().info("FragGuard schema v3->v4 is index-only; skipping a full database copy and "
+                    + "using the storage-aware coalescing-index migration.");
         }
 
         try (Statement statement = databaseConnection.createStatement()) {
@@ -945,22 +952,26 @@ final class Database {
             statement.execute("PRAGMA foreign_keys=ON");
         }
 
+        int startingVersion = schemaVersion;
         while (schemaVersion < SCHEMA_VERSION) {
             int previousVersion = schemaVersion;
-            inTransaction(databaseConnection, () -> {
-                switch (previousVersion) {
-                    case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
-                    case 1 -> migrateBlockEntitySchema(databaseConnection);
-                    case 2 -> migrateRollbackSafetySchema(databaseConnection);
-                    case 3 -> migrateAttributionCoalescingSchema(databaseConnection);
-                    default -> throw new SQLException("No FragGuard database migration exists for schema version "
-                            + previousVersion + ".");
-                }
-                try (Statement statement = databaseConnection.createStatement()) {
-                    statement.execute("PRAGMA user_version=" + (previousVersion + 1));
-                }
-                return null;
-            });
+            if (previousVersion == 3) {
+                migrateAttributionCoalescingSchema(databaseConnection);
+            } else {
+                inTransaction(databaseConnection, () -> {
+                    switch (previousVersion) {
+                        case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
+                        case 1 -> migrateBlockEntitySchema(databaseConnection);
+                        case 2 -> migrateRollbackSafetySchema(databaseConnection);
+                        default -> throw new SQLException("No FragGuard database migration exists for schema version "
+                                + previousVersion + ".");
+                    }
+                    try (Statement statement = databaseConnection.createStatement()) {
+                        statement.execute("PRAGMA user_version=" + (previousVersion + 1));
+                    }
+                    return null;
+                });
+            }
             schemaVersion++;
             plugin.getLogger().info("Migrated FragGuard's SQLite schema from version " + previousVersion
                     + " to version " + schemaVersion + ".");
@@ -970,6 +981,9 @@ final class Database {
             refreshRollbackWorldNames(databaseConnection, loadedWorlds);
             return null;
         });
+        if (startingVersion < SCHEMA_VERSION && migrationBackup != null) {
+            pruneVerifiedMigrationBackups();
+        }
     }
 
     private int readSchemaVersion(Connection databaseConnection) throws SQLException {
@@ -994,12 +1008,16 @@ final class Database {
         }
     }
 
-    private void createMigrationBackup(Connection databaseConnection, int previousVersion) throws SQLException {
+    private File createMigrationBackup(Connection databaseConnection, int previousVersion) throws SQLException {
         File backupDirectory = new File(plugin.getDataFolder(), "backups");
         if (!backupDirectory.isDirectory() && !backupDirectory.mkdirs()) {
             throw new SQLException("Cannot safely migrate FragGuard's database because the backup directory "
                     + backupDirectory.getAbsolutePath() + " could not be created.");
         }
+
+        long estimatedWork = MigrationStoragePolicy.estimateFullMigrationWorkingBytes(databaseFile.length());
+        preflightMigrationSpace(backupDirectory, estimatedWork,
+                "full pre-migration backup and schema rewrite from v" + previousVersion + " to v" + SCHEMA_VERSION);
 
         String prefix = databaseFile.getName() + ".pre-migration-v" + previousVersion
                 + "-to-v" + SCHEMA_VERSION + "-" + System.currentTimeMillis();
@@ -1008,28 +1026,131 @@ final class Database {
             backupFile = new File(backupDirectory, prefix + "-" + attempt + ".bak");
         }
 
-        try (PreparedStatement statement = databaseConnection.prepareStatement("VACUUM INTO ?")) {
-            statement.setString(1, backupFile.getAbsolutePath());
-            statement.execute();
+        try {
+            try (PreparedStatement statement = databaseConnection.prepareStatement("VACUUM INTO ?")) {
+                statement.setString(1, backupFile.getAbsolutePath());
+                statement.execute();
+            }
+            verifySqliteFile(backupFile, "pre-migration backup");
         } catch (SQLException exception) {
+            String cleanup = cleanupFailedMigrationBackup(backupFile);
             throw new SQLException("Cannot safely migrate FragGuard's database because the SQLite backup at "
-                    + backupFile.getAbsolutePath() + " could not be created.", exception);
+                    + backupFile.getAbsolutePath() + " could not be created and verified." + cleanup, exception);
         }
 
-        try (Connection backupConnection = DriverManager.getConnection(
-                "jdbc:sqlite:" + backupFile.getAbsolutePath());
+        markVerifiedMigrationBackup(backupFile);
+        plugin.getLogger().info("Created and verified FragGuard's pre-migration database backup: "
+                + backupFile.getAbsolutePath());
+        return backupFile;
+    }
+
+    private void verifySqliteFile(File sqliteFile, String description) throws SQLException {
+        try (Connection backupConnection = DriverManager.getConnection("jdbc:sqlite:" + sqliteFile.getAbsolutePath());
              Statement statement = backupConnection.createStatement();
              ResultSet check = statement.executeQuery("PRAGMA quick_check")) {
             if (!check.next() || !"ok".equalsIgnoreCase(check.getString(1))) {
-                throw new SQLException("The pre-migration SQLite backup did not pass its integrity check.");
+                throw new SQLException("The " + description + " did not pass PRAGMA quick_check.");
             }
-        } catch (SQLException exception) {
-            throw new SQLException("Cannot safely migrate FragGuard's database because the backup at "
-                    + backupFile.getAbsolutePath() + " could not be verified.", exception);
         }
+    }
 
-        plugin.getLogger().info("Created and verified FragGuard's pre-migration database backup: "
-                + backupFile.getAbsolutePath());
+    private void verifyOpenDatabase(Connection databaseConnection, String description) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet check = statement.executeQuery("PRAGMA quick_check")) {
+            if (!check.next() || !"ok".equalsIgnoreCase(check.getString(1))) {
+                throw new SQLException("FragGuard's database did not pass PRAGMA quick_check " + description + ".");
+            }
+        }
+    }
+
+    private void preflightMigrationSpace(File destination, long estimatedWorkingBytes, String step)
+            throws SQLException {
+        if (!plugin.getConfig().getBoolean("database-migration-space-preflight-enabled", true)) {
+            plugin.getLogger().warning("FragGuard migration disk-space preflight is disabled for: " + step
+                    + ". SQLite storage failures will still abort the migration safely.");
+            return;
+        }
+        long safetyMiB = Math.max(0L,
+                plugin.getConfig().getLong("database-migration-space-safety-mib", 256L));
+        long required = MigrationStoragePolicy.requiredFreeBytes(estimatedWorkingBytes, safetyMiB);
+        long usable = destination.getUsableSpace();
+        if (usable <= 0L) {
+            throw new SQLException("Cannot safely begin " + step + " because FragGuard could not determine usable "
+                    + "space at " + destination.getAbsolutePath() + ". Set database-migration-space-preflight-enabled "
+                    + "to false only if you intentionally want to override this safety check.");
+        }
+        if (usable < required) {
+            throw new SQLException("Cannot safely begin " + step + ": database="
+                    + MigrationStoragePolicy.formatBytes(databaseFile.length()) + ", available="
+                    + MigrationStoragePolicy.formatBytes(usable) + ", estimated minimum free="
+                    + MigrationStoragePolicy.formatBytes(required) + ", path=" + destination.getAbsolutePath()
+                    + ". Archive old verified migration backups or increase storage before retrying. "
+                    + "You may explicitly disable database-migration-space-preflight-enabled only if the host reports "
+                    + "filesystem free space inaccurately.");
+        }
+        plugin.getLogger().info("FragGuard migration storage preflight passed for " + step + ": available="
+                + MigrationStoragePolicy.formatBytes(usable) + ", estimated minimum free="
+                + MigrationStoragePolicy.formatBytes(required) + ".");
+    }
+
+    private String cleanupFailedMigrationBackup(File backupFile) {
+        File marker = verifiedMarker(backupFile);
+        if (marker.exists() && !marker.delete()) {
+            plugin.getLogger().warning("Could not remove migration-backup verification marker: "
+                    + marker.getAbsolutePath());
+        }
+        if (!backupFile.exists() || backupFile.delete()) {
+            return " The failed partial backup was removed.";
+        }
+        return " The failed partial backup remains at " + backupFile.getAbsolutePath()
+                + " and must be removed manually before retrying.";
+    }
+
+    private void markVerifiedMigrationBackup(File backupFile) {
+        File marker = verifiedMarker(backupFile);
+        try {
+            if (!marker.createNewFile() && !marker.isFile()) {
+                plugin.getLogger().warning("Could not create migration-backup verification marker: "
+                        + marker.getAbsolutePath());
+            }
+        } catch (IOException exception) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Could not create migration-backup verification marker " + marker.getAbsolutePath()
+                            + "; this backup will never be auto-pruned.", exception);
+        }
+    }
+
+    private File verifiedMarker(File backupFile) {
+        return new File(backupFile.getParentFile(), backupFile.getName() + ".verified");
+    }
+
+    private void pruneVerifiedMigrationBackups() {
+        File backupDirectory = new File(plugin.getDataFolder(), "backups");
+        int keep = Math.max(1,
+                plugin.getConfig().getInt("database-migration-backup-retention-count", 1));
+        File[] markers = backupDirectory.listFiles(file -> file.isFile()
+                && file.getName().endsWith(".bak.verified"));
+        if (markers == null || markers.length <= keep) {
+            return;
+        }
+        Arrays.sort(markers, Comparator.comparingLong(File::lastModified).reversed());
+        for (int index = keep; index < markers.length; index++) {
+            File marker = markers[index];
+            String backupName = marker.getName().substring(0,
+                    marker.getName().length() - ".verified".length());
+            File backup = new File(backupDirectory, backupName);
+            if (backup.exists() && !backup.delete()) {
+                plugin.getLogger().warning("Could not prune verified migration backup: " + backup.getAbsolutePath());
+                continue;
+            }
+            if (!marker.delete()) {
+                plugin.getLogger().warning("Pruned migration backup but could not remove verification marker: "
+                        + marker.getAbsolutePath());
+            } else {
+                plugin.getLogger().info("Pruned old verified FragGuard migration backup: "
+                        + backup.getAbsolutePath());
+            }
+        }
     }
 
     private void migrateUnversionedSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
@@ -1076,7 +1197,7 @@ final class Database {
                     """);
             statement.executeUpdate("""
                     CREATE INDEX IF NOT EXISTS idx_fg_tick_coalesce
-                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick, id)
+                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
                     """);
             statement.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS rollback_jobs (
@@ -1174,12 +1295,110 @@ final class Database {
     }
 
     private void migrateAttributionCoalescingSchema(Connection databaseConnection) throws SQLException {
-        try (Statement statement = databaseConnection.createStatement()) {
-            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");
-            statement.executeUpdate("""
-                    CREATE INDEX idx_fg_tick_coalesce
-                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick, id)
-                    """);
+        if (coalescingIndexIsCurrent(databaseConnection)) {
+            inTransaction(databaseConnection, () -> {
+                verifyOpenDatabase(databaseConnection, "before completing the index-only v3->v4 migration");
+                try (Statement statement = databaseConnection.createStatement()) {
+                    statement.execute("PRAGMA user_version=4");
+                }
+                return null;
+            });
+            return;
+        }
+
+        verifyOpenDatabase(databaseConnection, "before the index-only v3->v4 migration");
+        long existingIndexBytes = estimateIndexBytes(databaseConnection, "idx_fg_tick_coalesce");
+        long estimatedWork = MigrationStoragePolicy.estimateIndexWorkingBytes(
+                databaseFile.length(), existingIndexBytes);
+        preflightMigrationSpace(databaseFile.getParentFile(), estimatedWork,
+                "schema v3->v4 coalescing-index rebuild");
+
+        startupStage = "freeing the old coalescing index for schema v3 to v4";
+        inTransaction(databaseConnection, () -> {
+            try (Statement statement = databaseConnection.createStatement()) {
+                statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");
+            }
+            return null;
+        });
+        checkpointMigrationWal(databaseConnection);
+
+        startupStage = "rebuilding the coalescing index for schema v3 to v4";
+        try {
+            inTransaction(databaseConnection, () -> {
+                try (Statement statement = databaseConnection.createStatement()) {
+                    statement.executeUpdate("""
+                            CREATE INDEX idx_fg_tick_coalesce
+                            ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
+                            """);
+                }
+                verifyOpenDatabase(databaseConnection, "after rebuilding the schema-v4 coalescing index");
+                try (Statement statement = databaseConnection.createStatement()) {
+                    statement.execute("PRAGMA user_version=4");
+                }
+                return null;
+            });
+        } catch (SQLException exception) {
+            throw new SQLException("FragGuard could not rebuild the derived schema-v4 coalescing index. "
+                    + "Block history was not rewritten; the database remains schema v3 and the index rebuild can "
+                    + "be retried on the next startup. If SQLite reported SQLITE_FULL, free additional storage "
+                    + "or adjust the migration-space safety settings before retrying.", exception);
+        }
+    }
+
+    private boolean coalescingIndexIsCurrent(Connection databaseConnection) throws SQLException {
+        boolean nonUnique = false;
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet indexes = statement.executeQuery("PRAGMA index_list(block_changes)")) {
+            while (indexes.next()) {
+                if ("idx_fg_tick_coalesce".equals(indexes.getString("name"))) {
+                    if (indexes.getInt("unique") != 0) {
+                        return false;
+                    }
+                    nonUnique = true;
+                    break;
+                }
+            }
+        }
+        if (!nonUnique) {
+            return false;
+        }
+
+        List<String> columns = new ArrayList<>();
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet indexColumns = statement.executeQuery("PRAGMA index_info(idx_fg_tick_coalesce)")) {
+            while (indexColumns.next()) {
+                columns.add(indexColumns.getString("name"));
+            }
+        }
+        return columns.equals(List.of("world_uuid", "x", "y", "z", "coalesce_session", "server_tick"));
+    }
+
+    private long estimateIndexBytes(Connection databaseConnection, String indexName) {
+        try (PreparedStatement statement = databaseConnection.prepareStatement(
+                "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name = ?")) {
+            statement.setString(1, indexName);
+            try (ResultSet row = statement.executeQuery()) {
+                return row.next() ? Math.max(0L, row.getLong(1)) : 0L;
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Could not measure SQLite index " + indexName
+                    + " for migration-space estimation; using a conservative database-size estimate instead: "
+                    + exception.getMessage());
+            return 0L;
+        }
+    }
+
+    private void checkpointMigrationWal(Connection databaseConnection) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet result = statement.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+            if (!result.next()) {
+                throw new SQLException("SQLite returned no result while checkpointing the migration WAL.");
+            }
+            int busy = result.getInt(1);
+            if (busy != 0) {
+                throw new SQLException("SQLite migration WAL checkpoint remained busy with " + busy
+                        + " connection(s).");
+            }
         }
     }
 

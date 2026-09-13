@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackAuditDeletionFailureRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:09.936Z" hostname="runnervmlun5p" time="0.007">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackAuditDeletionFailureRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-13T07:11:07.505Z" hostname="runnervmlun5p" time="0.011">
   <properties/>
-  <testcase name="staleAuditDeletionFailurePersistsCompletedResultsBeforeFailing()" classname="org.pinnaclesmp.fragguard.RollbackAuditDeletionFailureRegressionTest" time="0.007"/>
+  <testcase name="staleAuditDeletionFailurePersistsCompletedResultsBeforeFailing()" classname="org.pinnaclesmp.fragguard.RollbackAuditDeletionFailureRegressionTest" time="0.01"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>
 </testsuite>

@@ -18,6 +18,14 @@ database-startup-warning-seconds: 30
 # 0 disables the hard startup cutoff so large databases can finish initializing safely.
 # Set this above 0 only if you explicitly want FragGuard to abort SQLite startup after that many seconds.
 database-startup-timeout-seconds: 0
+# Migration preflight is a safety net after FragGuard chooses the lowest-space safe migration strategy.
+# Disable only when your hosting platform reports Java filesystem free space inaccurately.
+database-migration-space-preflight-enabled: true
+# Extra free-space margin beyond the estimated backup/index working set.
+database-migration-space-safety-mib: 256
+# Auto-pruning only applies to backups this version has explicitly marked as verified.
+# At least one verified full migration backup is always retained.
+database-migration-backup-retention-count: 1
 database-shutdown-timeout-seconds: 15
 # Extra grace period after an active SQLite statement is cancelled during shutdown.
 database-shutdown-cancel-timeout-seconds: 5
@@ -37,6 +45,13 @@ log-pistons: true
 # Lookup output settings.
 lookup-page-size: 15
 max-lookup-radius: 150
+
+# In-game lookup GUI safety and grouping settings.
+# The GUI never presents a capped result set as complete; oversized windows must be narrowed.
+gui-lookup-max-rows: 5000
+# Consecutive events with the same actor/action/material can be condensed when they are close in time and space.
+gui-activity-max-gap-millis: 2500
+gui-activity-max-distance: 6
 
 # Rollback safety settings.
 # Increase these if you trust your server hardware and know the radius can be large.

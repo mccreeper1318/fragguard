@@ -1,155 +1,160 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.DatabaseTest" tests="36" skipped="0" failures="0" errors="0" timestamp="2026-09-12T22:16:08.958Z" hostname="runnervmlun5p" time="0.928">
+<testsuite name="org.pinnaclesmp.fragguard.DatabaseTest" tests="37" skipped="0" failures="0" errors="0" timestamp="2026-09-13T07:11:06.585Z" hostname="runnervmlun5p" time="0.826">
   <properties/>
-  <testcase name="undoConflictRemainsRetryableUntilItIsResolved()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.044"/>
-  <testcase name="migratesVersionThreeTickCoalescingIndexToOrderedNonUniqueHistory()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.039"/>
+  <testcase name="retriesVersionThreeMigrationWhenOldCoalescingIndexWasAlreadyDropped()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.039"/>
+  <testcase name="undoConflictRemainsRetryableUntilItIsResolved()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.043"/>
   <testcase name="refusesMigrationWhenItsBackupCannotBeCreated()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.008"/>
-  <testcase name="preservesDifferentActorsAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.029"/>
-  <testcase name="preservesDifferentActorsAndInterveningSameTickChangesInMemory()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.021"/>
-  <testcase name="preservesPreparedCrashWindowMutationForUndoAfterResumeMarksItUnchanged()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.021"/>
-  <testcase name="drainsPressureBatchesWithoutWaitingForServerTickToAdvance()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.059"/>
+  <testcase name="preservesDifferentActorsAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.025"/>
+  <testcase name="preservesDifferentActorsAndInterveningSameTickChangesInMemory()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.019"/>
+  <testcase name="preservesPreparedCrashWindowMutationForUndoAfterResumeMarksItUnchanged()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.023"/>
+  <testcase name="drainsPressureBatchesWithoutWaitingForServerTickToAdvance()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.08"/>
   <testcase name="retractsPendingCrashWindowAuditWhenTheMutationConflicts()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.021"/>
-  <testcase name="plansEarliestAndLatestBlockEntitySnapshotsAcrossHistory()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.017"/>
-  <testcase name="boundsUndoJobLoadsIncludingOriginalSnapshotsMissingFromLegacyPreviews()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.017"/>
-  <testcase name="initializesVersionedSchemaAndPersistsStableActionIdentifiers()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.015"/>
-  <testcase name="removesSameTickNetNoOpAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.026"/>
-  <testcase name="preservesInterleavedChunkSequenceForRollbackAndReverseUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.038"/>
-  <testcase name="leavesLegacySchemaUntouchedWhenMigrationFails()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.019"/>
-  <testcase name="acceptsRollbackPreviewSnapshotsAtTheConfiguredAggregateByteBoundary()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.016"/>
-  <testcase name="migratesVersionOneDatabaseAndRetainsVerifiedPreUpgradeBackup()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.041"/>
-  <testcase name="migratesExistingRowsIncludingNegativeChunkCoordinates()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.129"/>
-  <testcase name="persistsRollbackProgressRejectsOverlapAndSupportsUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.021"/>
-  <testcase name="preservesHistoryRollbackPlansAndActiveJobsAcrossWorldRenames()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.023"/>
-  <testcase name="refusesToOpenNewerDatabaseSchemasWithoutChangingThem()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.005"/>
-  <testcase name="preservesDifferentActionsAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.013"/>
-  <testcase name="rollbackQuerySelectsEarliestChangeAndEnforcesLimitInSql()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.017"/>
-  <testcase name="rejectsOversizedRollbackPreviewSnapshotsWithoutDegradingDatabaseHealth()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.032"/>
-  <testcase name="keepsCrashWindowAuditHiddenUntilTheWorldMutationIsCommitted()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.028"/>
-  <testcase name="persistsBlockEntityOnlyChangesAndCoalescesSnapshotsAcrossFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.018"/>
+  <testcase name="plansEarliestAndLatestBlockEntitySnapshotsAcrossHistory()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.021"/>
+  <testcase name="boundsUndoJobLoadsIncludingOriginalSnapshotsMissingFromLegacyPreviews()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.02"/>
+  <testcase name="initializesVersionedSchemaAndPersistsStableActionIdentifiers()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.017"/>
+  <testcase name="removesSameTickNetNoOpAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.018"/>
+  <testcase name="preservesInterleavedChunkSequenceForRollbackAndReverseUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.035"/>
+  <testcase name="leavesLegacySchemaUntouchedWhenMigrationFails()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.023"/>
+  <testcase name="acceptsRollbackPreviewSnapshotsAtTheConfiguredAggregateByteBoundary()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.02"/>
+  <testcase name="migratesVersionOneDatabaseAndRetainsVerifiedPreUpgradeBackup()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.035"/>
+  <testcase name="migratesExistingRowsIncludingNegativeChunkCoordinates()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.025"/>
+  <testcase name="persistsRollbackProgressRejectsOverlapAndSupportsUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.019"/>
+  <testcase name="preservesHistoryRollbackPlansAndActiveJobsAcrossWorldRenames()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.018"/>
+  <testcase name="refusesToOpenNewerDatabaseSchemasWithoutChangingThem()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.004"/>
+  <testcase name="preservesDifferentActionsAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.015"/>
+  <testcase name="rollbackQuerySelectsEarliestChangeAndEnforcesLimitInSql()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.014"/>
+  <testcase name="rejectsOversizedRollbackPreviewSnapshotsWithoutDegradingDatabaseHealth()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.018"/>
+  <testcase name="keepsCrashWindowAuditHiddenUntilTheWorldMutationIsCommitted()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.025"/>
+  <testcase name="persistsBlockEntityOnlyChangesAndCoalescesSnapshotsAcrossFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.019"/>
   <testcase name="treatsTimedQueryTimeoutAndSqliteInterruptAsExpectedCancellation()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.001"/>
   <testcase name="doesNotCoalesceMatchingTickNumbersAcrossServerSessions()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.021"/>
-  <testcase name="capturesMissingEntitySnapshotForMigratedPreparedRowsAndPreservesItForUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.042"/>
-  <testcase name="rollbackSnapshotExcludesLaterChangesAndCapturesExpectedState()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.014"/>
-  <testcase name="deletingAPendingAuditAlsoClearsItsDurableJobLink()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.014"/>
-  <testcase name="doesNotCoalesceDistinctServerTicksInsideSameWallClockBucket()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.014"/>
-  <testcase name="toleratesUnknownLegacyActionsWithoutBreakingLookupOrRollback()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.022"/>
-  <testcase name="coalescesSameTickAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.014"/>
-  <testcase name="preservesRollbackSnapshotsAcrossPreparationReplacementRecoveryAndUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.023"/>
-  <testcase name="boundsSavedRollbackJobsIncludingSnapshotsCapturedAfterTheirPreview()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.013"/>
-  <testcase name="batchesWritesCoalescesSameServerTickAcrossWallClockBucketsAndReadsAcceptedWrites()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.013"/>
+  <testcase name="capturesMissingEntitySnapshotForMigratedPreparedRowsAndPreservesItForUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.045"/>
+  <testcase name="rollbackSnapshotExcludesLaterChangesAndCapturesExpectedState()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.013"/>
+  <testcase name="deletingAPendingAuditAlsoClearsItsDurableJobLink()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.015"/>
+  <testcase name="doesNotCoalesceDistinctServerTicksInsideSameWallClockBucket()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.012"/>
+  <testcase name="toleratesUnknownLegacyActionsWithoutBreakingLookupOrRollback()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.021"/>
+  <testcase name="coalescesSameTickAcrossSeparateDatabaseFlushes()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.011"/>
+  <testcase name="preservesRollbackSnapshotsAcrossPreparationReplacementRecoveryAndUndo()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.016"/>
+  <testcase name="boundsSavedRollbackJobsIncludingSnapshotsCapturedAfterTheirPreview()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.015"/>
+  <testcase name="batchesWritesCoalescesSameServerTickAcrossWallClockBucketsAndReadsAcceptedWrites()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.012"/>
+  <testcase name="migratesVersionThreeTickCoalescingIndexWithoutFullDatabaseBackup()" classname="org.pinnaclesmp.fragguard.DatabaseTest" time="0.024"/>
   <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[Sep 12, 2026 10:16:08 PM org.pinnaclesmp.fragguard.Database initializeSchema
+  <system-err><![CDATA[Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:08 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:08 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:08 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: FragGuard schema v3->v4 is index-only; skipping a full database copy and using the storage-aware coalescing-index migration.
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database preflightMigrationSpace
+INFO: FragGuard migration storage preflight passed for schema v3->v4 coalescing-index rebuild: available=85.69 GiB, estimated minimum free=512.0 MiB.
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database createMigrationBackup
-INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-4695332714527448217/backups/fragguard.db.pre-migration-v3-to-v4-1789251369031.bak
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
-INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database runWorker
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database runWorker
 SEVERE: FragGuard database worker stopped unexpectedly
-java.sql.SQLException: Cannot safely migrate FragGuard's database because the backup directory /tmp/junit-11507154493635252934/backups could not be created.
-	at org.pinnaclesmp.fragguard.Database.createMigrationBackup(Database.java:987)
-	at org.pinnaclesmp.fragguard.Database.initializeSchema(Database.java:925)
-	at org.pinnaclesmp.fragguard.Database.runWorker(Database.java:825)
-	at org.pinnaclesmp.fragguard.Database.lambda$init$1(Database.java:107)
+java.sql.SQLException: Cannot safely migrate FragGuard's database because the backup directory /tmp/junit-16881635501822919427/backups could not be created.
+	at org.pinnaclesmp.fragguard.Database.createMigrationBackup(Database.java:1015)
+	at org.pinnaclesmp.fragguard.Database.initializeSchema(Database.java:943)
+	at org.pinnaclesmp.fragguard.Database.runWorker(Database.java:841)
+	at org.pinnaclesmp.fragguard.Database.lambda$init$1(Database.java:109)
 	at java.base/java.lang.Thread.run(Thread.java:1474)
 
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database createMigrationBackup
-INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-7017301536819792644/backups/fragguard.db.pre-migration-v0-to-v4-1789251369330.bak
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database runWorker
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database preflightMigrationSpace
+INFO: FragGuard migration storage preflight passed for full pre-migration backup and schema rewrite from v0 to v4: available=85.69 GiB, estimated minimum free=512.0 MiB.
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database createMigrationBackup
+INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-5448865844388068819/backups/fragguard.db.pre-migration-v0-to-v4-1789283466970.bak
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database runWorker
 SEVERE: FragGuard database worker stopped unexpectedly
 org.sqlite.SQLiteException: [SQLITE_ERROR] SQL error or missing database (no such column: action)
 	at org.sqlite.core.DB.newSQLException(DB.java:1182)
@@ -164,202 +169,224 @@ org.sqlite.SQLiteException: [SQLITE_ERROR] SQL error or missing database (no suc
 	at org.sqlite.jdbc4.JDBC4Connection.prepareStatement(JDBC4Connection.java:34)
 	at org.sqlite.jdbc3.JDBC3Connection.prepareStatement(JDBC3Connection.java:225)
 	at org.sqlite.jdbc3.JDBC3Connection.prepareStatement(JDBC3Connection.java:205)
-	at org.pinnaclesmp.fragguard.Database.migrateActionIdentifiers(Database.java:1195)
-	at org.pinnaclesmp.fragguard.Database.migrateUnversionedSchema(Database.java:1141)
-	at org.pinnaclesmp.fragguard.Database.lambda$initializeSchema$0(Database.java:938)
-	at org.pinnaclesmp.fragguard.Database.inTransaction(Database.java:1808)
-	at org.pinnaclesmp.fragguard.Database.initializeSchema(Database.java:936)
-	at org.pinnaclesmp.fragguard.Database.runWorker(Database.java:825)
-	at org.pinnaclesmp.fragguard.Database.lambda$init$1(Database.java:107)
+	at org.pinnaclesmp.fragguard.Database.migrateActionIdentifiers(Database.java:1428)
+	at org.pinnaclesmp.fragguard.Database.migrateUnversionedSchema(Database.java:1276)
+	at org.pinnaclesmp.fragguard.Database.lambda$initializeSchema$0(Database.java:963)
+	at org.pinnaclesmp.fragguard.Database.inTransaction(Database.java:2041)
+	at org.pinnaclesmp.fragguard.Database.initializeSchema(Database.java:961)
+	at org.pinnaclesmp.fragguard.Database.runWorker(Database.java:841)
+	at org.pinnaclesmp.fragguard.Database.lambda$init$1(Database.java:109)
 	at java.base/java.lang.Thread.run(Thread.java:1474)
 
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:06 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database createMigrationBackup
-INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-7971985557516882978/backups/fragguard.db.pre-migration-v1-to-v4-1789251369386.bak
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database preflightMigrationSpace
+INFO: FragGuard migration storage preflight passed for full pre-migration backup and schema rewrite from v1 to v4: available=85.69 GiB, estimated minimum free=512.0 MiB.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database createMigrationBackup
+INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-3977922924773110570/backups/fragguard.db.pre-migration-v1-to-v4-1789283467029.bak
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database createMigrationBackup
-INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-7655344689364032759/backups/fragguard.db.pre-migration-v0-to-v4-1789251369410.bak
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database preflightMigrationSpace
+INFO: FragGuard migration storage preflight passed for full pre-migration backup and schema rewrite from v0 to v4: available=85.69 GiB, estimated minimum free=512.0 MiB.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database createMigrationBackup
+INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-15746662619233110628/backups/fragguard.db.pre-migration-v0-to-v4-1789283467047.bak
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database runWorker
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database runWorker
 SEVERE: FragGuard database worker stopped unexpectedly
 java.sql.SQLException: FragGuard database schema version 99 is newer than the supported version 4. Upgrade FragGuard instead of opening this database with an older plugin.
-	at org.pinnaclesmp.fragguard.Database.initializeSchema(Database.java:919)
-	at org.pinnaclesmp.fragguard.Database.runWorker(Database.java:825)
-	at org.pinnaclesmp.fragguard.Database.lambda$init$1(Database.java:107)
+	at org.pinnaclesmp.fragguard.Database.initializeSchema(Database.java:935)
+	at org.pinnaclesmp.fragguard.Database.runWorker(Database.java:841)
+	at org.pinnaclesmp.fragguard.Database.lambda$init$1(Database.java:109)
 	at java.base/java.lang.Thread.run(Thread.java:1474)
 
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database createMigrationBackup
-INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-12823605088041654337/backups/fragguard.db.pre-migration-v1-to-v4-1789251369743.bak
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database preflightMigrationSpace
+INFO: FragGuard migration storage preflight passed for full pre-migration backup and schema rewrite from v1 to v4: available=85.69 GiB, estimated minimum free=512.0 MiB.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database createMigrationBackup
+INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-8866928625563909601/backups/fragguard.db.pre-migration-v1-to-v4-1789283467252.bak
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database createMigrationBackup
-INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-2787937464844175829/backups/fragguard.db.pre-migration-v0-to-v4-1789251369808.bak
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database preflightMigrationSpace
+INFO: FragGuard migration storage preflight passed for full pre-migration backup and schema rewrite from v0 to v4: available=85.69 GiB, estimated minimum free=512.0 MiB.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database createMigrationBackup
+INFO: Created and verified FragGuard's pre-migration database backup: /tmp/junit-526157058669743014/backups/fragguard.db.pre-migration-v0-to-v4-1789283467319.bak
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 12, 2026 10:16:09 PM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+INFO: FragGuard schema v3->v4 is index-only; skipping a full database copy and using the storage-aware coalescing-index migration.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database preflightMigrationSpace
+INFO: FragGuard migration storage preflight passed for schema v3->v4 coalescing-index rebuild: available=85.69 GiB, estimated minimum free=320.0 MiB.
+Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
 ]]></system-err>
 </testsuite>

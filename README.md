@@ -136,13 +136,21 @@ Expected timed-query cancellation and timeout results are treated separately fro
 
 FragGuard records its SQLite schema version in `PRAGMA user_version`. The current schema version is **4**. Older supported databases are upgraded automatically to version 4 when the plugin starts.
 
-Before changing an existing schema, FragGuard creates a consistent SQLite snapshot with `VACUUM INTO`, verifies it with `PRAGMA quick_check`, and saves it under a name such as:
+FragGuard now classifies migrations by what they can actually endanger. Migrations that rewrite persistent schema/data still create a consistent SQLite snapshot with `VACUUM INTO`, verify it with `PRAGMA quick_check`, and save it under a name such as:
 
 ```text
 plugins/FragGuard/backups/fragguard.db.pre-migration-v<old>-to-v4-<timestamp>.bak
 ```
 
-The filename records the database's actual starting version. Every migration and its schema-version update run in a single transaction. If the backup cannot be created or verified, or if the migration fails, FragGuard refuses to start instead of continuing with a partially upgraded database. A database using a schema newer than the installed FragGuard version is also rejected rather than silently opened by older code.
+The schema-v3 to schema-v4 migration is different: it only replaces the derived same-tick coalescing index. It therefore **does not duplicate the full history database**. FragGuard verifies the live database first, commits removal of the old derived index so those database pages can be reused, checkpoints the migration WAL, then transactionally builds the replacement non-unique index and advances `PRAGMA user_version` only after `PRAGMA quick_check` succeeds. If that rebuild is interrupted or runs out of storage, the history rows remain schema v3 and the derived index can be rebuilt on the next startup.
+
+The v4 coalescing index also relies on SQLite's implicit rowid instead of explicitly storing `id` as an extra indexed column, reducing index storage while preserving ordered same-tick lookups.
+
+For full-backup migrations, failed or unverifiable partial backups are removed when possible. Verified backups created by this policy receive a verification marker; successful migrations prune only those explicitly verified backups according to `database-migration-backup-retention-count`, preserving at least one by default. Older unmarked backups are never auto-deleted.
+
+Before either a full backup migration or a large index rebuild, FragGuard performs a disk-space preflight using the selected migration strategy plus `database-migration-space-safety-mib`. This is a final safety net, not the migration strategy itself: index-only migrations first avoid the full database copy. If your hosting platform does not expose its quota correctly through Java filesystem APIs, `database-migration-space-preflight-enabled` can be explicitly disabled; SQLite failures still abort without advancing the schema version.
+
+A database using a schema newer than the installed FragGuard version is rejected rather than silently opened by older code.
 
 Large databases can take longer than 30 seconds to open, back up, verify, or migrate. FragGuard reports periodic startup progress instead of treating that duration as a failure. `database-startup-timeout-seconds` defaults to `0`, which disables an arbitrary hard cutoff; set it above `0` only if you explicitly want SQLite initialization aborted after that many seconds.
 
@@ -173,6 +181,9 @@ database-write-batch-size: 500
 database-query-timeout-seconds: 15
 database-startup-warning-seconds: 30
 database-startup-timeout-seconds: 0
+database-migration-space-preflight-enabled: true
+database-migration-space-safety-mib: 256
+database-migration-backup-retention-count: 1
 database-shutdown-timeout-seconds: 15
 database-shutdown-cancel-timeout-seconds: 5
 database-health-check-interval-seconds: 5

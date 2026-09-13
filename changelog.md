@@ -17,6 +17,10 @@
 
 ### Fixed
 
+- Fixed #68 by making schema migrations storage-aware: the index-only v3→v4 upgrade no longer creates a full duplicate database, frees the old derived index before rebuilding it, removes the redundant explicit row-ID index column, performs migration-space preflight checks, cleans failed partial backups, and conservatively prunes only backups explicitly marked as verified.
+
+### Fixed
+
 - Fixed #62 by assigning GUI lookups a per-session generation identity so obsolete asynchronous success or failure callbacks cannot overwrite a newer investigation, reopen a reset session, or return after the player has left.
 - Fixed #63 by applying the GUI's selected time cutoff directly to SQLite count and result queries, so short lookup windows do not scan/count unrelated retained history and `gui-lookup-max-rows` applies to the selected GUI window while command lookup behavior remains unchanged.
 
