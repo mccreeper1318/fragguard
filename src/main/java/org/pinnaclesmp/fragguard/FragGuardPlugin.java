@@ -19,7 +19,6 @@ public final class FragGuardPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-
         database = new Database(this);
         try {
             database.init();
@@ -28,15 +27,13 @@ public final class FragGuardPlugin extends JavaPlugin {
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
-
         Bukkit.getPluginManager().registerEvents(new BlockChangeListener(this, database), this);
-
-        FragGuardCommand commandExecutor = new FragGuardCommand(this, database);
+        Bukkit.getPluginManager().registerEvents(new FragGuardGui(this, database), this);
+        FragGuardCommand executor = new FragGuardCommand(this, database);
         PluginCommand command = Objects.requireNonNull(getCommand("fg"), "Command /fg is missing from plugin.yml");
-        command.setExecutor(commandExecutor);
-        command.setTabCompleter(commandExecutor);
-        commandExecutor.resumeInterruptedJobs();
-
+        command.setExecutor(executor);
+        command.setTabCompleter(executor);
+        executor.resumeInterruptedJobs();
         scheduleCleanup();
         scheduleStorageHealthMonitor();
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");
@@ -44,23 +41,13 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (database == null) {
-            return;
-        }
-
+        if (database == null) return;
         DatabaseShutdownSnapshot before = database.shutdown();
         DatabaseHealth after = database.health();
-        long completedWritesAfter = database.completedWrites();
-        int unconfirmedWrites = database.workerStopped() ? 0 : database.inFlightWrites();
-        StorageShutdownReport report = StorageShutdownSupport.finish(
-                before, after,
-                completedWritesAfter,
-                unconfirmedWrites,
-                database.workerStopped(), database.walCheckpointCompleted());
-
+        StorageShutdownReport report = StorageShutdownSupport.finish(before, after, database.completedWrites(),
+                database.workerStopped() ? 0 : database.inFlightWrites(), database.workerStopped(), database.walCheckpointCompleted());
         String summary = "FragGuard storage shutdown: queued=" + report.queuedWritesAtStart()
-                + ", drained=" + report.drainedWrites()
-                + ", remaining=" + report.remainingWrites()
+                + ", drained=" + report.drainedWrites() + ", remaining=" + report.remainingWrites()
                 + ", remaining operations=" + report.remainingOperations()
                 + ", unconfirmed active operations=" + report.unconfirmedOperations()
                 + ", lost during shutdown=" + report.lostDuringShutdown()
@@ -68,13 +55,10 @@ public final class FragGuardPlugin extends JavaPlugin {
                 + ", total dropped this session=" + report.totalDroppedWrites()
                 + ", worker stopped=" + report.workerStopped()
                 + ", WAL checkpoint=" + (report.walCheckpointCompleted() ? "complete" : "FAILED");
-        if (report.clean()) {
-            getLogger().info(summary);
-        } else {
+        if (report.clean()) getLogger().info(summary);
+        else {
             getLogger().warning(summary);
-            if (!after.lastError().isBlank()) {
-                getLogger().warning("FragGuard final storage error: " + after.lastError());
-            }
+            if (!after.lastError().isBlank()) getLogger().warning("FragGuard final storage error: " + after.lastError());
         }
     }
 
@@ -87,66 +71,45 @@ public final class FragGuardPlugin extends JavaPlugin {
     }
 
     private void scheduleCleanup() {
-        int intervalMinutes = Math.max(1, getConfig().getInt("cleanup-interval-minutes", 60));
-        long ticks = TimeUnit.MINUTES.toSeconds(intervalMinutes) * 20L;
-
-        Runnable cleanup = () -> database.cleanupOldRecordsAsync(
-                getRetentionDays(),
-                getRollbackJobRetentionDays()
-        ).whenComplete((deleted, throwable) -> {
-            if (throwable != null) {
-                getLogger().log(Level.WARNING, "FragGuard retention cleanup failed.", throwable);
-                return;
-            }
-            if (deleted.blockRecordsDeleted() > 0) {
-                getLogger().info("Deleted " + deleted.blockRecordsDeleted() + " old block log records.");
-            }
-            if (deleted.rollbackJobsDeleted() > 0) {
-                getLogger().info("Deleted " + deleted.rollbackJobsDeleted()
-                        + " expired rollback job(s) and their saved snapshots.");
-            }
-        });
-
+        long ticks = TimeUnit.MINUTES.toSeconds(Math.max(1, getConfig().getInt("cleanup-interval-minutes", 60))) * 20L;
+        Runnable cleanup = () -> database.cleanupOldRecordsAsync(getRetentionDays(), getRollbackJobRetentionDays())
+                .whenComplete((deleted, throwable) -> {
+                    if (throwable != null) {
+                        getLogger().log(Level.WARNING, "FragGuard retention cleanup failed.", throwable);
+                        return;
+                    }
+                    if (deleted.blockRecordsDeleted() > 0)
+                        getLogger().info("Deleted " + deleted.blockRecordsDeleted() + " old block log records.");
+                    if (deleted.rollbackJobsDeleted() > 0)
+                        getLogger().info("Deleted " + deleted.rollbackJobsDeleted() + " expired rollback job(s) and their saved snapshots.");
+                });
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, 20L * 30L, ticks);
     }
 
     private void scheduleStorageHealthMonitor() {
-        long checkSeconds = Math.max(1L, getConfig().getLong("database-health-check-interval-seconds", 5L));
-        long ticks = checkSeconds * 20L;
+        long ticks = Math.max(1L, getConfig().getLong("database-health-check-interval-seconds", 5L)) * 20L;
         Bukkit.getScheduler().runTaskTimer(this, this::checkStorageHealth, ticks, ticks);
     }
 
     private void checkStorageHealth() {
-        if (database == null) {
-            return;
-        }
-
+        if (database == null) return;
         DatabaseHealth health = database.health();
         if (!health.degraded()) {
             storageWarningActive = false;
             return;
         }
-
         long now = System.currentTimeMillis();
-        long repeatMillis = TimeUnit.SECONDS.toMillis(Math.max(5L,
+        long repeat = TimeUnit.SECONDS.toMillis(Math.max(5L,
                 getConfig().getLong("database-operator-warning-interval-seconds", 60L)));
-        if (!StorageWarningThrottle.shouldWarn(storageWarningActive, now, lastStorageWarningAt, repeatMillis)) {
-            return;
-        }
-
+        if (!StorageWarningThrottle.shouldWarn(storageWarningActive, now, lastStorageWarningAt, repeat)) return;
         storageWarningActive = true;
         lastStorageWarningAt = now;
-
         String availability = health.storageAvailable() ? "DEGRADED" : "UNAVAILABLE";
-        String message = "FragGuard logging is " + availability
-                + ". Dropped writes: " + health.droppedWrites()
+        String message = "FragGuard logging is " + availability + ". Dropped writes: " + health.droppedWrites()
                 + "; queued writes: " + health.queuedWrites() + "/" + health.writeCapacity()
                 + (health.lastError().isBlank() ? "." : "; last error: " + health.lastError());
         getLogger().warning(message);
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (player.isOp() || player.hasPermission("fragguard.admin")) {
-                player.sendMessage(ChatColor.RED + "[FragGuard] " + message);
-            }
-        }
+        for (Player player : Bukkit.getOnlinePlayers())
+            if (player.isOp() || player.hasPermission("fragguard.admin")) player.sendMessage(ChatColor.RED + "[FragGuard] " + message);
     }
 }
