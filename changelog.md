@@ -1,5 +1,20 @@
 # FG Changelog
 
+## 26.3-1.2.0
+
+### Added
+
+- Added the first Minecraft-native FragGuard GUI: typing `/fg` now opens an operator menu while all existing subcommands continue to work normally.
+- Added GUI lookup setup with radius and time presets, condensed activity results, clickable result paging, activity detail screens, and exact raw-event drill-downs.
+- Added presentation-only activity grouping that condenses nearby same-actor/same-action/same-material changes without deleting or rewriting any stored history rows.
+- Added GUI lookup safety limits that refuse to present a capped query as complete and instead require the operator to narrow the radius or time window.
+- Added configurable activity grouping thresholds and regression tests covering scaffolding-style chains, actor/action boundaries, time/distance boundaries, and preservation of every source event.
+
+### Changed
+
+- Advanced the plugin feature version to `26.3-1.2.0` while intentionally keeping development on Paper API `26.2.build.121-stable` and `api-version: '26.2'` until Paper 26.3 is stable enough for release.
+- `/fg` with no arguments now opens the GUI; `/fg lookup`, `/fg rollback`, `/fg undo`, `/fg status`, and `/fg help` remain available through the existing command path.
+
 ## 26.3-1.1.3
 
 ### Fixed
