@@ -144,7 +144,7 @@ final class FragGuardGui implements Listener {
     private void runLookup(Player player, Session session) {
         long requestGeneration = session.lookupRequests.begin();
         UUID playerId = player.getUniqueId();
-        int rowLimit = Math.max(250, plugin.getConfig().getInt("gui-lookup-max-rows", 5000));
+        int rowLimit = plugin.getGuiLookupMaxRows();
         long maxGapMillis = Math.max(0L,
                 plugin.getConfig().getLong("gui-activity-max-gap-millis", 2500L));
         int maxDistance = Math.max(0,
