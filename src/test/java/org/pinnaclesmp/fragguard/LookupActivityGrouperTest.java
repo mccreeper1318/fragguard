@@ -37,6 +37,35 @@ class LookupActivityGrouperTest {
     }
 
     @Test
+    void separatesDistinctActorIdentitiesThatShareDisplayName() {
+        String displayName = "Entity Block Change: Enderman";
+        List<LookupRow> rows = List.of(
+                row(10_000, "40e0cba5-a963-4c3f-b1b6-2f15d5984ee1", displayName, 10, 64, 20),
+                row(9_900, "79a2cde2-3ff1-4790-aeb9-d5abec0d49e5", displayName, 10, 63, 20));
+
+        List<LookupActivity> activities = LookupActivityGrouper.group(rows, 2_500, 6);
+
+        assertEquals(2, activities.size(),
+                "two entities with the same human-readable label must remain distinct activities");
+        assertEquals(2, activities.stream().mapToInt(LookupActivity::eventCount).sum());
+    }
+
+    @Test
+    void groupsSameActorIdentityEvenWhenDisplayNameChanges() {
+        String actorIdentity = "714ea63f-075e-4694-b2c4-ae06a79748aa";
+        List<LookupRow> rows = List.of(
+                row(10_000, actorIdentity, "CurrentName", 10, 64, 20),
+                row(9_900, actorIdentity, "PreviousName", 10, 63, 20));
+
+        List<LookupActivity> activities = LookupActivityGrouper.group(rows, 2_500, 6);
+
+        assertEquals(1, activities.size());
+        assertEquals(2, activities.getFirst().eventCount());
+        assertEquals("CurrentName", activities.getFirst().actorName(),
+                "the newest row's display text should label the grouped actor identity");
+    }
+
+    @Test
     void separatesEventsOutsideTimeWindow() {
         List<LookupRow> rows = List.of(
                 row(10_000, "Kevin", 10, 64, 20),
@@ -105,6 +134,11 @@ class LookupActivityGrouperTest {
 
     private LookupRow row(long happenedAt, String actor, int x, int y, int z) {
         return new LookupRow(happenedAt, actor, "world", x, y, z, ChangeAction.BREAK,
+                "minecraft:scaffolding", "minecraft:air");
+    }
+
+    private LookupRow row(long happenedAt, String actorIdentity, String actorName, int x, int y, int z) {
+        return new LookupRow(happenedAt, actorIdentity, actorName, "world", x, y, z, ChangeAction.BREAK,
                 "minecraft:scaffolding", "minecraft:air");
     }
 }

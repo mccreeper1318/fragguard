@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -69,6 +70,8 @@ class GuiBlockEntityLookupTest {
         assertTrue(rows.size() == 1);
         LookupRow row = rows.getFirst();
         assertTrue(row.id() > 0L, "lightweight GUI rows need a stable ID for later detail loading");
+        assertEquals(ACTOR_UUID.toString(), row.actorIdentity(),
+                "lightweight GUI rows must carry the stored actor identity separately from display text");
         assertTrue(row.blockEntityDataPresent(),
                 "the lightweight row must advertise that block-entity details are available");
         assertFalse(row.blockEntityPayloadLoaded(),

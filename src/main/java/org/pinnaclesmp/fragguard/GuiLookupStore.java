@@ -56,7 +56,7 @@ final class GuiLookupStore {
     ) {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
-                    SELECT id, happened_at, actor_name, world, x, y, z, action, before_data, after_data,
+                    SELECT id, happened_at, actor_uuid, actor_name, world, x, y, z, action, before_data, after_data,
                            CASE WHEN before_entity_data IS NULL AND after_entity_data IS NULL
                                 THEN 0 ELSE 1 END AS has_block_entity_data
                     FROM block_changes
@@ -77,6 +77,7 @@ final class GuiLookupStore {
                         rows.add(new LookupRow(
                                 resultSet.getLong("id"),
                                 resultSet.getLong("happened_at"),
+                                resultSet.getString("actor_uuid"),
                                 resultSet.getString("actor_name"),
                                 resultSet.getString("world"),
                                 resultSet.getInt("x"),

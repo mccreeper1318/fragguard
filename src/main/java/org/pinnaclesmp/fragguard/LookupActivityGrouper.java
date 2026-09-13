@@ -33,7 +33,7 @@ final class LookupActivityGrouper {
         Map<Key, MutableActivity> active = new HashMap<>();
         List<MutableActivity> finished = new ArrayList<>();
         for (LookupRow row : ordered) {
-            Key key = new Key(row.actorName(), row.action(), materialKey(row));
+            Key key = new Key(row.actorIdentity(), row.action(), materialKey(row));
             MutableActivity current = active.get(key);
             if (current == null || !current.canAppend(row, localGap, localDistance, totalDuration, totalSpan)) {
                 if (current != null) {
@@ -96,11 +96,12 @@ final class LookupActivityGrouper {
                 || value.equals("void_air") || value.equals("minecraft:void_air");
     }
 
-    private record Key(String actorName, ChangeAction action, String materialKey) {
+    private record Key(String actorIdentity, ChangeAction action, String materialKey) {
     }
 
     private static final class MutableActivity {
         private final Key key;
+        private final String actorName;
         private final List<LookupRow> rows = new ArrayList<>();
         private long newestAt;
         private long oldestAt;
@@ -116,6 +117,7 @@ final class LookupActivityGrouper {
 
         private MutableActivity(Key key, LookupRow first) {
             this.key = key;
+            actorName = first.actorName();
             newestAt = oldestAt = first.happenedAt();
             minX = maxX = lastX = first.x();
             minY = maxY = lastY = first.y();
@@ -164,7 +166,7 @@ final class LookupActivityGrouper {
         }
 
         private LookupActivity freeze() {
-            return new LookupActivity(key.actorName(), key.action(), key.materialKey(), newestAt, oldestAt,
+            return new LookupActivity(actorName, key.action(), key.materialKey(), newestAt, oldestAt,
                     minX, minY, minZ, maxX, maxY, maxZ, rows);
         }
     }
