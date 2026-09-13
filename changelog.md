@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed exact GUI raw-event details silently omitting stored block-entity changes by carrying before/after snapshots through lookup rows and showing bounded human-readable summaries for containers, signs, lecterns, decorated pots, banners, player heads, custom names, and an explicit fallback when a stored snapshot cannot be decoded.
 - Fixed condensed GUI activities growing transitively across very long distances or time spans by keeping local adjacency checks while also enforcing configurable whole-activity duration and bounding-box span limits; splitting an activity at either bound preserves every exact source event.
 - Fixed the schema-v4 migration exhausting storage on large databases by eliminating the persistent same-tick coalescing index. The v3→v4 migration now only verifies the database, removes the obsolete derived index, and advances the schema without a full backup or replacement index build; cross-flush coalescing now uses bounded current-session row-ID tracking, while full data-changing migrations retain verified backups, failed-backup cleanup, conservative retention, and filesystem-space preflight warnings that do not misrepresent managed-host quotas.
 - Fixed large GUI lookups being repeatedly sorted and regrouped on the Bukkit server thread by preparing each lookup's condensed activities once off-thread, caching an immutable exact-row/activity snapshot in the session, and reusing that snapshot for paging, grouped/raw toggles, and returns from detail screens.
