@@ -489,7 +489,15 @@ class DatabaseTest {
         assertEquals("minecraft:stone", page.rows().get(0).beforeData());
         assertEquals("minecraft:grass_block", page.rows().get(0).afterData());
         assertEquals(1, database.health().coalescedWrites(),
-                "SQLite cross-flush upserts must contribute to /fg status coalesce metrics");
+                "cross-flush row-id coalescing must contribute to /fg status coalesce metrics");
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet index = statement.executeQuery("""
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
+                     """)) {
+            assertFalse(index.next(),
+                    "cross-flush coalescing must work without a persistent history index");
+        }
     }
 
     @Test
@@ -529,6 +537,29 @@ class DatabaseTest {
         assertEquals(2, page.totalRows());
         assertEquals(0, database.health().coalescedWrites(),
                 "cross-flush writes from different actors must stay distinct");
+    }
+
+    @Test
+    void preservesInterveningActorAcrossSeparateFlushesWithRowIdTracking() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");
+
+        database.insertAsync(new BlockChange(timestamp, 913L, ACTOR_UUID.toString(), "Builder", "world",
+                13, 64, 13, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));
+        database.lookupAsync("world", 13, 13, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 1L, 913L, otherActor.toString(), "OtherBuilder", "world",
+                13, 64, 13, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));
+        database.lookupAsync("world", 13, 13, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 2L, 913L, ACTOR_UUID.toString(), "Builder", "world",
+                13, 64, 13, ChangeAction.BREAK, "minecraft:grass_block", "minecraft:gold_block"));
+        LookupPage page = database.lookupAsync("world", 13, 13, 1, 1, 15, 30).join();
+
+        assertEquals(3, page.totalRows(),
+                "row-id tracking must follow the latest persisted row and never skip an intervening actor");
+        assertEquals(0, database.health().coalescedWrites());
     }
 
     @Test
@@ -776,13 +807,12 @@ class DatabaseTest {
     }
 
     @Test
-    void migratesVersionThreeTickCoalescingIndexWithoutFullDatabaseBackup() throws Exception {
+    void migratesVersionThreeByRemovingObsoletePersistentCoalescingIndex() throws Exception {
         database = startDatabase();
         database.shutdown();
         database = null;
 
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
-            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");
             statement.executeUpdate("""
                     CREATE UNIQUE INDEX idx_fg_tick_coalesce
                     ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
@@ -798,25 +828,13 @@ class DatabaseTest {
                 assertTrue(version.next());
                 assertEquals(4, version.getInt(1));
             }
-            try (ResultSet indexes = statement.executeQuery("PRAGMA index_list(block_changes)")) {
-                boolean found = false;
-                while (indexes.next()) {
-                    if ("idx_fg_tick_coalesce".equals(indexes.getString("name"))) {
-                        found = true;
-                        assertEquals(0, indexes.getInt("unique"),
-                                "schema v4 must replace the old one-row-per-coordinate/tick uniqueness rule");
-                    }
-                }
-                assertTrue(found);
+            try (ResultSet indexes = statement.executeQuery("""
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
+                    """)) {
+                assertFalse(indexes.next(),
+                        "schema v4 must not retain or rebuild the persistent same-tick coalescing index");
             }
-            List<String> columns = new java.util.ArrayList<>();
-            try (ResultSet indexColumns = statement.executeQuery("PRAGMA index_info(idx_fg_tick_coalesce)")) {
-                while (indexColumns.next()) {
-                    columns.add(indexColumns.getString("name"));
-                }
-            }
-            assertEquals(List.of("world_uuid", "x", "y", "z", "coalesce_session", "server_tick"), columns,
-                    "the row id is already implicit in an ordinary SQLite index and must not be stored twice");
         }
     }
 
@@ -834,10 +852,18 @@ class DatabaseTest {
         database = startDatabase();
         assertFalse(Files.exists(temporaryDirectory.resolve("backups")),
                 "retrying an interrupted index-only migration must not create a full database backup");
-        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
-             ResultSet version = statement.executeQuery("PRAGMA user_version")) {
-            assertTrue(version.next());
-            assertEquals(4, version.getInt(1));
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(4, version.getInt(1));
+            }
+            try (ResultSet indexes = statement.executeQuery("""
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
+                    """)) {
+                assertFalse(indexes.next(),
+                        "the exact interrupted production state must upgrade without recreating the large index");
+            }
         }
     }
 

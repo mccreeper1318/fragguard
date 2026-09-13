@@ -18,8 +18,9 @@ database-startup-warning-seconds: 30
 # 0 disables the hard startup cutoff so large databases can finish initializing safely.
 # Set this above 0 only if you explicitly want FragGuard to abort SQLite startup after that many seconds.
 database-startup-timeout-seconds: 0
-# Migration preflight is a safety net after FragGuard chooses the lowest-space safe migration strategy.
-# Disable only when your hosting platform reports Java filesystem free space inaccurately.
+# Full-backup migrations use Java filesystem free space as a safety signal.
+# Managed hosts can enforce a smaller account quota that Java cannot see, so this value is not treated as a quota.
+# Disable only when the host filesystem value itself is unusable; SQLite errors still abort safely.
 database-migration-space-preflight-enabled: true
 # Extra free-space margin beyond the estimated backup/index working set.
 database-migration-space-safety-mib: 256

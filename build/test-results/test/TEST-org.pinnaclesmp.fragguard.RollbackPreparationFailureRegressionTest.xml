@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-13T07:11:08.019Z" hostname="runnervmlun5p" time="0.003">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-13T09:40:54.669Z" hostname="runnervmlun5p" time="0.003">
   <properties/>
-  <testcase name="completedForceResultsArePersistedBeforeRetryPreparationFailure()" classname="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" time="0.002"/>
+  <testcase name="completedForceResultsArePersistedBeforeRetryPreparationFailure()" classname="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" time="0.001"/>
   <testcase name="recoveredResultsArePersistedBeforePreparationFailure()" classname="org.pinnaclesmp.fragguard.RollbackPreparationFailureRegressionTest" time="0.001"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>

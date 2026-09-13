@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackUnknownEntityAuditRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-13T07:11:08.108Z" hostname="runnervmlun5p" time="0.021">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackUnknownEntityAuditRegressionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-13T09:40:54.759Z" hostname="runnervmlun5p" time="0.019">
   <properties/>
-  <testcase name="failedPostMutationEntityCapturePersistsExplicitUnknownMarker()" classname="org.pinnaclesmp.fragguard.RollbackUnknownEntityAuditRegressionTest" time="0.021"/>
+  <testcase name="failedPostMutationEntityCapturePersistsExplicitUnknownMarker()" classname="org.pinnaclesmp.fragguard.RollbackUnknownEntityAuditRegressionTest" time="0.016"/>
   <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[Sep 13, 2026 7:11:08 AM org.pinnaclesmp.fragguard.Database initializeSchema
+  <system-err><![CDATA[Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 13, 2026 7:11:08 AM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 13, 2026 7:11:08 AM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 13, 2026 7:11:08 AM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
 ]]></system-err>
 </testsuite>

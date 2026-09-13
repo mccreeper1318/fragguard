@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackJobRetentionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-13T07:11:07.969Z" hostname="runnervmlun5p" time="0.031">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackJobRetentionTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-09-13T09:40:54.619Z" hostname="runnervmlun5p" time="0.031">
   <properties/>
-  <testcase name="cleanupExpiresOnlyTerminalRollbackJobsAndCascadesTheirSnapshots()" classname="org.pinnaclesmp.fragguard.RollbackJobRetentionTest" time="0.03"/>
+  <testcase name="cleanupExpiresOnlyTerminalRollbackJobsAndCascadesTheirSnapshots()" classname="org.pinnaclesmp.fragguard.RollbackJobRetentionTest" time="0.031"/>
   <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+  <system-err><![CDATA[Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 0 to version 1.
-Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 1 to version 2.
-Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 2 to version 3.
-Sep 13, 2026 7:11:07 AM org.pinnaclesmp.fragguard.Database initializeSchema
+Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.Database initializeSchema
 INFO: Migrated FragGuard's SQLite schema from version 3 to version 4.
 ]]></system-err>
 </testsuite>

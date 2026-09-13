@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-09-13T07:11:07.490Z" hostname="runnervmlun5p" time="0.009">
+<testsuite name="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-09-13T09:40:54.115Z" hostname="runnervmlun5p" time="0.006">
   <properties/>
-  <testcase name="separatesEventsOutsideSpatialWindow()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.003"/>
+  <testcase name="separatesEventsOutsideSpatialWindow()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.002"/>
   <testcase name="separatesDifferentActionsEvenAtSameCoordinate()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.001"/>
-  <testcase name="separatesEventsOutsideTimeWindow()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.001"/>
+  <testcase name="separatesEventsOutsideTimeWindow()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.0"/>
   <testcase name="separatesDifferentActors()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.001"/>
-  <testcase name="groupsAdjacentScaffoldingBreaksWithoutLosingRows()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.001"/>
+  <testcase name="groupsAdjacentScaffoldingBreaksWithoutLosingRows()" classname="org.pinnaclesmp.fragguard.LookupActivityGrouperTest" time="0.0"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>
 </testsuite>

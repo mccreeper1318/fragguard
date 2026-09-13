@@ -4,8 +4,6 @@ import java.util.Locale;
 
 final class MigrationStoragePolicy {
     private static final long MIB = 1024L * 1024L;
-    private static final long MIN_INDEX_WORK_BYTES = 64L * MIB;
-    private static final long FALLBACK_INDEX_WORK_BYTES = 256L * MIB;
     private static final long MIN_FULL_MIGRATION_WORK_BYTES = 256L * MIB;
 
     private MigrationStoragePolicy() {
@@ -13,13 +11,6 @@ final class MigrationStoragePolicy {
 
     static boolean requiresFullBackup(int startingSchemaVersion) {
         return startingSchemaVersion < 3;
-    }
-
-    static long estimateIndexWorkingBytes(long databaseBytes, long existingIndexBytes) {
-        if (existingIndexBytes > 0L) {
-            return Math.max(existingIndexBytes, MIN_INDEX_WORK_BYTES);
-        }
-        return Math.max(databaseBytes / 2L, FALLBACK_INDEX_WORK_BYTES);
     }
 
     static long estimateFullMigrationWorkingBytes(long databaseBytes) {
