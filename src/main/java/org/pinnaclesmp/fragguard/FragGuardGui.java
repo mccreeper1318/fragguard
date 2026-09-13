@@ -86,7 +86,10 @@ final class FragGuardGui implements Listener {
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
-        sessions.remove(event.getPlayer().getUniqueId());
+        Session session = sessions.remove(event.getPlayer().getUniqueId());
+        if (session != null) {
+            session.lookupRequests.invalidate();
+        }
     }
 
     private void openMain(Player player) {
@@ -139,6 +142,8 @@ final class FragGuardGui implements Listener {
     }
 
     private void runLookup(Player player, Session session) {
+        long requestGeneration = session.lookupRequests.begin();
+        UUID playerId = player.getUniqueId();
         int rowLimit = Math.max(250, plugin.getConfig().getInt("gui-lookup-max-rows", 5000));
         TimePreset preset = times().get(session.timeIndex);
         long cutoff = System.currentTimeMillis() - preset.millis();
@@ -150,7 +155,8 @@ final class FragGuardGui implements Listener {
         player.sendMessage(color("&7Loading FragGuard lookup..."));
         database.lookupAsync(world, centerX, centerZ, session.radius, 1, rowLimit, plugin.getRetentionDays())
                 .whenComplete((page, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
-                    if (!player.isOnline()) {
+                    if (!player.isOnline() || sessions.get(playerId) != session
+                            || !session.lookupRequests.isCurrent(requestGeneration)) {
                         return;
                     }
                     if (throwable != null) {
@@ -342,6 +348,7 @@ final class FragGuardGui implements Listener {
     }
 
     private static final class Session {
+        private final LookupRequestGeneration lookupRequests = new LookupRequestGeneration();
         private Screen screen;
         private Inventory inventory;
         private int radius;
@@ -354,6 +361,7 @@ final class FragGuardGui implements Listener {
         private LookupActivity detail;
 
         private void reset(int retentionDays, int maxRadius) {
+            lookupRequests.invalidate();
             radius = Math.min(15, maxRadius);
             timeIndex = retentionDays >= 1 ? 4 : 0;
             grouped = true;
