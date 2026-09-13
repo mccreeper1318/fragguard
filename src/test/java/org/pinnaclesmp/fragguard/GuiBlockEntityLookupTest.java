@@ -51,7 +51,7 @@ class GuiBlockEntityLookupTest {
                 1,
                 64,
                 1,
-                ChangeAction.INTERACT,
+                ChangeAction.BREAK,
                 "minecraft:chest",
                 "minecraft:chest",
                 beforeEntity,
