@@ -18,8 +18,16 @@ final class LookupResultSnapshot {
     }
 
     static LookupResultSnapshot fromRows(List<LookupRow> rows, long maxGapMillis, int maxDistance) {
+        return fromRows(rows, maxGapMillis, maxDistance,
+                LookupActivityGrouper.DEFAULT_MAX_DURATION_MILLIS,
+                LookupActivityGrouper.DEFAULT_MAX_SPAN);
+    }
+
+    static LookupResultSnapshot fromRows(List<LookupRow> rows, long maxGapMillis, int maxDistance,
+                                         long maxDurationMillis, int maxSpan) {
         List<LookupRow> rowSnapshot = List.copyOf(rows);
-        List<LookupActivity> activities = LookupActivityGrouper.group(rowSnapshot, maxGapMillis, maxDistance);
+        List<LookupActivity> activities = LookupActivityGrouper.group(
+                rowSnapshot, maxGapMillis, maxDistance, maxDurationMillis, maxSpan);
         return new LookupResultSnapshot(rowSnapshot, List.copyOf(activities));
     }
 
