@@ -22,30 +22,30 @@ jobs:
       - name: Apply explicit lookup cutoff support
         shell: bash
         run: |
-          python3 <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
-
           path = Path("src/main/java/org/pinnaclesmp/fragguard/Database.java")
           text = path.read_text()
-          anchor = '''    CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
-                                                                   int radius, long targetTimestamp,
-                                                                   long snapshotTimestamp, int maxBlocks) {
-'''
-          method = '''    CompletableFuture<LookupPage> lookupSinceAsync(String worldName, int centerX, int centerZ, int radius,
-                                                   int page, int pageSize, long cutoffTimestamp) {
-        String worldUuid = resolveWorldUuid(worldName);
-        return submit(databaseConnection -> {
-            int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius,
-                    cutoffTimestamp);
-            int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
-            int safePage = Math.max(1, Math.min(page, totalPages));
-            List<LookupRow> rows = selectLookup(databaseConnection, worldUuid, worldName, centerX, centerZ,
-                    radius, cutoffTimestamp, safePage, pageSize);
-            return new LookupPage(rows, safePage, pageSize, total);
-        }, true);
-    }
-
-'''
+          anchor = (
+              "    CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ, int radius,\n"
+              "                                                                   int radius, long targetTimestamp,\n"
+              "                                                                   long snapshotTimestamp, int maxBlocks) {\n"
+          )
+          method = (
+              "    CompletableFuture<LookupPage> lookupSinceAsync(String worldName, int centerX, int centerZ, int radius,\n"
+              "                                                   int page, int pageSize, long cutoffTimestamp) {\n"
+              "        String worldUuid = resolveWorldUuid(worldName);\n"
+              "        return submit(databaseConnection -> {\n"
+              "            int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius,\n"
+              "                    cutoffTimestamp);\n"
+              "            int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));\n"
+              "            int safePage = Math.max(1, Math.min(page, totalPages));\n"
+              "            List<LookupRow> rows = selectLookup(databaseConnection, worldUuid, worldName, centerX, centerZ,\n"
+              "                    radius, cutoffTimestamp, safePage, pageSize);\n"
+              "            return new LookupPage(rows, safePage, pageSize, total);\n"
+              "        }, true);\n"
+              "    }\n\n"
+          )
           if "CompletableFuture<LookupPage> lookupSinceAsync(" in text:
               raise SystemExit("lookupSinceAsync already exists")
           if text.count(anchor) != 1:
