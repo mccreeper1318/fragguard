@@ -503,6 +503,20 @@ final class Database {
         }, true);
     }
 
+    CompletableFuture<LookupPage> lookupSinceAsync(String worldName, int centerX, int centerZ, int radius,
+                                                   int page, int pageSize, long cutoffTimestamp) {
+        String worldUuid = resolveWorldUuid(worldName);
+        return submit(databaseConnection -> {
+            int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius,
+                    cutoffTimestamp);
+            int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
+            int safePage = Math.max(1, Math.min(page, totalPages));
+            List<LookupRow> rows = selectLookup(databaseConnection, worldUuid, worldName, centerX, centerZ,
+                    radius, cutoffTimestamp, safePage, pageSize);
+            return new LookupPage(rows, safePage, pageSize, total);
+        }, true);
+    }
+
     CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
                                                                    int radius, long targetTimestamp,
                                                                    long snapshotTimestamp, int maxBlocks) {
