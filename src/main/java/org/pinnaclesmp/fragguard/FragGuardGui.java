@@ -149,6 +149,11 @@ final class FragGuardGui implements Listener {
                 plugin.getConfig().getLong("gui-activity-max-gap-millis", 2500L));
         int maxDistance = Math.max(0,
                 plugin.getConfig().getInt("gui-activity-max-distance", 6));
+        long maxDurationMillis = Math.max(0L,
+                plugin.getConfig().getLong("gui-activity-max-duration-millis",
+                        LookupActivityGrouper.DEFAULT_MAX_DURATION_MILLIS));
+        int maxSpan = Math.max(0,
+                plugin.getConfig().getInt("gui-activity-max-span", LookupActivityGrouper.DEFAULT_MAX_SPAN));
         TimePreset preset = times().get(session.timeIndex);
         long cutoff = System.currentTimeMillis() - preset.millis();
         int centerX = player.getLocation().getBlockX();
@@ -162,8 +167,8 @@ final class FragGuardGui implements Listener {
                     if (page.totalRows() > rowLimit) {
                         return new PreparedLookup(page.totalRows(), null);
                     }
-                    return new PreparedLookup(page.totalRows(),
-                            LookupResultSnapshot.fromRows(page.rows(), maxGapMillis, maxDistance));
+                    return new PreparedLookup(page.totalRows(), LookupResultSnapshot.fromRows(
+                            page.rows(), maxGapMillis, maxDistance, maxDurationMillis, maxSpan));
                 })
                 .whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
