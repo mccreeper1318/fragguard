@@ -1621,7 +1621,8 @@ final class Database {
                                          int centerX, int centerZ, int radius, long cutoffTimestamp,
                                          int page, int pageSize) throws SQLException {
         String sql = """
-                SELECT happened_at, actor_name, world, x, y, z, action, before_data, after_data
+                SELECT happened_at, actor_name, world, x, y, z, action, before_data, after_data,
+                       before_entity_data, after_entity_data
                 FROM block_changes
                 WHERE %s
                 ORDER BY happened_at DESC, id DESC
@@ -1638,7 +1639,8 @@ final class Database {
                     rows.add(new LookupRow(resultSet.getLong("happened_at"), resultSet.getString("actor_name"),
                             resultSet.getString("world"), resultSet.getInt("x"), resultSet.getInt("y"),
                             resultSet.getInt("z"), ChangeAction.fromStorageId(resultSet.getString("action")),
-                            resultSet.getString("before_data"), resultSet.getString("after_data")));
+                            resultSet.getString("before_data"), resultSet.getString("after_data"),
+                            resultSet.getBytes("before_entity_data"), resultSet.getBytes("after_entity_data")));
                 }
             }
             return rows;
