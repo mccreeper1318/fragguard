@@ -1,0 +1,98 @@
+name: Apply issue 63 database patch
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - .github/workflows/issue63-maintenance.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          fetch-depth: 2
+
+      - name: Apply explicit lookup cutoff support
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/main/java/org/pinnaclesmp/fragguard/Database.java")
+          text = path.read_text()
+
+          old_lookup = '''    CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
+                                              int page, int pageSize, int retentionDays) {
+        String worldUuid = resolveWorldUuid(worldName);
+        return submit(databaseConnection -> {
+            long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
+            int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius, cutoff);
+            int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
+            int safePage = Math.max(1, Math.min(page, totalPages));
+            List<LookupRow> rows = selectLookup(databaseConnection, worldUuid, worldName, centerX, centerZ,
+                    radius, cutoff, safePage, pageSize);
+            return new LookupPage(rows, safePage, pageSize, total);
+        }, true);
+    }
+'''
+
+          new_lookup = '''    CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
+                                              int page, int pageSize, int retentionDays) {
+        String worldUuid = resolveWorldUuid(worldName);
+        return submit(databaseConnection -> lookupPage(databaseConnection, worldUuid, worldName,
+                centerX, centerZ, radius,
+                System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays), page, pageSize), true);
+    }
+
+    CompletableFuture<LookupPage> lookupSinceAsync(String worldName, int centerX, int centerZ, int radius,
+                                                   int page, int pageSize, long cutoffTimestamp) {
+        String worldUuid = resolveWorldUuid(worldName);
+        return submit(databaseConnection -> lookupPage(databaseConnection, worldUuid, worldName,
+                centerX, centerZ, radius, cutoffTimestamp, page, pageSize), true);
+    }
+'''
+
+          if text.count(old_lookup) != 1:
+              raise SystemExit("Could not find the expected lookupAsync implementation exactly once")
+          text = text.replace(old_lookup, new_lookup)
+
+          marker = '''    private int countLookup(Connection databaseConnection, String worldUuid, String worldName,
+                            int centerX, int centerZ, int radius, long cutoffTimestamp) throws SQLException {
+'''
+          helper = '''    private LookupPage lookupPage(Connection databaseConnection, String worldUuid, String worldName,
+                                  int centerX, int centerZ, int radius, long cutoffTimestamp,
+                                  int page, int pageSize) throws SQLException {
+        int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius,
+                cutoffTimestamp);
+        int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
+        int safePage = Math.max(1, Math.min(page, totalPages));
+        List<LookupRow> rows = selectLookup(databaseConnection, worldUuid, worldName, centerX, centerZ,
+                radius, cutoffTimestamp, safePage, pageSize);
+        return new LookupPage(rows, safePage, pageSize, total);
+    }
+
+'''
+          if text.count(marker) != 1:
+              raise SystemExit("Could not find countLookup insertion point exactly once")
+          text = text.replace(marker, helper + marker)
+          path.write_text(text)
+
+      - name: Verify patch
+        run: |
+          git diff --check
+          grep -n "lookupSinceAsync" src/main/java/org/pinnaclesmp/fragguard/Database.java
+
+      - name: Commit database patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main/java/org/pinnaclesmp/fragguard/Database.java
+          git commit -m "Apply GUI lookup cutoff in SQLite (#63)"
+          git push origin HEAD:dev
