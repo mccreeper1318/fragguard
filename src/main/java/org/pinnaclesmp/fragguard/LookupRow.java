@@ -3,6 +3,7 @@ package org.pinnaclesmp.fragguard;
 import java.util.Arrays;
 
 record LookupRow(
+        long id,
         long happenedAt,
         String actorName,
         String worldName,
@@ -12,6 +13,7 @@ record LookupRow(
         ChangeAction action,
         String beforeData,
         String afterData,
+        boolean blockEntityDataPresent,
         byte[] beforeEntityData,
         byte[] afterEntityData
 ) {
@@ -26,7 +28,43 @@ record LookupRow(
             String beforeData,
             String afterData
     ) {
-        this(happenedAt, actorName, worldName, x, y, z, action, beforeData, afterData, null, null);
+        this(-1L, happenedAt, actorName, worldName, x, y, z, action,
+                beforeData, afterData, false, null, null);
+    }
+
+    LookupRow(
+            long happenedAt,
+            String actorName,
+            String worldName,
+            int x,
+            int y,
+            int z,
+            ChangeAction action,
+            String beforeData,
+            String afterData,
+            byte[] beforeEntityData,
+            byte[] afterEntityData
+    ) {
+        this(-1L, happenedAt, actorName, worldName, x, y, z, action,
+                beforeData, afterData, beforeEntityData != null || afterEntityData != null,
+                beforeEntityData, afterEntityData);
+    }
+
+    LookupRow(
+            long id,
+            long happenedAt,
+            String actorName,
+            String worldName,
+            int x,
+            int y,
+            int z,
+            ChangeAction action,
+            String beforeData,
+            String afterData,
+            boolean blockEntityDataPresent
+    ) {
+        this(id, happenedAt, actorName, worldName, x, y, z, action,
+                beforeData, afterData, blockEntityDataPresent, null, null);
     }
 
     LookupRow {
@@ -46,6 +84,10 @@ record LookupRow(
 
     boolean blockEntityChanged() {
         return !Arrays.equals(beforeEntityData, afterEntityData);
+    }
+
+    boolean blockEntityPayloadLoaded() {
+        return beforeEntityData != null || afterEntityData != null;
     }
 
     private static byte[] copy(byte[] value) {

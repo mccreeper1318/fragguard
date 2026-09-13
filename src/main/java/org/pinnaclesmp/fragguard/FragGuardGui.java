@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
@@ -23,11 +24,16 @@ import java.util.logging.Level;
 final class FragGuardGui implements Listener {
     private final FragGuardPlugin plugin;
     private final Database database;
+    private final GuiLookupStore guiLookupStore;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
 
     FragGuardGui(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
         this.database = database;
+        this.guiLookupStore = new GuiLookupStore(
+                plugin.getDataFolder(),
+                plugin.getConfig().getInt("database-query-timeout-seconds", 15)
+        );
     }
 
     @EventHandler
@@ -66,6 +72,7 @@ final class FragGuardGui implements Listener {
             case RESULTS -> clickResults(player, session, slot);
             case DETAIL -> clickDetail(player, session, slot);
             case ACTIVITY_RAW -> clickActivityRaw(player, session, slot);
+            case EXACT_DETAIL -> clickExactDetail(player, session, slot);
         }
     }
 
@@ -89,6 +96,7 @@ final class FragGuardGui implements Listener {
         Session session = sessions.remove(event.getPlayer().getUniqueId());
         if (session != null) {
             session.lookupRequests.invalidate();
+            session.detailRequests.invalidate();
         }
     }
 
@@ -143,6 +151,7 @@ final class FragGuardGui implements Listener {
 
     private void runLookup(Player player, Session session) {
         long requestGeneration = session.lookupRequests.begin();
+        session.detailRequests.invalidate();
         UUID playerId = player.getUniqueId();
         int rowLimit = plugin.getGuiLookupMaxRows();
         long maxGapMillis = Math.max(0L,
@@ -155,20 +164,34 @@ final class FragGuardGui implements Listener {
         int maxSpan = Math.max(0,
                 plugin.getConfig().getInt("gui-activity-max-span", LookupActivityGrouper.DEFAULT_MAX_SPAN));
         TimePreset preset = times().get(session.timeIndex);
-        long cutoff = System.currentTimeMillis() - preset.millis();
+        long snapshotTimestamp = System.currentTimeMillis();
+        long cutoff = snapshotTimestamp - preset.millis();
         int centerX = player.getLocation().getBlockX();
         int centerZ = player.getLocation().getBlockZ();
+        int radius = session.radius;
         String world = player.getWorld().getName();
+        String worldUuid = player.getWorld().getUID().toString();
 
         player.closeInventory();
         player.sendMessage(color("&7Loading FragGuard lookup..."));
-        database.lookupSinceAsync(world, centerX, centerZ, session.radius, 1, rowLimit, cutoff)
-                .thenApplyAsync(page -> {
+
+        // The zero-sized page is intentional: Database still executes its normal queued-write barrier and
+        // exact count, while SQLite LIMIT 0 prevents the legacy lookup row query from materializing any
+        // block-entity BLOBs. Only an accepted, bounded window is then read through GuiLookupStore.
+        database.lookupSinceAsync(world, centerX, centerZ, radius, 1, 0, cutoff)
+                .thenCompose(page -> {
                     if (page.totalRows() > rowLimit) {
-                        return new PreparedLookup(page.totalRows(), null);
+                        return CompletableFuture.completedFuture(new PreparedLookup(page.totalRows(), null));
                     }
-                    return new PreparedLookup(page.totalRows(), LookupResultSnapshot.fromRows(
-                            page.rows(), maxGapMillis, maxDistance, maxDurationMillis, maxSpan));
+                    if (page.totalRows() == 0) {
+                        return CompletableFuture.completedFuture(
+                                new PreparedLookup(0, LookupResultSnapshot.empty()));
+                    }
+                    return guiLookupStore.selectRowsAsync(
+                                    worldUuid, world, centerX, centerZ, radius,
+                                    cutoff, snapshotTimestamp, rowLimit)
+                            .thenApply(rows -> new PreparedLookup(page.totalRows(), LookupResultSnapshot.fromRows(
+                                    rows, maxGapMillis, maxDistance, maxDurationMillis, maxSpan)));
                 })
                 .whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
@@ -190,6 +213,7 @@ final class FragGuardGui implements Listener {
                     session.grouped = true;
                     session.page = 0;
                     session.detail = null;
+                    session.exactEvent = null;
                     renderResults(player, session);
                 }));
     }
@@ -210,6 +234,7 @@ final class FragGuardGui implements Listener {
                 session.results.rows(), session.results.activities(), session.grouped, session.page);
         session.page = rendered.page();
         session.visibleActivities = rendered.visibleActivities();
+        session.visibleRows = rendered.visibleRows();
         open(player, session, rendered.inventory());
     }
 
@@ -219,6 +244,13 @@ final class FragGuardGui implements Listener {
             if (index < session.visibleActivities.size()) {
                 session.detail = session.visibleActivities.get(index);
                 openDetail(player, session);
+            }
+            return;
+        }
+        if (!session.grouped && slot >= 9 && slot < 45) {
+            int index = slot - 9;
+            if (index < session.visibleRows.size()) {
+                loadExactEvent(player, session, session.visibleRows.get(index), Screen.RESULTS);
             }
             return;
         }
@@ -270,10 +302,17 @@ final class FragGuardGui implements Listener {
         session.screen = Screen.ACTIVITY_RAW;
         FragGuardGuiRenderer.RenderedRaw rendered = FragGuardGuiRenderer.activityRaw(session.detail, session.rawPage);
         session.rawPage = rendered.page();
+        session.visibleRows = rendered.visibleRows();
         open(player, session, rendered.inventory());
     }
 
     private void clickActivityRaw(Player player, Session session, int slot) {
+        if (slot >= 0 && slot < 45) {
+            if (slot < session.visibleRows.size()) {
+                loadExactEvent(player, session, session.visibleRows.get(slot), Screen.ACTIVITY_RAW);
+            }
+            return;
+        }
         if (slot == 45) {
             openDetail(player, session);
         } else if (slot == 48 && session.rawPage > 0) {
@@ -283,6 +322,90 @@ final class FragGuardGui implements Listener {
             session.rawPage++;
             renderActivityRaw(player, session);
         }
+    }
+
+    private void loadExactEvent(Player player, Session session, LookupRow row, Screen returnScreen) {
+        session.exactReturnScreen = returnScreen;
+        session.exactEvent = null;
+        if (!row.blockEntityDataPresent()) {
+            session.detailRequests.invalidate();
+            session.exactEvent = new PreparedExactEvent(row, null, null, false);
+            renderExactEvent(player, session);
+            return;
+        }
+        if (row.id() < 0L) {
+            player.sendMessage(color("&cThat history event does not have a stable row ID for detail loading."));
+            returnToExactSource(player, session);
+            return;
+        }
+
+        long requestGeneration = session.detailRequests.begin();
+        UUID playerId = player.getUniqueId();
+        player.closeInventory();
+        player.sendMessage(color("&7Loading exact block-entity details..."));
+        guiLookupStore.loadEventPayloadAsync(row.id())
+                .thenApplyAsync(payload -> new PreparedExactEvent(
+                        row,
+                        BlockEntitySnapshot.describe(payload.beforeEntityData()),
+                        BlockEntitySnapshot.describe(payload.afterEntityData()),
+                        payload.changed()
+                ))
+                .whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(playerId) != session
+                            || !session.detailRequests.isCurrent(requestGeneration)) {
+                        return;
+                    }
+                    if (throwable != null) {
+                        reportExactDetailFailure(player, throwable);
+                        returnToExactSource(player, session);
+                        return;
+                    }
+                    session.exactEvent = prepared;
+                    renderExactEvent(player, session);
+                }));
+    }
+
+    private void renderExactEvent(Player player, Session session) {
+        if (session.exactEvent == null) {
+            returnToExactSource(player, session);
+            return;
+        }
+        session.screen = Screen.EXACT_DETAIL;
+        PreparedExactEvent event = session.exactEvent;
+        open(player, session, FragGuardGuiRenderer.exactEventDetail(
+                event.row(), event.beforeEntity(), event.afterEntity(), event.blockEntityChanged()));
+    }
+
+    private void clickExactDetail(Player player, Session session, int slot) {
+        if (slot == 18) {
+            returnToExactSource(player, session);
+        } else if (slot == 26) {
+            player.closeInventory();
+        }
+    }
+
+    private void returnToExactSource(Player player, Session session) {
+        session.detailRequests.invalidate();
+        session.exactEvent = null;
+        if (session.exactReturnScreen == Screen.ACTIVITY_RAW && session.detail != null) {
+            renderActivityRaw(player, session);
+        } else {
+            renderResults(player, session);
+        }
+    }
+
+    private void reportExactDetailFailure(Player player, Throwable throwable) {
+        Throwable cause = root(throwable);
+        if (cause instanceof IllegalStateException && cause.getMessage() != null) {
+            player.sendMessage(color("&c" + cause.getMessage()));
+            return;
+        }
+        if (cause instanceof TimeoutException) {
+            player.sendMessage(color("&cExact event details timed out. Try again."));
+            return;
+        }
+        plugin.getLogger().log(Level.WARNING, "FragGuard exact GUI event detail lookup failed", cause);
+        player.sendMessage(color("&cCould not load exact event details. Check console for details."));
     }
 
     private void open(Player player, Session session, Inventory inventory) {
@@ -349,7 +472,8 @@ final class FragGuardGui implements Listener {
         SETUP,
         RESULTS,
         DETAIL,
-        ACTIVITY_RAW
+        ACTIVITY_RAW,
+        EXACT_DETAIL
     }
 
     private record TimePreset(String label, long millis) {
@@ -358,9 +482,19 @@ final class FragGuardGui implements Listener {
     private record PreparedLookup(int totalRows, LookupResultSnapshot results) {
     }
 
+    private record PreparedExactEvent(
+            LookupRow row,
+            BlockEntitySnapshot.SnapshotDescription beforeEntity,
+            BlockEntitySnapshot.SnapshotDescription afterEntity,
+            boolean blockEntityChanged
+    ) {
+    }
+
     private static final class Session {
         private final LookupRequestGeneration lookupRequests = new LookupRequestGeneration();
+        private final LookupRequestGeneration detailRequests = new LookupRequestGeneration();
         private Screen screen;
+        private Screen exactReturnScreen = Screen.RESULTS;
         private Inventory inventory;
         private int radius;
         private int timeIndex;
@@ -369,10 +503,13 @@ final class FragGuardGui implements Listener {
         private int rawPage;
         private LookupResultSnapshot results = LookupResultSnapshot.empty();
         private List<LookupActivity> visibleActivities = List.of();
+        private List<LookupRow> visibleRows = List.of();
         private LookupActivity detail;
+        private PreparedExactEvent exactEvent;
 
         private void reset(int retentionDays, int maxRadius) {
             lookupRequests.invalidate();
+            detailRequests.invalidate();
             radius = Math.min(15, maxRadius);
             timeIndex = retentionDays >= 1 ? 4 : 0;
             grouped = true;
@@ -380,7 +517,10 @@ final class FragGuardGui implements Listener {
             rawPage = 0;
             results = LookupResultSnapshot.empty();
             visibleActivities = List.of();
+            visibleRows = List.of();
             detail = null;
+            exactEvent = null;
+            exactReturnScreen = Screen.RESULTS;
         }
     }
 }

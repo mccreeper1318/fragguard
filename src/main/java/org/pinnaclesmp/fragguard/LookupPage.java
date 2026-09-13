@@ -9,6 +9,9 @@ record LookupPage(
         int totalRows
 ) {
     int totalPages() {
+        if (pageSize <= 0) {
+            return 1;
+        }
         return Math.max(1, (int) Math.ceil(totalRows / (double) pageSize));
     }
 }

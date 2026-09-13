@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -38,11 +38,15 @@ class GuiBlockEntityLookupTest {
     }
 
     @Test
-    void lookupRowsRetainStoredBlockEntitySnapshots() throws Exception {
+    void lightweightGuiRowsDoNotCarryLargeSnapshotsUntilExactDetailIsRequested() throws Exception {
         database = startDatabase();
         long now = System.currentTimeMillis();
-        byte[] beforeEntity = new byte[]{1, 2, 3, 4};
-        byte[] afterEntity = new byte[]{5, 6, 7, 8};
+        byte[] beforeEntity = new byte[2 * 1024 * 1024];
+        byte[] afterEntity = new byte[2 * 1024 * 1024];
+        beforeEntity[0] = 1;
+        beforeEntity[beforeEntity.length - 1] = 2;
+        afterEntity[0] = 3;
+        afterEntity[afterEntity.length - 1] = 4;
         database.insertRequiredAsync(List.of(new BlockChange(
                 now,
                 ACTOR_UUID.toString(),
@@ -57,15 +61,23 @@ class GuiBlockEntityLookupTest {
                 beforeEntity,
                 afterEntity))).join();
 
-        LookupPage page = database.lookupSinceAsync("world", 1, 1, 5, 1, 50, now - 1_000L).join();
+        GuiLookupStore guiStore = new GuiLookupStore(temporaryDirectory.toFile(), 5);
+        List<LookupRow> rows = guiStore.selectRowsAsync(
+                WORLD_UUID.toString(), "world", 1, 1, 5,
+                now - 1_000L, now + 1_000L, 50).join();
 
-        assertEquals(1, page.totalRows());
-        assertEquals(1, page.rows().size());
-        LookupRow row = page.rows().getFirst();
-        assertArrayEquals(beforeEntity, row.beforeEntityData());
-        assertArrayEquals(afterEntity, row.afterEntityData());
-        assertTrue(row.blockEntityChanged(),
-                "the exact GUI row must expose that the stored block-entity state changed");
+        assertTrue(rows.size() == 1);
+        LookupRow row = rows.getFirst();
+        assertTrue(row.id() > 0L, "lightweight GUI rows need a stable ID for later detail loading");
+        assertTrue(row.blockEntityDataPresent(),
+                "the lightweight row must advertise that block-entity details are available");
+        assertFalse(row.blockEntityPayloadLoaded(),
+                "the initial GUI lookup must not retain the multi-megabyte snapshot payloads");
+
+        LookupEventPayload payload = guiStore.loadEventPayloadAsync(row.id()).join();
+        assertArrayEquals(beforeEntity, payload.beforeEntityData());
+        assertArrayEquals(afterEntity, payload.afterEntityData());
+        assertTrue(payload.changed());
     }
 
     private Database startDatabase() throws Exception {

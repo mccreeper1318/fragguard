@@ -63,6 +63,26 @@ class GuiLookupCutoffTest {
                 "the existing retention-based command lookup path must remain unchanged");
     }
 
+    @Test
+    void zeroSizedGuiBarrierCountsWithoutMaterializingRows() throws Exception {
+        database = startDatabase();
+        long now = System.currentTimeMillis();
+        database.insertRequiredAsync(List.of(
+                change(now - 2_000L, 1),
+                change(now - 1_000L, 2),
+                change(now, 3)
+        )).join();
+
+        LookupPage countOnly = database.lookupSinceAsync(
+                "world", 0, 0, 10, 1, 0, now - 10_000L).join();
+
+        assertEquals(3, countOnly.totalRows());
+        assertTrue(countOnly.rows().isEmpty(),
+                "LIMIT 0 must preserve the exact count while preventing lookup-row payload materialization");
+        assertEquals(1, countOnly.totalPages(),
+                "count-only lookup pages must remain safe if totalPages is inspected");
+    }
+
     private Database startDatabase() throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);

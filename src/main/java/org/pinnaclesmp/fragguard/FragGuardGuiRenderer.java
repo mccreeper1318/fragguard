@@ -51,7 +51,8 @@ final class FragGuardGuiRenderer {
         return inv;
     }
 
-    static RenderedResults results(List<LookupRow> rows, List<LookupActivity> activities, boolean grouped, int requestedPage) {
+    static RenderedResults results(List<LookupRow> rows, List<LookupActivity> activities,
+                                   boolean grouped, int requestedPage) {
         Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &bResults"));
         fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
         fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
@@ -64,18 +65,21 @@ final class FragGuardGuiRenderer {
         inv.setItem(0, item(Material.BUNDLE, "&b" + rows.size() + " Exact Events",
                 "&7Grouping never deletes a stored event."));
         inv.setItem(4, item(grouped ? Material.BUNDLE : Material.WRITABLE_BOOK,
-                "&eView: &f" + (grouped ? "Condensed Activities" : "Exact Raw Events"), "&7Click to toggle views."));
+                "&eView: &f" + (grouped ? "Condensed Activities" : "Exact Raw Events"),
+                "&7Click to toggle views."));
         inv.setItem(8, item(Material.BARRIER, "&cClose"));
 
-        List<LookupActivity> visible = List.of();
+        List<LookupActivity> visibleActivities = List.of();
+        List<LookupRow> visibleRows = List.of();
         if (grouped) {
-            visible = activities.subList(start, end);
-            for (int i = 0; i < visible.size(); i++) {
-                inv.setItem(9 + i, activityItem(visible.get(i)));
+            visibleActivities = activities.subList(start, end);
+            for (int i = 0; i < visibleActivities.size(); i++) {
+                inv.setItem(9 + i, activityItem(visibleActivities.get(i)));
             }
         } else {
-            for (int i = start; i < end; i++) {
-                inv.setItem(9 + i - start, rawEventItem(rows.get(i)));
+            visibleRows = rows.subList(start, end);
+            for (int i = 0; i < visibleRows.size(); i++) {
+                inv.setItem(9 + i, rawEventItem(visibleRows.get(i)));
             }
         }
 
@@ -88,15 +92,17 @@ final class FragGuardGuiRenderer {
         if (page + 1 < pages) {
             inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Page"));
         }
-        return new RenderedResults(inv, visible, page, pages);
+        return new RenderedResults(inv, visibleActivities, visibleRows, page, pages);
     }
 
     static Inventory activityDetail(LookupActivity activity) {
         Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &eActivity"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         inv.setItem(10, item(Material.PLAYER_HEAD, "&b" + actor(activity.actorName()), "&7Recorded actor"));
-        inv.setItem(12, item(icon(activity.materialKey()), "&f" + LookupActivityGrouper.displayMaterial(activity.materialKey()),
-                "&f" + activity.eventCount() + " &7exact event(s)", "&7Action: &f" + activity.action().displayPastTense()));
+        inv.setItem(12, item(icon(activity.materialKey()),
+                "&f" + LookupActivityGrouper.displayMaterial(activity.materialKey()),
+                "&f" + activity.eventCount() + " &7exact event(s)",
+                "&7Action: &f" + activity.action().displayPastTense()));
         inv.setItem(14, item(Material.CLOCK, "&eTime Span",
                 "&7Newest: &f" + TIME.format(Instant.ofEpochMilli(activity.newestAt())),
                 "&7Oldest: &f" + TIME.format(Instant.ofEpochMilli(activity.oldestAt()))));
@@ -117,8 +123,9 @@ final class FragGuardGuiRenderer {
         int page = Math.max(0, Math.min(requestedPage, pages - 1));
         int start = page * 45;
         int end = Math.min(rows.size(), start + 45);
-        for (int i = start; i < end; i++) {
-            inv.setItem(i - start, rawEventItem(rows.get(i)));
+        List<LookupRow> visibleRows = rows.subList(start, end);
+        for (int i = 0; i < visibleRows.size(); i++) {
+            inv.setItem(i, rawEventItem(visibleRows.get(i)));
         }
         fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
         inv.setItem(45, item(Material.ARROW, "&fBack to Activity"));
@@ -130,7 +137,44 @@ final class FragGuardGuiRenderer {
         if (page + 1 < pages) {
             inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Page"));
         }
-        return new RenderedRaw(inv, page, pages);
+        return new RenderedRaw(inv, visibleRows, page, pages);
+    }
+
+    static Inventory exactEventDetail(
+            LookupRow row,
+            BlockEntitySnapshot.SnapshotDescription beforeEntity,
+            BlockEntitySnapshot.SnapshotDescription afterEntity,
+            boolean blockEntityChanged
+    ) {
+        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &fExact Event"));
+        fill(inv, Material.GRAY_STAINED_GLASS_PANE);
+        String material = LookupActivityGrouper.materialKey(row);
+
+        inv.setItem(10, item(Material.PLAYER_HEAD, "&b" + actor(row.actorName()),
+                "&7Recorded actor", "&7Action: &f" + row.action().displayPastTense()));
+        inv.setItem(12, item(Material.CLOCK, "&eRecorded Time",
+                "&f" + TIME.format(Instant.ofEpochMilli(row.happenedAt()))));
+        inv.setItem(14, item(icon(material), "&f" + LookupActivityGrouper.displayMaterial(material),
+                "&7Location: &f" + row.x() + " " + row.y() + " " + row.z(),
+                "&7Before: &f" + state(row.beforeData()),
+                "&7After: &f" + state(row.afterData())));
+
+        List<String> blockEntityLore = new ArrayList<>();
+        if (!row.blockEntityDataPresent()) {
+            blockEntityLore.add("&7No stored block-entity payload for this event.");
+        } else if (beforeEntity == null || afterEntity == null) {
+            blockEntityLore.add("&cBlock-entity details are unavailable.");
+        } else {
+            blockEntityLore.add(blockEntityChanged
+                    ? "&6Stored block-entity data changed"
+                    : "&7Stored block-entity data was recorded");
+            appendSnapshotDescription(blockEntityLore, "Before", beforeEntity);
+            appendSnapshotDescription(blockEntityLore, "After", afterEntity);
+        }
+        inv.setItem(16, item(Material.WRITTEN_BOOK, "&eBlock Entity Details", blockEntityLore));
+        inv.setItem(18, item(Material.ARROW, "&fBack"));
+        inv.setItem(26, item(Material.BARRIER, "&cClose"));
+        return inv;
     }
 
     private static ItemStack activityItem(LookupActivity activity) {
@@ -149,28 +193,22 @@ final class FragGuardGuiRenderer {
                 "&7Location: &f" + row.x() + " " + row.y() + " " + row.z(),
                 "&7Before: &f" + state(row.beforeData()),
                 "&7After: &f" + state(row.afterData())));
-        appendBlockEntityDetails(lore, row);
+        if (row.blockEntityDataPresent()) {
+            lore.add("");
+            lore.add("&6Block-entity details available");
+        }
+        lore.add("");
+        lore.add("&eClick for exact event details");
         return item(icon(material),
                 "&b" + actor(row.actorName()) + " &7" + row.action().displayPastTense() + " &f"
                         + LookupActivityGrouper.displayMaterial(material), lore);
     }
 
-    private static void appendBlockEntityDetails(List<String> lore, LookupRow row) {
-        if (!row.blockEntityChanged()) {
-            return;
-        }
-        lore.add("");
-        lore.add("&6Block entity data changed");
-        appendSnapshot(lore, "Before", row.beforeEntityData());
-        appendSnapshot(lore, "After", row.afterEntityData());
-    }
-
-    private static void appendSnapshot(List<String> lore, String label, byte[] payload) {
-        if (payload == null) {
-            lore.add("&7" + label + ": &fNone");
-            return;
-        }
-        BlockEntitySnapshot.SnapshotDescription description = BlockEntitySnapshot.describe(payload);
+    private static void appendSnapshotDescription(
+            List<String> lore,
+            String label,
+            BlockEntitySnapshot.SnapshotDescription description
+    ) {
         lore.add("&7" + label + ": &f" + description.type());
         int lines = Math.min(MAX_BLOCK_ENTITY_DETAIL_LINES, description.details().size());
         for (int index = 0; index < lines; index++) {
@@ -235,9 +273,15 @@ final class FragGuardGuiRenderer {
         }
     }
 
-    record RenderedResults(Inventory inventory, List<LookupActivity> visibleActivities, int page, int totalPages) {
+    record RenderedResults(
+            Inventory inventory,
+            List<LookupActivity> visibleActivities,
+            List<LookupRow> visibleRows,
+            int page,
+            int totalPages
+    ) {
     }
 
-    record RenderedRaw(Inventory inventory, int page, int totalPages) {
+    record RenderedRaw(Inventory inventory, List<LookupRow> visibleRows, int page, int totalPages) {
     }
 }

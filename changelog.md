@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed GUI lookups eagerly loading and synchronously decoding block-entity snapshot BLOBs for every result row. GUI history lists now use lightweight stable row IDs and block-state metadata, oversized windows are rejected after a count-only database barrier without materializing result payloads, and the full before/after block-entity snapshots are fetched and decoded off the server thread only when an operator opens one exact event's detail screen.
 - Fixed `gui-lookup-max-rows` silently forcing configured values below 250 up to 250. Any positive row limit is now honored exactly; zero or negative values emit a startup warning and fall back to the documented default of 5000.
 - Fixed exact GUI raw-event details silently omitting stored block-entity changes by carrying before/after snapshots through lookup rows and showing bounded human-readable summaries for containers, signs, lecterns, decorated pots, banners, player heads, custom names, and an explicit fallback when a stored snapshot cannot be decoded.
 - Fixed condensed GUI activities growing transitively across very long distances or time spans by keeping local adjacency checks while also enforcing configurable whole-activity duration and bounding-box span limits; splitting an activity at either bound preserves every exact source event.
