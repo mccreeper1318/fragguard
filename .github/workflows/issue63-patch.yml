@@ -1,0 +1,17 @@
+name: Apply issue 63 database patch
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - ".github/workflows/issue63-patch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sanity check
+        run: echo "issue 63 patch workflow ready"
