@@ -17,16 +17,6 @@
 
 ### Fixed
 
-- Fixed condensed GUI activities grouping by actor display text instead of stable stored actor identity, preventing distinct entities or identities with the same label from being presented as one actor while retaining the newest human-readable label for display.
-- Fixed condensed GUI activities bridging across unrelated intervening events by finalizing each consecutive actor/action/material run as soon as a different event appears; later matching rows now begin a new activity while every exact raw event remains preserved.
-- Fixed GUI lookups eagerly loading and synchronously decoding block-entity snapshot BLOBs for every result row. GUI history lists now use lightweight stable row IDs and block-state metadata, oversized windows are rejected after a count-only database barrier without materializing result payloads, and the full before/after block-entity snapshots are fetched and decoded off the server thread only when an operator opens one exact event's detail screen.
-- Fixed `gui-lookup-max-rows` silently forcing configured values below 250 up to 250. Any positive row limit is now honored exactly; zero or negative values emit a startup warning and fall back to the documented default of 5000.
-- Fixed exact GUI raw-event details silently omitting stored block-entity changes by carrying before/after snapshots through lookup rows and showing bounded human-readable summaries for containers, signs, lecterns, decorated pots, banners, player heads, custom names, and an explicit fallback when a stored snapshot cannot be decoded.
-- Fixed condensed GUI activities growing transitively across very long distances or time spans by keeping local adjacency checks while also enforcing configurable whole-activity duration and bounding-box span limits; splitting an activity at either bound preserves every exact source event.
-- Fixed the schema-v4 migration exhausting storage on large databases by eliminating the persistent same-tick coalescing index. The v3→v4 migration now only verifies the database, removes the obsolete derived index, and advances the schema without a full backup or replacement index build; cross-flush coalescing now uses bounded current-session row-ID tracking, while full data-changing migrations retain verified backups, failed-backup cleanup, conservative retention, and filesystem-space preflight warnings that do not misrepresent managed-host quotas.
-- Fixed large GUI lookups being repeatedly sorted and regrouped on the Bukkit server thread by preparing each lookup's condensed activities once off-thread, caching an immutable exact-row/activity snapshot in the session, and reusing that snapshot for paging, grouped/raw toggles, and returns from detail screens.
-- Fixed stale asynchronous GUI lookup callbacks overwriting newer investigations, reopening reset sessions, or returning after the player has left by assigning lookups a per-session generation identity.
-- Fixed short GUI lookup windows scanning and counting unrelated retained history by applying the selected time cutoff directly to SQLite count and result queries, while keeping command lookup behavior unchanged.
 - Fixed same-tick coalescing merging different actors and actions by only combining consecutive, state-contiguous changes with matching attribution and action.
 - Fixed timed-out queries falsely marking storage unhealthy by separating expected timeout and SQLite interrupt results from genuine database failures.
 - Fixed redstone-primed TNT removal bypassing block history by logging `TNTPrimeEvent` transitions with specific cause attribution and suppressing duplicate generic history.
@@ -72,7 +62,7 @@
 - Rollback is now a preview-first workflow that reports affected blocks and chunks, selects each coordinate's earliest state in SQLite, and applies indexed region and block limits in the query.
 - Rollback and undo preserve persisted sequence order, load only existing chunks asynchronously, retain chunk tickets only while needed, and share TPS and time budgets across preparation and mutations.
 - Rollback and undo audits are prepared as hidden, crash-recoverable rows in bounded slices and become visible atomically with durable job progress after the world mutation.
-- Normal rollback revalidates expected live state and skips conflicts, while force mode revalidates and retries from the latest state; unresolved undo conflicts remain retryable.
+- Normal rollback revalidates expected live state and skips conflicts, while force mode revalidates and retries from the latest observed state; unresolved undo conflicts remain retryable.
 - SQLite now uses one dedicated worker and long-lived connection, drains under queue pressure, and reports atomic queued, drained, remaining, and lost-write shutdown accounting before checkpointing the WAL.
 - Updated Paper API to `26.2.build.62-beta`, SQLite JDBC to `3.53.2.1`, Shadow to `9.6.1`, and SLF4J NOP to `2.0.18`.
 
