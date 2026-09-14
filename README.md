@@ -2,7 +2,7 @@
 
 FragGuard is a Paper plugin that records world-changing block history in SQLite, gives server operators both command-based and Minecraft-native GUI tools for investigating that history, and can roll an area back to the state it was in at a chosen time.
 
-History is retained for 30 days by default. The new `26.3-1.2.0` lookup GUI condenses related events for easier browsing without deleting, rewriting, or hiding the underlying raw history: every exact database event remains available for drill-down.
+History is retained for 30 days by default. The new `26.3-1.2.0` inventory GUI condenses related events for easier browsing without deleting, rewriting, or hiding the underlying raw history: every exact database event remains available for drill-down.
 
 ## What it tracks
 
@@ -59,7 +59,7 @@ Only server operators with `fragguard.admin` can use FragGuard administration co
 /fg
 ```
 
-The current GUI focuses on history investigation. The main menu provides access to Lookup History and convenient entry points for existing FragGuard controls. Rollback and undo execution still use their command workflows while those GUI controls are being developed.
+The main menu provides GUI access to lookup/history investigation, rollback setup and confirmation, undoable rollback jobs, storage status, and command help. The existing command workflows remain available alongside the GUI.
 
 ### GUI lookup setup
 
@@ -76,11 +76,17 @@ GUI lookup results can be browsed in two forms:
 - **Condensed view** groups nearby related records into human-readable activities.
 - **Raw view** exposes the exact individual history records.
 
-Activity grouping is presentation-only. FragGuard never collapses or rewrites the SQLite history rows. The current heuristic only groups consecutive events that match the same actor, action, and relevant material/state while also remaining within the configured time and distance thresholds.
+Activity grouping is presentation-only. FragGuard never collapses or rewrites the SQLite history rows. The current heuristic only groups consecutive events that match the same actor identity, action, and relevant material/state while also remaining within the configured local time/distance and whole-activity duration/span thresholds.
 
 Condensed results support inventory-based pagination. Selecting an activity opens an activity-details screen, and from there the operator can drill down to the exact raw events that make up that activity.
 
 The GUI also protects investigation state from asynchronous races. Every lookup receives a generation identity; if an older lookup finishes after a newer lookup, after the session is reset, or after the player leaves, the obsolete callback is discarded instead of reopening or replacing the current investigation.
+
+### Structured lookup filters
+
+After a lookup finishes, its results screen exposes structured **Player**, **Action**, and **Material** filters. Filter choices are generated only from values present in that returned lookup, so operators do not need to type or parse free-text filter expressions.
+
+Player filters use the stored actor identity rather than only the display label, action filters use FragGuard's stored action identifiers, and material filters use the material represented by each exact history row. Filters affect presentation only: the immutable lookup snapshot and underlying SQLite history remain unchanged, and clearing the filters restores the complete returned lookup.
 
 ## Command lookup
 
@@ -97,6 +103,10 @@ Use the page argument to move through command results:
 ```
 
 ## Rollback
+
+The GUI Rollback screen provides radius and time presets plus a conflict-protected/force-mode toggle. **Preview Rollback** runs the same existing rollback preview pipeline without changing blocks. After the preview completes, reopen `/fg` → **Rollback** and use **Confirm Active Preview** to execute the operator-bound preview token. The token still expires according to `rollback-confirmation-timeout-seconds`.
+
+The command workflow remains available:
 
 ```text
 /fg rollback r:30 t:2d 7h 15m
@@ -115,6 +125,8 @@ Confirmation tokens are tied to the operator and expire after 60 seconds by defa
 ```text
 /fg undo <job-id>
 ```
+
+The GUI **Undo Rollback** screen reads the retained rollback-job records and lists completed or failed jobs that actually applied one or more block changes. Selecting a job opens a separate confirmation screen before the existing `/fg undo` execution path is invoked. Already-undone and no-op jobs are not presented as undoable choices.
 
 Rollback and undo progress is stored in SQLite. Interrupted jobs automatically resume after a server restart, and overlapping jobs in the same world are rejected. Completed rollback jobs remain available for `/fg undo` until `rollback-job-retention-days`; expired completed/undone and permanently failed jobs are deleted with their saved snapshots, while active and recoverable failed jobs are retained.
 
@@ -200,6 +212,8 @@ max-lookup-radius: 150
 gui-lookup-max-rows: 5000
 gui-activity-max-gap-millis: 2500
 gui-activity-max-distance: 6
+gui-activity-max-duration-millis: 15000
+gui-activity-max-span: 24
 
 max-rollback-radius: 100
 rollback-blocks-per-tick: 500
@@ -215,8 +229,10 @@ apply-physics-during-rollback: false
 ### GUI settings
 
 - `gui-lookup-max-rows` is the maximum number of exact records a single GUI lookup may load. The count is evaluated in SQLite against the GUI's selected radius and time window.
-- `gui-activity-max-gap-millis` is the maximum time gap allowed when presentation-only activity grouping considers two consecutive records related.
-- `gui-activity-max-distance` is the maximum block distance used by that grouping heuristic.
+- `gui-activity-max-gap-millis` is the maximum local time gap allowed when presentation-only activity grouping considers two consecutive records related.
+- `gui-activity-max-distance` is the maximum local block distance used by that grouping heuristic.
+- `gui-activity-max-duration-millis` caps the total duration of one condensed activity so locally adjacent chains cannot extend indefinitely through time.
+- `gui-activity-max-span` caps the X/Y/Z bounding-box span of one condensed activity so locally adjacent chains cannot extend indefinitely through space.
 
 Reducing the grouping thresholds creates more, smaller activities. Increasing them can condense more nearby matching events, but the exact raw records are always retained and remain available through the raw view.
 
@@ -244,10 +260,11 @@ Put that JAR into your server's `plugins` folder and restart the Paper server.
 
 ## Notes and limitations
 
-- The `26.3-1.2.0` inventory GUI currently implements the lookup/investigation workflow. Rollback confirmation, undo, and other advanced administration remain available through their existing commands.
+- The `26.3-1.2.0` inventory GUI implements lookup/investigation, structured player/action/material filtering, rollback preset/preview/confirmation controls, and a browser for undoable rollback jobs. The equivalent command workflows remain available.
 - GUI activity grouping is presentation-only. It does not delete, merge, or rewrite stored history, and each activity can be opened to inspect its exact raw events.
+- GUI filters are generated from the exact lookup result set and affect only the presentation of that immutable result snapshot.
 - GUI time presets are applied directly in SQLite, so short windows do not count or return unrelated older retained history before filtering.
-- Stale asynchronous GUI lookup completions are discarded when a newer lookup owns the session or when the investigation has been reset/abandoned.
+- Stale asynchronous GUI lookup and undo-job-list completions are discarded when a newer request owns the session or when the GUI session has been reset/abandoned.
 - This restores block type and structural block data, including facing direction, slab state, stair shape, and similar properties, before restoring supported block-entity contents.
 - Supported block entities include both sides of signs (text, color, glowing text, and wax), container inventories and their books/items, banner patterns, player-head profiles/textures, lectern books/pages, decorated-pot items/sherds, and supported custom names.
 - Block entities outside those supported types, and contents from history recorded before block-entity snapshots were introduced, cannot be reconstructed.
