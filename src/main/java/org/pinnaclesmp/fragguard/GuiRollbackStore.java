@@ -22,7 +22,7 @@ final class GuiRollbackStore {
         this.queryTimeoutSeconds = Math.max(1, queryTimeoutSeconds);
     }
 
-    CompletableFuture<List<GuiRollbackJob>> loadUndoableJobsAsync(int limit) {
+    CompletableFuture<List<GuiRollbackJob>> loadUndoableJobsAsync() {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
                     SELECT id, created_at, actor_name, world, radius, target_timestamp,
@@ -31,12 +31,10 @@ final class GuiRollbackStore {
                     WHERE status IN ('COMPLETED', 'FAILED')
                       AND applied_blocks > 0
                     ORDER BY created_at DESC, id DESC
-                    LIMIT ?
                     """;
             try (Connection connection = openReadConnection();
                  PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setQueryTimeout(queryTimeoutSeconds);
-                statement.setInt(1, Math.max(1, limit));
                 List<GuiRollbackJob> jobs = new ArrayList<>();
                 try (ResultSet rows = statement.executeQuery()) {
                     while (rows.next()) {
