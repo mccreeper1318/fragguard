@@ -6,9 +6,11 @@
 
 - Added the first Minecraft-native FragGuard GUI: typing `/fg` now opens an operator menu while all existing subcommands continue to work normally.
 - Added GUI lookup setup with radius and time presets, condensed activity results, clickable result paging, activity detail screens, and exact raw-event drill-downs.
+- Added structured Player, Action, and Material lookup filters generated from the exact returned lookup data, with no free-text filter parsing and no changes to stored history.
 - Added presentation-only activity grouping that condenses nearby same-actor/same-action/same-material changes without deleting or rewriting any stored history rows.
 - Added GUI lookup safety limits that refuse to present a capped query as complete and instead require the operator to narrow the radius or time window.
 - Added configurable activity grouping thresholds and regression tests covering scaffolding-style chains, actor/action boundaries, time/distance boundaries, and preservation of every source event.
+- Added GUI rollback controls with radius/time presets, conflict-protected or force mode selection, rollback preview launch, active-preview confirmation, and a paged browser with confirmation screens for undoable rollback jobs.
 
 ### Changed
 
@@ -62,7 +64,7 @@
 - Rollback is now a preview-first workflow that reports affected blocks and chunks, selects each coordinate's earliest state in SQLite, and applies indexed region and block limits in the query.
 - Rollback and undo preserve persisted sequence order, load only existing chunks asynchronously, retain chunk tickets only while needed, and share TPS and time budgets across preparation and mutations.
 - Rollback and undo audits are prepared as hidden, crash-recoverable rows in bounded slices and become visible atomically with durable job progress after the world mutation.
-- Normal rollback revalidates expected live state and skips conflicts, while force mode revalidates and retries from the latest observed state; unresolved undo conflicts remain retryable.
+- Normal rollback revalidates expected live state and skips conflicts, while force mode revalidates and retries from the latest state; unresolved undo conflicts remain retryable.
 - SQLite now uses one dedicated worker and long-lived connection, drains under queue pressure, and reports atomic queued, drained, remaining, and lost-write shutdown accounting before checkpointing the WAL.
 - Updated Paper API to `26.2.build.62-beta`, SQLite JDBC to `3.53.2.1`, Shadow to `9.6.1`, and SLF4J NOP to `2.0.18`.
 
