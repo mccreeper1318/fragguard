@@ -66,6 +66,26 @@ class LookupActivityGrouperTest {
     }
 
     @Test
+    void doesNotBridgeMatchingRowsAcrossInterveningUnrelatedEvent() {
+        String aliceIdentity = "714ea63f-075e-4694-b2c4-ae06a79748aa";
+        String bobIdentity = "1a959078-8be1-4f98-b9cf-74860c8bf7c6";
+        List<LookupRow> rows = List.of(
+                row(10_000, aliceIdentity, "Alice", 10, 64, 20),
+                row(9_900, bobIdentity, "Bob", 11, 64, 20),
+                row(9_800, aliceIdentity, "Alice", 12, 64, 20));
+
+        List<LookupActivity> activities = LookupActivityGrouper.group(rows, 2_500, 6);
+
+        assertEquals(3, activities.size(),
+                "an unrelated intervening event must end the current activity instead of allowing a later matching row to bridge across it");
+        assertEquals(3, activities.stream().mapToInt(LookupActivity::eventCount).sum(),
+                "splitting consecutive activity runs must preserve every exact source row");
+        assertTrue(activities.stream().allMatch(activity -> activity.eventCount() == 1));
+        assertEquals(List.of("Alice", "Bob", "Alice"),
+                activities.stream().map(LookupActivity::actorName).toList());
+    }
+
+    @Test
     void separatesEventsOutsideTimeWindow() {
         List<LookupRow> rows = List.of(
                 row(10_000, "Kevin", 10, 64, 20),

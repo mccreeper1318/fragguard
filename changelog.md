@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- Fixed condensed GUI activities grouping by actor display text instead of stable stored actor identity, preventing distinct entities or identities with the same label from being presented as one actor while retaining the newest human-readable label for display.
+- Fixed condensed GUI activities bridging across unrelated intervening events by finalizing each consecutive actor/action/material run as soon as a different event appears; later matching rows now begin a new activity while every exact raw event remains preserved.
 - Fixed GUI lookups eagerly loading and synchronously decoding block-entity snapshot BLOBs for every result row. GUI history lists now use lightweight stable row IDs and block-state metadata, oversized windows are rejected after a count-only database barrier without materializing result payloads, and the full before/after block-entity snapshots are fetched and decoded off the server thread only when an operator opens one exact event's detail screen.
 - Fixed `gui-lookup-max-rows` silently forcing configured values below 250 up to 250. Any positive row limit is now honored exactly; zero or negative values emit a startup warning and fall back to the documented default of 5000.
 - Fixed exact GUI raw-event details silently omitting stored block-entity changes by carrying before/after snapshots through lookup rows and showing bounded human-readable summaries for containers, signs, lecterns, decorated pots, banners, player heads, custom names, and an explicit fallback when a stored snapshot cannot be decoded.

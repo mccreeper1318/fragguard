@@ -2,10 +2,8 @@ package org.pinnaclesmp.fragguard;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 final class LookupActivityGrouper {
     static final long DEFAULT_MAX_DURATION_MILLIS = 15_000L;
@@ -30,22 +28,24 @@ final class LookupActivityGrouper {
         List<LookupRow> ordered = rows.stream()
                 .sorted(Comparator.comparingLong(LookupRow::happenedAt).reversed())
                 .toList();
-        Map<Key, MutableActivity> active = new HashMap<>();
         List<MutableActivity> finished = new ArrayList<>();
+        MutableActivity current = null;
         for (LookupRow row : ordered) {
             Key key = new Key(row.actorIdentity(), row.action(), materialKey(row));
-            MutableActivity current = active.get(key);
-            if (current == null || !current.canAppend(row, localGap, localDistance, totalDuration, totalSpan)) {
+            if (current == null
+                    || !current.key.equals(key)
+                    || !current.canAppend(row, localGap, localDistance, totalDuration, totalSpan)) {
                 if (current != null) {
                     finished.add(current);
                 }
                 current = new MutableActivity(key, row);
-                active.put(key, current);
             } else {
                 current.append(row);
             }
         }
-        finished.addAll(active.values());
+        if (current != null) {
+            finished.add(current);
+        }
         finished.sort(Comparator.comparingLong(MutableActivity::newestAt).reversed());
         return finished.stream().map(MutableActivity::freeze).toList();
     }
