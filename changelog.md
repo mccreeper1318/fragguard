@@ -16,6 +16,7 @@
 
 - Advanced the plugin feature version to `26.3-1.2.0` while intentionally keeping development on Paper API `26.2.build.121-stable` and `api-version: '26.2'` until Paper 26.3 is stable enough for release.
 - `/fg` with no arguments now opens the GUI; `/fg lookup`, `/fg rollback`, `/fg undo`, `/fg status`, and `/fg help` remain available through the existing command path.
+- Bumped actions/setup-java from 6.0.0 to 6.0.1
 
 ### Fixed
 
