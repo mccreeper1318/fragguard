@@ -14,9 +14,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 final class FragGuardGuiRenderer {
     static final int RESULTS_PER_PAGE = 36;
+    static final int FILTER_OPTIONS_PER_PAGE = 45;
+    static final int UNDO_JOBS_PER_PAGE = 36;
     private static final int MAX_BLOCK_ENTITY_DETAIL_LINES = 8;
     private static final int MAX_LORE_DETAIL_LENGTH = 72;
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("MMM d, yyyy h:mm:ss a")
@@ -29,9 +32,11 @@ final class FragGuardGuiRenderer {
         Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard"));
         inv.setItem(10, item(Material.SPYGLASS, "&bLookup History", "&7Browse retained history graphically."));
         inv.setItem(12, item(Material.RECOVERY_COMPASS, "&eRollback",
-                "&7Use &f/fg rollback&7 while this", "&7part of the GUI is being built."));
-        inv.setItem(14, item(Material.REDSTONE_TORCH, "&aStorage Status", "&7Run the existing status command."));
-        inv.setItem(16, item(Material.BOOK, "&fCommand Help", "&7Show existing FragGuard commands."));
+                "&7Configure, preview, and confirm", "&7an area rollback."));
+        inv.setItem(14, item(Material.CLOCK, "&6Undo Rollback",
+                "&7Browse rollback jobs that still", "&7have applied changes to undo."));
+        inv.setItem(16, item(Material.REDSTONE_TORCH, "&aStorage Status", "&7Run the existing status command."));
+        inv.setItem(20, item(Material.BOOK, "&fCommand Help", "&7Show existing FragGuard commands."));
         inv.setItem(22, item(Material.BARRIER, "&cClose"));
         return inv;
     }
@@ -52,7 +57,8 @@ final class FragGuardGuiRenderer {
     }
 
     static RenderedResults results(List<LookupRow> rows, List<LookupActivity> activities,
-                                   boolean grouped, int requestedPage) {
+                                   boolean grouped, int requestedPage, int totalRows,
+                                   String filterSummary, boolean filtersActive) {
         Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &bResults"));
         fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
         fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
@@ -62,11 +68,18 @@ final class FragGuardGuiRenderer {
         int start = page * RESULTS_PER_PAGE;
         int end = Math.min(count, start + RESULTS_PER_PAGE);
 
-        inv.setItem(0, item(Material.BUNDLE, "&b" + rows.size() + " Exact Events",
-                "&7Grouping never deletes a stored event."));
+        String eventCount = filtersActive ? rows.size() + " / " + totalRows : Integer.toString(rows.size());
+        inv.setItem(0, item(Material.BUNDLE, "&b" + eventCount + " Exact Events",
+                filtersActive ? "&7Filtered events / total lookup events." : "&7Grouping never deletes a stored event."));
+        inv.setItem(2, item(Material.HOPPER, "&eLookup Filters",
+                "&7" + truncate(filterSummary), "", "&eClick to configure."));
         inv.setItem(4, item(grouped ? Material.BUNDLE : Material.WRITABLE_BOOK,
                 "&eView: &f" + (grouped ? "Condensed Activities" : "Exact Raw Events"),
                 "&7Click to toggle views."));
+        if (filtersActive) {
+            inv.setItem(6, item(Material.MILK_BUCKET, "&fClear Filters",
+                    "&7Restore every event from this lookup."));
+        }
         inv.setItem(8, item(Material.BARRIER, "&cClose"));
 
         List<LookupActivity> visibleActivities = List.of();
@@ -88,11 +101,131 @@ final class FragGuardGuiRenderer {
             inv.setItem(48, item(Material.SPECTRAL_ARROW, "&fPrevious Page"));
         }
         inv.setItem(49, item(Material.MAP, "&bPage " + (page + 1) + " / " + pages,
-                "&f" + rows.size() + " &7events", "&f" + activities.size() + " &7activities"));
+                "&f" + rows.size() + " &7matching event(s)", "&f" + activities.size() + " &7matching activities"));
         if (page + 1 < pages) {
             inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Page"));
         }
         return new RenderedResults(inv, visibleActivities, visibleRows, page, pages);
+    }
+
+    static Inventory lookupFilters(String playerFilter, String actionFilter, String materialFilter,
+                                   boolean filtersActive) {
+        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &eFilters"));
+        fill(inv, Material.GRAY_STAINED_GLASS_PANE);
+        inv.setItem(10, item(Material.PLAYER_HEAD, "&bPlayer: &f" + playerFilter,
+                "&7Choose from actors returned", "&7by this exact lookup."));
+        inv.setItem(12, item(Material.IRON_PICKAXE, "&bAction: &f" + actionFilter,
+                "&7Choose from actions returned", "&7by this exact lookup."));
+        inv.setItem(14, item(Material.GRASS_BLOCK, "&bMaterial: &f" + materialFilter,
+                "&7Choose from materials returned", "&7by this exact lookup."));
+        inv.setItem(16, item(filtersActive ? Material.MILK_BUCKET : Material.GRAY_DYE,
+                filtersActive ? "&fClear All Filters" : "&7No Filters Active",
+                filtersActive ? "&7Restore every event from this lookup." : "&7All lookup events are currently visible."));
+        inv.setItem(18, item(Material.ARROW, "&fBack to Results"));
+        inv.setItem(26, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
+    static RenderedFilterOptions filterOptions(LookupFilters.Category category,
+                                                List<LookupFilters.Option> options,
+                                                String selectedKey,
+                                                int totalRows,
+                                                int requestedPage) {
+        List<LookupFilters.Option> choices = new ArrayList<>(options.size() + 1);
+        choices.add(new LookupFilters.Option(null, "Any", totalRows));
+        choices.addAll(options);
+        int pages = Math.max(1, (int) Math.ceil(choices.size() / (double) FILTER_OPTIONS_PER_PAGE));
+        int page = Math.max(0, Math.min(requestedPage, pages - 1));
+        int start = page * FILTER_OPTIONS_PER_PAGE;
+        int end = Math.min(choices.size(), start + FILTER_OPTIONS_PER_PAGE);
+        List<LookupFilters.Option> visible = List.copyOf(choices.subList(start, end));
+
+        Inventory inv = Bukkit.createInventory(null, 54,
+                color("&8FragGuard &7• &e" + category.displayName()));
+        for (int i = 0; i < visible.size(); i++) {
+            LookupFilters.Option option = visible.get(i);
+            boolean selected = Objects.equals(selectedKey, option.key());
+            Material icon = filterIcon(category, option.key());
+            inv.setItem(i, item(icon,
+                    (selected ? "&a✔ " : "&f") + option.label(),
+                    "&7Matching exact events: &f" + option.count(),
+                    selected ? "&aCurrently selected" : "&eClick to select"));
+        }
+        fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
+        inv.setItem(45, item(Material.ARROW, "&fBack to Filters"));
+        if (page > 0) {
+            inv.setItem(48, item(Material.SPECTRAL_ARROW, "&fPrevious Page"));
+        }
+        inv.setItem(49, item(Material.MAP, "&bPage " + (page + 1) + " / " + pages,
+                "&f" + options.size() + " &7returned option(s)"));
+        if (page + 1 < pages) {
+            inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Page"));
+        }
+        return new RenderedFilterOptions(inv, visible, page, pages);
+    }
+
+    static Inventory rollbackSetup(int radius, String timeLabel, boolean force, boolean activePreview) {
+        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &eRollback"));
+        fill(inv, Material.GRAY_STAINED_GLASS_PANE);
+        inv.setItem(10, item(Material.GRASS_BLOCK, "&eRadius: &f" + radius + " blocks",
+                "&7Left-click: next preset", "&7Right-click: previous preset"));
+        inv.setItem(12, item(Material.CLOCK, "&eTime: &f" + timeLabel,
+                "&7Left-click: next preset", "&7Right-click: previous preset"));
+        inv.setItem(14, item(force ? Material.TNT : Material.SHIELD,
+                force ? "&cForce Mode: ON" : "&aConflict Protection: ON",
+                force ? "&cNewer conflicting states may be overwritten." : "&7Newer conflicting states will be skipped.",
+                "&eClick to toggle."));
+        inv.setItem(16, item(Material.SPYGLASS, "&ePreview Rollback",
+                "&7Search the selected area first.", "&7No blocks change until confirmation."));
+        if (activePreview) {
+            inv.setItem(20, item(Material.EMERALD_BLOCK, "&aConfirm Active Preview",
+                    "&7Run your most recent unexpired", "&7rollback preview."));
+        } else {
+            inv.setItem(20, item(Material.GRAY_DYE, "&7No Active Preview",
+                    "&7Run a rollback preview first."));
+        }
+        inv.setItem(18, item(Material.ARROW, "&fBack"));
+        inv.setItem(26, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
+    static RenderedUndoJobs undoJobs(List<GuiRollbackJob> jobs, int requestedPage) {
+        Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &6Undo"));
+        fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
+        fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
+        int pages = Math.max(1, (int) Math.ceil(jobs.size() / (double) UNDO_JOBS_PER_PAGE));
+        int page = Math.max(0, Math.min(requestedPage, pages - 1));
+        int start = page * UNDO_JOBS_PER_PAGE;
+        int end = Math.min(jobs.size(), start + UNDO_JOBS_PER_PAGE);
+        List<GuiRollbackJob> visible = List.copyOf(jobs.subList(start, end));
+
+        inv.setItem(0, item(Material.CLOCK, "&6Undoable Rollback Jobs",
+                "&7Completed/failed jobs with applied", "&7changes are listed newest first."));
+        inv.setItem(8, item(Material.BARRIER, "&cClose"));
+        for (int i = 0; i < visible.size(); i++) {
+            inv.setItem(9 + i, undoJobItem(visible.get(i)));
+        }
+        inv.setItem(45, item(Material.ARROW, "&fBack"));
+        if (page > 0) {
+            inv.setItem(48, item(Material.SPECTRAL_ARROW, "&fPrevious Page"));
+        }
+        inv.setItem(49, item(Material.MAP, "&bPage " + (page + 1) + " / " + pages,
+                "&f" + jobs.size() + " &7undoable job(s)"));
+        if (page + 1 < pages) {
+            inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Page"));
+        }
+        return new RenderedUndoJobs(inv, visible, page, pages);
+    }
+
+    static Inventory undoConfirmation(GuiRollbackJob job) {
+        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &cConfirm Undo"));
+        fill(inv, Material.GRAY_STAINED_GLASS_PANE);
+        inv.setItem(10, undoJobItem(job));
+        inv.setItem(14, item(Material.REDSTONE_BLOCK, "&cConfirm Undo #" + job.id(),
+                "&7This reverses blocks actually changed", "&7by the saved rollback job.", "", "&cClick to continue."));
+        inv.setItem(18, item(Material.ARROW, "&fBack to Jobs"));
+        inv.setItem(26, item(Material.BARRIER, "&cClose"));
+        return inv;
     }
 
     static Inventory activityDetail(LookupActivity activity) {
@@ -204,6 +337,34 @@ final class FragGuardGuiRenderer {
                         + LookupActivityGrouper.displayMaterial(material), lore);
     }
 
+    private static ItemStack undoJobItem(GuiRollbackJob job) {
+        List<String> lore = new ArrayList<>(List.of(
+                "&7Status: &f" + job.status(),
+                "&7Actor: &f" + actor(job.actorName()),
+                "&7World: &f" + actor(job.worldName()),
+                "&7Radius: &f" + job.radius(),
+                "&7Target: &f" + TIME.format(Instant.ofEpochMilli(job.targetTimestamp())),
+                "&7Applied: &f" + job.appliedBlocks() + "&7 / " + job.totalBlocks(),
+                "&7Conflicts: &f" + job.conflictBlocks()));
+        if (job.lastError() != null && !job.lastError().isBlank()) {
+            lore.add("&cLast error: " + truncate(job.lastError()));
+        }
+        lore.add("");
+        lore.add("&eClick to review undo.");
+        return item(Material.RECOVERY_COMPASS, "&6Rollback Job #" + job.id(), lore);
+    }
+
+    private static Material filterIcon(LookupFilters.Category category, String key) {
+        if (key == null) {
+            return Material.BARRIER;
+        }
+        return switch (category) {
+            case PLAYER -> Material.PLAYER_HEAD;
+            case ACTION -> Material.WRITABLE_BOOK;
+            case MATERIAL -> icon(key);
+        };
+    }
+
     private static void appendSnapshotDescription(
             List<String> lore,
             String label,
@@ -283,5 +444,21 @@ final class FragGuardGuiRenderer {
     }
 
     record RenderedRaw(Inventory inventory, List<LookupRow> visibleRows, int page, int totalPages) {
+    }
+
+    record RenderedFilterOptions(
+            Inventory inventory,
+            List<LookupFilters.Option> visibleOptions,
+            int page,
+            int totalPages
+    ) {
+    }
+
+    record RenderedUndoJobs(
+            Inventory inventory,
+            List<GuiRollbackJob> visibleJobs,
+            int page,
+            int totalPages
+    ) {
     }
 }
