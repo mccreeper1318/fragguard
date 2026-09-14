@@ -25,15 +25,15 @@ final class FragGuardGui implements Listener {
     private final FragGuardPlugin plugin;
     private final Database database;
     private final GuiLookupStore guiLookupStore;
+    private final GuiRollbackStore guiRollbackStore;
     private final Map<UUID, Session> sessions = new ConcurrentHashMap<>();
 
     FragGuardGui(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
         this.database = database;
-        this.guiLookupStore = new GuiLookupStore(
-                plugin.getDataFolder(),
-                plugin.getConfig().getInt("database-query-timeout-seconds", 15)
-        );
+        int queryTimeoutSeconds = plugin.getConfig().getInt("database-query-timeout-seconds", 15);
+        this.guiLookupStore = new GuiLookupStore(plugin.getDataFolder(), queryTimeoutSeconds);
+        this.guiRollbackStore = new GuiRollbackStore(plugin.getDataFolder(), queryTimeoutSeconds);
     }
 
     @EventHandler
@@ -70,9 +70,14 @@ final class FragGuardGui implements Listener {
             case MAIN -> clickMain(player, session, slot);
             case SETUP -> clickSetup(player, session, slot, event.isRightClick());
             case RESULTS -> clickResults(player, session, slot);
+            case FILTERS -> clickFilters(player, session, slot);
+            case FILTER_OPTIONS -> clickFilterOptions(player, session, slot);
             case DETAIL -> clickDetail(player, session, slot);
             case ACTIVITY_RAW -> clickActivityRaw(player, session, slot);
             case EXACT_DETAIL -> clickExactDetail(player, session, slot);
+            case ROLLBACK_SETUP -> clickRollbackSetup(player, session, slot, event.isRightClick());
+            case UNDO_LIST -> clickUndoList(player, session, slot);
+            case UNDO_CONFIRM -> clickUndoConfirm(player, session, slot);
         }
     }
 
@@ -97,12 +102,13 @@ final class FragGuardGui implements Listener {
         if (session != null) {
             session.lookupRequests.invalidate();
             session.detailRequests.invalidate();
+            session.undoRequests.invalidate();
         }
     }
 
     private void openMain(Player player) {
         Session session = sessions.computeIfAbsent(player.getUniqueId(), ignored -> new Session());
-        session.reset(plugin.getRetentionDays(), maxRadius());
+        session.reset(plugin.getRetentionDays(), maxRadius(), maxRollbackRadius());
         session.screen = Screen.MAIN;
         open(player, session, FragGuardGuiRenderer.mainMenu());
     }
@@ -110,15 +116,13 @@ final class FragGuardGui implements Listener {
     private void clickMain(Player player, Session session, int slot) {
         switch (slot) {
             case 10 -> openSetup(player, session);
-            case 12 -> {
-                player.closeInventory();
-                player.sendMessage(color("&eUse &f/fg rollback r:<radius> t:<time>&e while rollback GUI controls are being built."));
-            }
-            case 14 -> {
+            case 12 -> openRollbackSetup(player, session);
+            case 14 -> loadUndoJobs(player, session);
+            case 16 -> {
                 player.closeInventory();
                 player.performCommand("fg status");
             }
-            case 16 -> {
+            case 20 -> {
                 player.closeInventory();
                 player.performCommand("fg help");
             }
@@ -209,7 +213,7 @@ final class FragGuardGui implements Listener {
                         openSetup(player, session);
                         return;
                     }
-                    session.results = prepared.results();
+                    session.setResults(prepared.results());
                     session.grouped = true;
                     session.page = 0;
                     session.detail = null;
@@ -231,7 +235,9 @@ final class FragGuardGui implements Listener {
     private void renderResults(Player player, Session session) {
         session.screen = Screen.RESULTS;
         FragGuardGuiRenderer.RenderedResults rendered = FragGuardGuiRenderer.results(
-                session.results.rows(), session.results.activities(), session.grouped, session.page);
+                session.filtered.rows(), session.filtered.activities(), session.grouped, session.page,
+                session.results.rows().size(), LookupFilters.summary(session.filters, session.filterCatalog),
+                session.filters.active());
         session.page = rendered.page();
         session.visibleActivities = rendered.visibleActivities();
         session.visibleRows = rendered.visibleRows();
@@ -255,10 +261,20 @@ final class FragGuardGui implements Listener {
             return;
         }
         switch (slot) {
+            case 2 -> openFilters(player, session);
             case 4 -> {
                 session.grouped = !session.grouped;
                 session.page = 0;
                 renderResults(player, session);
+            }
+            case 6 -> {
+                if (session.filters.active()) {
+                    session.filters = LookupFilters.State.empty();
+                    session.filtered = LookupFilters.apply(session.results, session.filters);
+                    session.page = 0;
+                    session.detail = null;
+                    renderResults(player, session);
+                }
             }
             case 8 -> player.closeInventory();
             case 45 -> openSetup(player, session);
@@ -273,6 +289,71 @@ final class FragGuardGui implements Listener {
                 renderResults(player, session);
             }
             default -> { }
+        }
+    }
+
+    private void openFilters(Player player, Session session) {
+        session.screen = Screen.FILTERS;
+        open(player, session, FragGuardGuiRenderer.lookupFilters(
+                session.filterCatalog.selectedLabel(session.filters, LookupFilters.Category.PLAYER),
+                session.filterCatalog.selectedLabel(session.filters, LookupFilters.Category.ACTION),
+                session.filterCatalog.selectedLabel(session.filters, LookupFilters.Category.MATERIAL),
+                session.filters.active()));
+    }
+
+    private void clickFilters(Player player, Session session, int slot) {
+        switch (slot) {
+            case 10 -> openFilterOptions(player, session, LookupFilters.Category.PLAYER, 0);
+            case 12 -> openFilterOptions(player, session, LookupFilters.Category.ACTION, 0);
+            case 14 -> openFilterOptions(player, session, LookupFilters.Category.MATERIAL, 0);
+            case 16 -> {
+                if (session.filters.active()) {
+                    session.filters = LookupFilters.State.empty();
+                    session.filtered = LookupFilters.apply(session.results, session.filters);
+                    session.page = 0;
+                    session.detail = null;
+                }
+                openFilters(player, session);
+            }
+            case 18 -> renderResults(player, session);
+            case 26 -> player.closeInventory();
+            default -> { }
+        }
+    }
+
+    private void openFilterOptions(Player player, Session session, LookupFilters.Category category, int page) {
+        session.filterCategory = category;
+        session.screen = Screen.FILTER_OPTIONS;
+        FragGuardGuiRenderer.RenderedFilterOptions rendered = FragGuardGuiRenderer.filterOptions(
+                category,
+                session.filterCatalog.options(category),
+                session.filters.selectedKey(category),
+                session.results.rows().size(),
+                page);
+        session.filterPage = rendered.page();
+        session.visibleFilterOptions = rendered.visibleOptions();
+        open(player, session, rendered.inventory());
+    }
+
+    private void clickFilterOptions(Player player, Session session, int slot) {
+        if (slot >= 0 && slot < FragGuardGuiRenderer.FILTER_OPTIONS_PER_PAGE) {
+            if (slot < session.visibleFilterOptions.size() && session.filterCategory != null) {
+                LookupFilters.Option option = session.visibleFilterOptions.get(slot);
+                session.filters = session.filters.with(session.filterCategory, option.key());
+                session.filtered = LookupFilters.apply(session.results, session.filters);
+                session.page = 0;
+                session.detail = null;
+                session.exactEvent = null;
+                openFilters(player, session);
+            }
+            return;
+        }
+        if (slot == 45) {
+            openFilters(player, session);
+        } else if (slot == 48 && session.filterPage > 0) {
+            openFilterOptions(player, session, session.filterCategory, session.filterPage - 1);
+        } else if (slot == 50) {
+            openFilterOptions(player, session, session.filterCategory, session.filterPage + 1);
         }
     }
 
@@ -408,19 +489,162 @@ final class FragGuardGui implements Listener {
         player.sendMessage(color("&cCould not load exact event details. Check console for details."));
     }
 
+    private void openRollbackSetup(Player player, Session session) {
+        session.screen = Screen.ROLLBACK_SETUP;
+        open(player, session, FragGuardGuiRenderer.rollbackSetup(
+                session.rollbackRadius,
+                times().get(session.rollbackTimeIndex).label(),
+                session.rollbackForce,
+                activeRollbackToken(player) != null));
+    }
+
+    private void clickRollbackSetup(Player player, Session session, int slot, boolean rightClick) {
+        switch (slot) {
+            case 10 -> {
+                cycleRollbackRadius(session, rightClick ? -1 : 1);
+                openRollbackSetup(player, session);
+            }
+            case 12 -> {
+                session.rollbackTimeIndex = Math.floorMod(
+                        session.rollbackTimeIndex + (rightClick ? -1 : 1), times().size());
+                openRollbackSetup(player, session);
+            }
+            case 14 -> {
+                session.rollbackForce = !session.rollbackForce;
+                openRollbackSetup(player, session);
+            }
+            case 16 -> {
+                TimePreset preset = times().get(session.rollbackTimeIndex);
+                String command = "fg rollback r:" + session.rollbackRadius + " t:" + preset.commandToken()
+                        + (session.rollbackForce ? " force" : "");
+                player.closeInventory();
+                player.performCommand(command);
+            }
+            case 18 -> openMain(player);
+            case 20 -> {
+                String token = activeRollbackToken(player);
+                if (token == null) {
+                    player.sendMessage(color("&cYou do not have an active rollback preview to confirm."));
+                    openRollbackSetup(player, session);
+                    return;
+                }
+                player.closeInventory();
+                player.performCommand("fg rollback confirm " + token);
+            }
+            case 26 -> player.closeInventory();
+            default -> { }
+        }
+    }
+
+    private String activeRollbackToken(Player player) {
+        var command = plugin.getCommand("fg");
+        if (command == null) {
+            return null;
+        }
+        try {
+            List<String> completions = command.tabComplete(
+                    player, "fg", new String[]{"rollback", "confirm", ""});
+            return completions == null || completions.isEmpty() ? null : completions.getFirst();
+        } catch (RuntimeException exception) {
+            plugin.getLogger().log(Level.FINE, "Could not resolve active rollback preview for GUI", exception);
+            return null;
+        }
+    }
+
+    private void loadUndoJobs(Player player, Session session) {
+        long requestGeneration = session.undoRequests.begin();
+        UUID playerId = player.getUniqueId();
+        player.closeInventory();
+        player.sendMessage(color("&7Loading undoable FragGuard rollback jobs..."));
+        guiRollbackStore.loadUndoableJobsAsync()
+                .whenComplete((jobs, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(playerId) != session
+                            || !session.undoRequests.isCurrent(requestGeneration)) {
+                        return;
+                    }
+                    if (throwable != null) {
+                        plugin.getLogger().log(Level.WARNING, "FragGuard GUI undo job lookup failed", root(throwable));
+                        player.sendMessage(color("&cCould not load rollback jobs for undo. Check console for details."));
+                        openMain(player);
+                        return;
+                    }
+                    session.undoJobs = List.copyOf(jobs);
+                    session.undoPage = 0;
+                    session.selectedUndoJob = null;
+                    renderUndoJobs(player, session);
+                }));
+    }
+
+    private void renderUndoJobs(Player player, Session session) {
+        session.screen = Screen.UNDO_LIST;
+        FragGuardGuiRenderer.RenderedUndoJobs rendered =
+                FragGuardGuiRenderer.undoJobs(session.undoJobs, session.undoPage);
+        session.undoPage = rendered.page();
+        session.visibleUndoJobs = rendered.visibleJobs();
+        open(player, session, rendered.inventory());
+    }
+
+    private void clickUndoList(Player player, Session session, int slot) {
+        if (slot >= 9 && slot < 45) {
+            int index = slot - 9;
+            if (index < session.visibleUndoJobs.size()) {
+                session.selectedUndoJob = session.visibleUndoJobs.get(index);
+                openUndoConfirmation(player, session);
+            }
+            return;
+        }
+        if (slot == 8) {
+            player.closeInventory();
+        } else if (slot == 45) {
+            openMain(player);
+        } else if (slot == 48 && session.undoPage > 0) {
+            session.undoPage--;
+            renderUndoJobs(player, session);
+        } else if (slot == 50) {
+            session.undoPage++;
+            renderUndoJobs(player, session);
+        }
+    }
+
+    private void openUndoConfirmation(Player player, Session session) {
+        if (session.selectedUndoJob == null) {
+            renderUndoJobs(player, session);
+            return;
+        }
+        session.screen = Screen.UNDO_CONFIRM;
+        open(player, session, FragGuardGuiRenderer.undoConfirmation(session.selectedUndoJob));
+    }
+
+    private void clickUndoConfirm(Player player, Session session, int slot) {
+        if (slot == 14 && session.selectedUndoJob != null) {
+            long jobId = session.selectedUndoJob.id();
+            player.closeInventory();
+            player.performCommand("fg undo " + jobId);
+        } else if (slot == 18) {
+            renderUndoJobs(player, session);
+        } else if (slot == 26) {
+            player.closeInventory();
+        }
+    }
+
     private void open(Player player, Session session, Inventory inventory) {
         session.inventory = inventory;
         player.openInventory(inventory);
     }
 
     private void cycleRadius(Session session, int delta) {
-        List<Integer> radii = radii();
+        List<Integer> radii = radii(maxRadius());
         int index = Math.max(0, radii.indexOf(session.radius));
         session.radius = radii.get(Math.floorMod(index + delta, radii.size()));
     }
 
-    private List<Integer> radii() {
-        int maximum = maxRadius();
+    private void cycleRollbackRadius(Session session, int delta) {
+        List<Integer> radii = radii(maxRollbackRadius());
+        int index = Math.max(0, radii.indexOf(session.rollbackRadius));
+        session.rollbackRadius = radii.get(Math.floorMod(index + delta, radii.size()));
+    }
+
+    private List<Integer> radii(int maximum) {
         List<Integer> values = new ArrayList<>();
         for (int value : new int[]{5, 10, 15, 30, 50, 75, 100, 150}) {
             if (value <= maximum) {
@@ -436,23 +660,28 @@ final class FragGuardGui implements Listener {
     private List<TimePreset> times() {
         long maximum = plugin.getRetentionDays() * 86_400_000L;
         List<TimePreset> values = new ArrayList<>(List.of(
-                new TimePreset("15 minutes", 900_000L),
-                new TimePreset("1 hour", 3_600_000L),
-                new TimePreset("6 hours", 21_600_000L),
-                new TimePreset("12 hours", 43_200_000L),
-                new TimePreset("1 day", 86_400_000L),
-                new TimePreset("2 days", 172_800_000L),
-                new TimePreset("7 days", 604_800_000L),
-                new TimePreset("30 days", 2_592_000_000L)));
+                new TimePreset("15 minutes", 900_000L, "15m"),
+                new TimePreset("1 hour", 3_600_000L, "1h"),
+                new TimePreset("6 hours", 21_600_000L, "6h"),
+                new TimePreset("12 hours", 43_200_000L, "12h"),
+                new TimePreset("1 day", 86_400_000L, "1d"),
+                new TimePreset("2 days", 172_800_000L, "2d"),
+                new TimePreset("7 days", 604_800_000L, "7d"),
+                new TimePreset("30 days", 2_592_000_000L, "30d")));
         values.removeIf(value -> value.millis() > maximum);
         if (values.isEmpty() || values.get(values.size() - 1).millis() < maximum) {
-            values.add(new TimePreset(plugin.getRetentionDays() + " days", maximum));
+            values.add(new TimePreset(plugin.getRetentionDays() + " days", maximum,
+                    plugin.getRetentionDays() + "d"));
         }
         return values;
     }
 
     private int maxRadius() {
         return Math.max(1, plugin.getConfig().getInt("max-lookup-radius", 150));
+    }
+
+    private int maxRollbackRadius() {
+        return Math.max(1, plugin.getConfig().getInt("max-rollback-radius", 100));
     }
 
     private String color(String text) {
@@ -471,12 +700,17 @@ final class FragGuardGui implements Listener {
         MAIN,
         SETUP,
         RESULTS,
+        FILTERS,
+        FILTER_OPTIONS,
         DETAIL,
         ACTIVITY_RAW,
-        EXACT_DETAIL
+        EXACT_DETAIL,
+        ROLLBACK_SETUP,
+        UNDO_LIST,
+        UNDO_CONFIRM
     }
 
-    private record TimePreset(String label, long millis) {
+    private record TimePreset(String label, long millis, String commandToken) {
     }
 
     private record PreparedLookup(int totalRows, LookupResultSnapshot results) {
@@ -493,6 +727,7 @@ final class FragGuardGui implements Listener {
     private static final class Session {
         private final LookupRequestGeneration lookupRequests = new LookupRequestGeneration();
         private final LookupRequestGeneration detailRequests = new LookupRequestGeneration();
+        private final LookupRequestGeneration undoRequests = new LookupRequestGeneration();
         private Screen screen;
         private Screen exactReturnScreen = Screen.RESULTS;
         private Inventory inventory;
@@ -502,25 +737,62 @@ final class FragGuardGui implements Listener {
         private int page;
         private int rawPage;
         private LookupResultSnapshot results = LookupResultSnapshot.empty();
+        private LookupFilters.Catalog filterCatalog = LookupFilters.Catalog.empty();
+        private LookupFilters.State filters = LookupFilters.State.empty();
+        private LookupFilters.View filtered = LookupFilters.View.empty();
+        private LookupFilters.Category filterCategory;
+        private int filterPage;
+        private List<LookupFilters.Option> visibleFilterOptions = List.of();
         private List<LookupActivity> visibleActivities = List.of();
         private List<LookupRow> visibleRows = List.of();
         private LookupActivity detail;
         private PreparedExactEvent exactEvent;
+        private int rollbackRadius;
+        private int rollbackTimeIndex;
+        private boolean rollbackForce;
+        private List<GuiRollbackJob> undoJobs = List.of();
+        private List<GuiRollbackJob> visibleUndoJobs = List.of();
+        private int undoPage;
+        private GuiRollbackJob selectedUndoJob;
 
-        private void reset(int retentionDays, int maxRadius) {
+        private void setResults(LookupResultSnapshot snapshot) {
+            results = snapshot;
+            filterCatalog = LookupFilters.catalog(snapshot.rows());
+            filters = LookupFilters.State.empty();
+            filtered = LookupFilters.apply(snapshot, filters);
+            filterCategory = null;
+            filterPage = 0;
+            visibleFilterOptions = List.of();
+        }
+
+        private void reset(int retentionDays, int maxRadius, int maxRollbackRadius) {
             lookupRequests.invalidate();
             detailRequests.invalidate();
+            undoRequests.invalidate();
             radius = Math.min(15, maxRadius);
             timeIndex = retentionDays >= 1 ? 4 : 0;
             grouped = true;
             page = 0;
             rawPage = 0;
             results = LookupResultSnapshot.empty();
+            filterCatalog = LookupFilters.Catalog.empty();
+            filters = LookupFilters.State.empty();
+            filtered = LookupFilters.View.empty();
+            filterCategory = null;
+            filterPage = 0;
+            visibleFilterOptions = List.of();
             visibleActivities = List.of();
             visibleRows = List.of();
             detail = null;
             exactEvent = null;
             exactReturnScreen = Screen.RESULTS;
+            rollbackRadius = Math.min(15, maxRollbackRadius);
+            rollbackTimeIndex = retentionDays >= 1 ? 4 : 0;
+            rollbackForce = false;
+            undoJobs = List.of();
+            visibleUndoJobs = List.of();
+            undoPage = 0;
+            selectedUndoJob = null;
         }
     }
 }
