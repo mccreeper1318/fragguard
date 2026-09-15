@@ -6,9 +6,9 @@
 
 - Added the first Minecraft-native FragGuard GUI: typing `/fg` now opens an operator menu while all existing subcommands continue to work normally.
 - Added GUI lookup setup with radius and time presets, condensed activity results, clickable result paging, activity detail screens, and exact raw-event drill-downs.
-- Added structured Player, Action, and Material lookup filters generated from the exact returned lookup data, with no free-text filter parsing and no changes to stored history.
+- Added structured Player, Action, and Material lookup filters generated from the selected lookup window, with no free-text filter parsing and no changes to stored history.
 - Added presentation-only activity grouping that condenses nearby same-actor/same-action/same-material changes without deleting or rewriting any stored history rows.
-- Added GUI lookup safety limits that refuse to present a capped query as complete and instead require the operator to narrow the radius or time window.
+- Added bounded database-backed GUI paging and streamed activity summaries so large history windows remain browseable without retaining the complete exact result set in one GUI session.
 - Added configurable activity grouping thresholds and regression tests covering scaffolding-style chains, actor/action boundaries, time/distance boundaries, and preservation of every source event.
 - Added GUI rollback controls with radius/time presets, conflict-protected or force mode selection, rollback preview launch, active-preview confirmation, and a paged browser with confirmation screens for undoable rollback jobs.
 

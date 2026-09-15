@@ -157,7 +157,18 @@ final class FragGuardGui implements Listener {
         long requestGeneration = session.lookupRequests.begin();
         session.detailRequests.invalidate();
         UUID playerId = player.getUniqueId();
-        int rowLimit = plugin.getGuiLookupMaxRows();
+        TimePreset preset = times().get(session.timeIndex);
+        long snapshotTimestamp = System.currentTimeMillis();
+        long cutoff = snapshotTimestamp - preset.millis();
+        int centerX = player.getLocation().getBlockX();
+        int centerZ = player.getLocation().getBlockZ();
+        int radius = session.radius;
+        String world = player.getWorld().getName();
+        String worldUuid = player.getWorld().getUID().toString();
+        GuiLookupQuery query = new GuiLookupQuery(
+                worldUuid, world, centerX, centerZ, radius,
+                cutoff, snapshotTimestamp, LookupFilters.State.empty());
+
         long maxGapMillis = Math.max(0L,
                 plugin.getConfig().getLong("gui-activity-max-gap-millis", 2500L));
         int maxDistance = Math.max(0,
@@ -167,37 +178,16 @@ final class FragGuardGui implements Listener {
                         LookupActivityGrouper.DEFAULT_MAX_DURATION_MILLIS));
         int maxSpan = Math.max(0,
                 plugin.getConfig().getInt("gui-activity-max-span", LookupActivityGrouper.DEFAULT_MAX_SPAN));
-        TimePreset preset = times().get(session.timeIndex);
-        long snapshotTimestamp = System.currentTimeMillis();
-        long cutoff = snapshotTimestamp - preset.millis();
-        int centerX = player.getLocation().getBlockX();
-        int centerZ = player.getLocation().getBlockZ();
-        int radius = session.radius;
-        String world = player.getWorld().getName();
-        String worldUuid = player.getWorld().getUID().toString();
 
         player.closeInventory();
         player.sendMessage(color("&7Loading FragGuard lookup..."));
 
-        // The zero-sized page is intentional: Database still executes its normal queued-write barrier and
-        // exact count, while SQLite LIMIT 0 prevents the legacy lookup row query from materializing any
-        // block-entity BLOBs. Only an accepted, bounded window is then read through GuiLookupStore.
+        // Keep the main Database read barrier so every accepted gameplay write submitted before this
+        // lookup is visible before the read-only GUI connection takes its fixed snapshot boundary.
+        // LIMIT 0 prevents the legacy path from materializing history rows or block-entity payloads.
         database.lookupSinceAsync(world, centerX, centerZ, radius, 1, 0, cutoff)
-                .thenCompose(page -> {
-                    if (page.totalRows() > rowLimit) {
-                        return CompletableFuture.completedFuture(new PreparedLookup(page.totalRows(), null));
-                    }
-                    if (page.totalRows() == 0) {
-                        return CompletableFuture.completedFuture(
-                                new PreparedLookup(0, LookupResultSnapshot.empty()));
-                    }
-                    return guiLookupStore.selectRowsAsync(
-                                    worldUuid, world, centerX, centerZ, radius,
-                                    cutoff, snapshotTimestamp, rowLimit)
-                            .thenApply(rows -> new PreparedLookup(page.totalRows(), LookupResultSnapshot.fromRows(
-                                    rows, maxGapMillis, maxDistance, maxDurationMillis, maxSpan)));
-                })
-                .whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                .thenCompose(ignored -> guiLookupStore.prepareLookupAsync(query))
+                .whenComplete((overview, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
                             || !session.lookupRequests.isCurrent(requestGeneration)) {
                         return;
@@ -207,19 +197,69 @@ final class FragGuardGui implements Listener {
                         openSetup(player, session);
                         return;
                     }
-                    if (prepared.totalRows() > rowLimit) {
-                        player.sendMessage(color("&cThat window contains more than " + rowLimit + " relevant records."));
-                        player.sendMessage(color("&7FragGuard will not show a partial GUI result as complete. Narrow the radius or time."));
-                        openSetup(player, session);
-                        return;
-                    }
-                    session.setResults(prepared.results());
-                    session.grouped = true;
-                    session.page = 0;
-                    session.detail = null;
-                    session.exactEvent = null;
-                    renderResults(player, session);
+                    session.initializeLookup(
+                            query, overview, maxGapMillis, maxDistance, maxDurationMillis, maxSpan);
+                    loadResultsPage(player, session, 0, false);
                 }));
+    }
+
+    private void loadResultsPage(Player player, Session session, int targetPage, boolean recount) {
+        if (session.baseQuery == null || targetPage < 0 || targetPage >= session.resultPageStarts.size()) {
+            return;
+        }
+
+        long requestGeneration = session.lookupRequests.begin();
+        UUID playerId = player.getUniqueId();
+        GuiLookupQuery query = session.baseQuery.withFilters(session.filters);
+        GuiLookupCursor start = session.resultPageStarts.get(targetPage);
+        boolean grouped = session.grouped;
+        long existingCount = session.filteredTotalRows;
+
+        player.closeInventory();
+        player.sendMessage(color("&7Loading FragGuard history page..."));
+
+        CompletableFuture<Long> countFuture = recount
+                ? guiLookupStore.countRowsAsync(query)
+                : CompletableFuture.completedFuture(existingCount);
+        countFuture.thenCompose(count -> {
+            if (grouped) {
+                return guiLookupStore.selectActivityPageAsync(
+                                query, start, FragGuardGuiRenderer.RESULTS_PER_PAGE,
+                                plugin.getGuiLookupFetchSize(),
+                                session.maxGapMillis, session.maxDistance,
+                                session.maxDurationMillis, session.maxSpan)
+                        .thenApply(page -> new PreparedResultsPage(count, null, page));
+            }
+            return guiLookupStore.selectRawPageAsync(
+                            query, start, FragGuardGuiRenderer.RESULTS_PER_PAGE)
+                    .thenApply(page -> new PreparedResultsPage(count, page, null));
+        }).whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline() || sessions.get(playerId) != session
+                    || !session.lookupRequests.isCurrent(requestGeneration)) {
+                return;
+            }
+            if (throwable != null) {
+                reportLookupFailure(player, throwable);
+                if (session.baseQuery == null) {
+                    openSetup(player, session);
+                } else {
+                    renderResults(player, session);
+                }
+                return;
+            }
+
+            session.filteredTotalRows = prepared.totalRows();
+            session.page = targetPage;
+            session.visibleRows = prepared.rawPage() == null
+                    ? List.of() : prepared.rawPage().rows();
+            session.visibleActivities = prepared.activityPage() == null
+                    ? List.of() : prepared.activityPage().activities();
+            GuiLookupCursor next = prepared.rawPage() != null
+                    ? prepared.rawPage().nextCursor()
+                    : prepared.activityPage().nextCursor();
+            session.rememberResultNext(targetPage, next);
+            renderResults(player, session);
+        }));
     }
 
     private void reportLookupFailure(Player player, Throwable throwable) {
@@ -233,15 +273,22 @@ final class FragGuardGui implements Listener {
     }
 
     private void renderResults(Player player, Session session) {
+        if (session.baseQuery == null) {
+            openSetup(player, session);
+            return;
+        }
         session.screen = Screen.RESULTS;
-        FragGuardGuiRenderer.RenderedResults rendered = FragGuardGuiRenderer.results(
-                session.filtered.rows(), session.filtered.activities(), session.grouped, session.page,
-                session.results.rows().size(), LookupFilters.summary(session.filters, session.filterCatalog),
-                session.filters.active());
-        session.page = rendered.page();
-        session.visibleActivities = rendered.visibleActivities();
-        session.visibleRows = rendered.visibleRows();
-        open(player, session, rendered.inventory());
+        open(player, session, FragGuardPagedLookupRenderer.results(
+                session.visibleRows,
+                session.visibleActivities,
+                session.grouped,
+                session.page,
+                session.filteredTotalRows,
+                session.totalRows,
+                LookupFilters.summary(session.filters, session.filterCatalog),
+                session.filters.active(),
+                session.page > 0,
+                session.resultHasNext));
     }
 
     private void clickResults(Player player, Session session, int slot) {
@@ -249,6 +296,7 @@ final class FragGuardGui implements Listener {
             int index = slot - 9;
             if (index < session.visibleActivities.size()) {
                 session.detail = session.visibleActivities.get(index);
+                session.resetActivityRawPaging();
                 openDetail(player, session);
             }
             return;
@@ -264,29 +312,30 @@ final class FragGuardGui implements Listener {
             case 2 -> openFilters(player, session);
             case 4 -> {
                 session.grouped = !session.grouped;
-                session.page = 0;
-                renderResults(player, session);
+                session.resetResultPaging();
+                session.detail = null;
+                loadResultsPage(player, session, 0, false);
             }
             case 6 -> {
                 if (session.filters.active()) {
                     session.filters = LookupFilters.State.empty();
-                    session.filtered = LookupFilters.apply(session.results, session.filters);
-                    session.page = 0;
+                    session.filteredTotalRows = session.totalRows;
+                    session.resetResultPaging();
                     session.detail = null;
-                    renderResults(player, session);
+                    loadResultsPage(player, session, 0, false);
                 }
             }
             case 8 -> player.closeInventory();
             case 45 -> openSetup(player, session);
             case 48 -> {
                 if (session.page > 0) {
-                    session.page--;
+                    loadResultsPage(player, session, session.page - 1, false);
                 }
-                renderResults(player, session);
             }
             case 50 -> {
-                session.page++;
-                renderResults(player, session);
+                if (session.resultHasNext && session.page + 1 < session.resultPageStarts.size()) {
+                    loadResultsPage(player, session, session.page + 1, false);
+                }
             }
             default -> { }
         }
@@ -309,13 +358,14 @@ final class FragGuardGui implements Listener {
             case 16 -> {
                 if (session.filters.active()) {
                     session.filters = LookupFilters.State.empty();
-                    session.filtered = LookupFilters.apply(session.results, session.filters);
-                    session.page = 0;
+                    session.filteredTotalRows = session.totalRows;
+                    session.resetResultPaging();
                     session.detail = null;
+                    session.exactEvent = null;
                 }
                 openFilters(player, session);
             }
-            case 18 -> renderResults(player, session);
+            case 18 -> loadResultsPage(player, session, 0, false);
             case 26 -> player.closeInventory();
             default -> { }
         }
@@ -328,7 +378,7 @@ final class FragGuardGui implements Listener {
                 category,
                 session.filterCatalog.options(category),
                 session.filters.selectedKey(category),
-                session.results.rows().size(),
+                safeUiCount(session.totalRows),
                 page);
         session.filterPage = rendered.page();
         session.visibleFilterOptions = rendered.visibleOptions();
@@ -340,11 +390,10 @@ final class FragGuardGui implements Listener {
             if (slot < session.visibleFilterOptions.size() && session.filterCategory != null) {
                 LookupFilters.Option option = session.visibleFilterOptions.get(slot);
                 session.filters = session.filters.with(session.filterCategory, option.key());
-                session.filtered = LookupFilters.apply(session.results, session.filters);
-                session.page = 0;
+                session.resetResultPaging();
                 session.detail = null;
                 session.exactEvent = null;
-                openFilters(player, session);
+                refreshFilterCount(player, session);
             }
             return;
         }
@@ -357,22 +406,88 @@ final class FragGuardGui implements Listener {
         }
     }
 
+    private void refreshFilterCount(Player player, Session session) {
+        if (session.baseQuery == null) {
+            openSetup(player, session);
+            return;
+        }
+        if (!session.filters.active()) {
+            session.filteredTotalRows = session.totalRows;
+            openFilters(player, session);
+            return;
+        }
+
+        long requestGeneration = session.lookupRequests.begin();
+        UUID playerId = player.getUniqueId();
+        GuiLookupQuery query = session.baseQuery.withFilters(session.filters);
+        player.closeInventory();
+        player.sendMessage(color("&7Applying FragGuard lookup filters..."));
+        guiLookupStore.countRowsAsync(query)
+                .whenComplete((count, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(playerId) != session
+                            || !session.lookupRequests.isCurrent(requestGeneration)) {
+                        return;
+                    }
+                    if (throwable != null) {
+                        reportLookupFailure(player, throwable);
+                        openFilters(player, session);
+                        return;
+                    }
+                    session.filteredTotalRows = count;
+                    openFilters(player, session);
+                }));
+    }
+
     private void openDetail(Player player, Session session) {
         if (session.detail == null) {
             renderResults(player, session);
             return;
         }
         session.screen = Screen.DETAIL;
-        open(player, session, FragGuardGuiRenderer.activityDetail(session.detail));
+        open(player, session, FragGuardPagedLookupRenderer.activityDetail(session.detail));
     }
 
     private void clickDetail(Player player, Session session, int slot) {
         if (slot == 18) {
             renderResults(player, session);
         } else if (slot == 22) {
-            session.rawPage = 0;
-            renderActivityRaw(player, session);
+            session.resetActivityRawPaging();
+            loadActivityRawPage(player, session, 0);
         }
+    }
+
+    private void loadActivityRawPage(Player player, Session session, int targetPage) {
+        if (session.detail == null || session.baseQuery == null
+                || targetPage < 0 || targetPage >= session.activityRawPageStarts.size()) {
+            renderResults(player, session);
+            return;
+        }
+
+        long requestGeneration = session.lookupRequests.begin();
+        UUID playerId = player.getUniqueId();
+        GuiLookupCursor start = session.activityRawPageStarts.get(targetPage);
+        GuiLookupQuery query = session.baseQuery.withFilters(session.filters);
+        GuiActivitySummary detail = session.detail;
+        player.closeInventory();
+        player.sendMessage(color("&7Loading exact activity events..."));
+
+        guiLookupStore.selectActivityRowsPageAsync(query, detail, start, 45)
+                .whenComplete((page, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(playerId) != session
+                            || !session.lookupRequests.isCurrent(requestGeneration)
+                            || session.detail != detail) {
+                        return;
+                    }
+                    if (throwable != null) {
+                        reportLookupFailure(player, throwable);
+                        openDetail(player, session);
+                        return;
+                    }
+                    session.rawPage = targetPage;
+                    session.visibleRows = page.rows();
+                    session.rememberActivityRawNext(targetPage, page.nextCursor());
+                    renderActivityRaw(player, session);
+                }));
     }
 
     private void renderActivityRaw(Player player, Session session) {
@@ -381,10 +496,12 @@ final class FragGuardGui implements Listener {
             return;
         }
         session.screen = Screen.ACTIVITY_RAW;
-        FragGuardGuiRenderer.RenderedRaw rendered = FragGuardGuiRenderer.activityRaw(session.detail, session.rawPage);
-        session.rawPage = rendered.page();
-        session.visibleRows = rendered.visibleRows();
-        open(player, session, rendered.inventory());
+        open(player, session, FragGuardPagedLookupRenderer.activityRaw(
+                session.visibleRows,
+                session.rawPage,
+                session.detail.eventCount(),
+                session.rawPage > 0,
+                session.activityRawHasNext));
     }
 
     private void clickActivityRaw(Player player, Session session, int slot) {
@@ -397,11 +514,10 @@ final class FragGuardGui implements Listener {
         if (slot == 45) {
             openDetail(player, session);
         } else if (slot == 48 && session.rawPage > 0) {
-            session.rawPage--;
-            renderActivityRaw(player, session);
-        } else if (slot == 50) {
-            session.rawPage++;
-            renderActivityRaw(player, session);
+            loadActivityRawPage(player, session, session.rawPage - 1);
+        } else if (slot == 50 && session.activityRawHasNext
+                && session.rawPage + 1 < session.activityRawPageStarts.size()) {
+            loadActivityRawPage(player, session, session.rawPage + 1);
         }
     }
 
@@ -684,6 +800,10 @@ final class FragGuardGui implements Listener {
         return Math.max(1, plugin.getConfig().getInt("max-rollback-radius", 100));
     }
 
+    private int safeUiCount(long count) {
+        return count >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, count);
+    }
+
     private String color(String text) {
         return ChatColor.translateAlternateColorCodes('&', text);
     }
@@ -713,7 +833,11 @@ final class FragGuardGui implements Listener {
     private record TimePreset(String label, long millis, String commandToken) {
     }
 
-    private record PreparedLookup(int totalRows, LookupResultSnapshot results) {
+    private record PreparedResultsPage(
+            long totalRows,
+            GuiRawPage rawPage,
+            GuiActivityPage activityPage
+    ) {
     }
 
     private record PreparedExactEvent(
@@ -736,16 +860,25 @@ final class FragGuardGui implements Listener {
         private boolean grouped;
         private int page;
         private int rawPage;
-        private LookupResultSnapshot results = LookupResultSnapshot.empty();
+        private GuiLookupQuery baseQuery;
+        private long totalRows;
+        private long filteredTotalRows;
+        private long maxGapMillis;
+        private int maxDistance;
+        private long maxDurationMillis;
+        private int maxSpan;
         private LookupFilters.Catalog filterCatalog = LookupFilters.Catalog.empty();
         private LookupFilters.State filters = LookupFilters.State.empty();
-        private LookupFilters.View filtered = LookupFilters.View.empty();
         private LookupFilters.Category filterCategory;
         private int filterPage;
         private List<LookupFilters.Option> visibleFilterOptions = List.of();
-        private List<LookupActivity> visibleActivities = List.of();
+        private final List<GuiLookupCursor> resultPageStarts = new ArrayList<>();
+        private boolean resultHasNext;
+        private List<GuiActivitySummary> visibleActivities = List.of();
         private List<LookupRow> visibleRows = List.of();
-        private LookupActivity detail;
+        private GuiActivitySummary detail;
+        private final List<GuiLookupCursor> activityRawPageStarts = new ArrayList<>();
+        private boolean activityRawHasNext;
         private PreparedExactEvent exactEvent;
         private int rollbackRadius;
         private int rollbackTimeIndex;
@@ -755,14 +888,71 @@ final class FragGuardGui implements Listener {
         private int undoPage;
         private GuiRollbackJob selectedUndoJob;
 
-        private void setResults(LookupResultSnapshot snapshot) {
-            results = snapshot;
-            filterCatalog = LookupFilters.catalog(snapshot.rows());
+        private void initializeLookup(
+                GuiLookupQuery query,
+                GuiLookupOverview overview,
+                long activityMaxGapMillis,
+                int activityMaxDistance,
+                long activityMaxDurationMillis,
+                int activityMaxSpan
+        ) {
+            baseQuery = query.withFilters(LookupFilters.State.empty()).withMaxRowId(overview.maxRowId());
+            totalRows = overview.totalRows();
+            filteredTotalRows = totalRows;
+            maxGapMillis = activityMaxGapMillis;
+            maxDistance = activityMaxDistance;
+            maxDurationMillis = activityMaxDurationMillis;
+            maxSpan = activityMaxSpan;
+            filterCatalog = overview.catalog();
             filters = LookupFilters.State.empty();
-            filtered = LookupFilters.apply(snapshot, filters);
             filterCategory = null;
             filterPage = 0;
             visibleFilterOptions = List.of();
+            grouped = true;
+            detail = null;
+            exactEvent = null;
+            resetResultPaging();
+            resetActivityRawPaging();
+        }
+
+        private void resetResultPaging() {
+            page = 0;
+            resultPageStarts.clear();
+            resultPageStarts.add(null);
+            resultHasNext = false;
+            visibleActivities = List.of();
+            visibleRows = List.of();
+        }
+
+        private void rememberResultNext(int currentPage, GuiLookupCursor next) {
+            while (resultPageStarts.size() > currentPage + 1) {
+                resultPageStarts.remove(resultPageStarts.size() - 1);
+            }
+            if (next != null) {
+                resultPageStarts.add(next);
+                resultHasNext = true;
+            } else {
+                resultHasNext = false;
+            }
+        }
+
+        private void resetActivityRawPaging() {
+            rawPage = 0;
+            activityRawPageStarts.clear();
+            activityRawPageStarts.add(null);
+            activityRawHasNext = false;
+        }
+
+        private void rememberActivityRawNext(int currentPage, GuiLookupCursor next) {
+            while (activityRawPageStarts.size() > currentPage + 1) {
+                activityRawPageStarts.remove(activityRawPageStarts.size() - 1);
+            }
+            if (next != null) {
+                activityRawPageStarts.add(next);
+                activityRawHasNext = true;
+            } else {
+                activityRawHasNext = false;
+            }
         }
 
         private void reset(int retentionDays, int maxRadius, int maxRollbackRadius) {
@@ -774,16 +964,25 @@ final class FragGuardGui implements Listener {
             grouped = true;
             page = 0;
             rawPage = 0;
-            results = LookupResultSnapshot.empty();
+            baseQuery = null;
+            totalRows = 0L;
+            filteredTotalRows = 0L;
+            maxGapMillis = 0L;
+            maxDistance = 0;
+            maxDurationMillis = 0L;
+            maxSpan = 0;
             filterCatalog = LookupFilters.Catalog.empty();
             filters = LookupFilters.State.empty();
-            filtered = LookupFilters.View.empty();
             filterCategory = null;
             filterPage = 0;
             visibleFilterOptions = List.of();
+            resultPageStarts.clear();
+            resultHasNext = false;
             visibleActivities = List.of();
             visibleRows = List.of();
             detail = null;
+            activityRawPageStarts.clear();
+            activityRawHasNext = false;
             exactEvent = null;
             exactReturnScreen = Screen.RESULTS;
             rollbackRadius = Math.min(15, maxRollbackRadius);

@@ -12,21 +12,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 public final class FragGuardPlugin extends JavaPlugin {
-    static final int DEFAULT_GUI_LOOKUP_MAX_ROWS = 5000;
+    static final int DEFAULT_GUI_LOOKUP_FETCH_SIZE = 1000;
 
     private Database database;
     private boolean storageWarningActive;
     private long lastStorageWarningAt;
-    private int guiLookupMaxRows = DEFAULT_GUI_LOOKUP_MAX_ROWS;
+    private int guiLookupFetchSize = DEFAULT_GUI_LOOKUP_FETCH_SIZE;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        int configuredGuiLookupMaxRows = getConfig().getInt("gui-lookup-max-rows", DEFAULT_GUI_LOOKUP_MAX_ROWS);
-        guiLookupMaxRows = resolveGuiLookupMaxRows(configuredGuiLookupMaxRows);
-        if (configuredGuiLookupMaxRows <= 0) {
-            getLogger().warning("Invalid gui-lookup-max-rows value " + configuredGuiLookupMaxRows
-                    + "; the value must be at least 1. Using the default of " + DEFAULT_GUI_LOOKUP_MAX_ROWS + ".");
+        int configuredGuiLookupFetchSize = getConfig().getInt(
+                "gui-lookup-fetch-size", DEFAULT_GUI_LOOKUP_FETCH_SIZE);
+        guiLookupFetchSize = resolveGuiLookupFetchSize(configuredGuiLookupFetchSize);
+        if (configuredGuiLookupFetchSize <= 0) {
+            getLogger().warning("Invalid gui-lookup-fetch-size value " + configuredGuiLookupFetchSize
+                    + "; the value must be at least 1. Using the default of "
+                    + DEFAULT_GUI_LOOKUP_FETCH_SIZE + ".");
         }
         database = new Database(this);
         try {
@@ -79,12 +81,12 @@ public final class FragGuardPlugin extends JavaPlugin {
         return Math.max(1, getConfig().getInt("rollback-job-retention-days", getRetentionDays()));
     }
 
-    int getGuiLookupMaxRows() {
-        return guiLookupMaxRows;
+    int getGuiLookupFetchSize() {
+        return guiLookupFetchSize;
     }
 
-    static int resolveGuiLookupMaxRows(int configuredValue) {
-        return configuredValue > 0 ? configuredValue : DEFAULT_GUI_LOOKUP_MAX_ROWS;
+    static int resolveGuiLookupFetchSize(int configuredValue) {
+        return configuredValue > 0 ? configuredValue : DEFAULT_GUI_LOOKUP_FETCH_SIZE;
     }
 
     private void scheduleCleanup() {
