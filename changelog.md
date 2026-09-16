@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Fixed #69 by binding asynchronous rollback previews to the world captured when the query starts, so world changes during the query cannot mislabel preview, confirmation, overlap, or rollback-job metadata.
 - Fixed same-tick coalescing merging different actors and actions by only combining consecutive, state-contiguous changes with matching attribution and action.
 - Fixed timed-out queries falsely marking storage unhealthy by separating expected timeout and SQLite interrupt results from genuine database failures.
 - Fixed redstone-primed TNT removal bypassing block history by logging `TNTPrimeEvent` transitions with specific cause attribution and suppressing duplicate generic history.

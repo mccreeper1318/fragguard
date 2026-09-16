@@ -229,7 +229,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 reportRollbackQueryFailure(player, throwable);
                 return;
             }
-            previewRollback(player, targets, centerX, centerZ, radius, targetTimestamp,
+            previewRollback(player, worldName, targets, centerX, centerZ, radius, targetTimestamp,
                     snapshotTimestamp, force, maxBlocks);
         }));
     }
@@ -249,9 +249,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    private void previewRollback(Player player, List<RollbackTarget> targets, int centerX, int centerZ,
-                                 int radius, long targetTimestamp, long snapshotTimestamp,
-                                 boolean force, int maxBlocks) {
+    private void previewRollback(Player player, String worldName, List<RollbackTarget> targets,
+                                 int centerX, int centerZ, int radius, long targetTimestamp,
+                                 long snapshotTimestamp, boolean force, int maxBlocks) {
         if (targets.isEmpty()) {
             player.sendMessage(color("&7No block changes found to rollback in that radius."));
             return;
@@ -279,7 +279,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 || entry.getValue().actorUuid.equals(player.getUniqueId()));
         String token = UUID.randomUUID().toString().substring(0, 8);
         RollbackPreview preview = new RollbackPreview(token, player.getUniqueId(), player.getName(),
-                player.getWorld().getName(), centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
+                worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
                 force, List.copyOf(targets), now + expirationSeconds * 1_000L);
         previews.put(token, preview);
 
