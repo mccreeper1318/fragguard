@@ -10,6 +10,9 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.time.Instant;
@@ -33,7 +36,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
-final class FragGuardCommand implements CommandExecutor, TabCompleter {
+final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z")
             .withZone(ZoneId.systemDefault());
     private static final String OPERATION_QUEUE_FULL = "FragGuard's database operation queue is full.";
@@ -53,6 +56,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     FragGuardCommand(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
         this.database = database;
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        removePreviewsFor(event.getPlayer().getUniqueId());
+    }
+
+    void clearRollbackPreviews() {
+        previews.clear();
     }
 
     @Override
@@ -252,6 +264,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
     private void previewRollback(Player player, String worldName, List<RollbackTarget> targets,
                                  int centerX, int centerZ, int radius, long targetTimestamp,
                                  long snapshotTimestamp, boolean force, int maxBlocks) {
+        if (!player.isOnline()) {
+            removePreviewsFor(player.getUniqueId());
+            return;
+        }
         if (targets.isEmpty()) {
             player.sendMessage(color("&7No block changes found to rollback in that radius."));
             return;
@@ -275,13 +291,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
 
         long expirationSeconds = Math.max(5, plugin.getConfig().getInt("rollback-confirmation-timeout-seconds", 60));
         long now = System.currentTimeMillis();
-        previews.entrySet().removeIf(entry -> entry.getValue().expiresAt <= now
-                || entry.getValue().actorUuid.equals(player.getUniqueId()));
+        removeExpiredPreviews(now);
+        removePreviewsFor(player.getUniqueId());
         String token = UUID.randomUUID().toString().substring(0, 8);
         RollbackPreview preview = new RollbackPreview(token, player.getUniqueId(), player.getName(),
                 worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
                 force, List.copyOf(targets), now + expirationSeconds * 1_000L);
         previews.put(token, preview);
+        schedulePreviewExpiration(preview, now);
 
         player.sendMessage(color("&8&m------&r &eFragGuard Rollback Preview &8&m------"));
         player.sendMessage(color("&7Affected blocks: &f" + targets.size() + " &7| Chunks: &f" + affectedChunks
@@ -297,6 +314,32 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
                 + " seconds: &f/fg rollback confirm " + token));
     }
 
+    private void schedulePreviewExpiration(RollbackPreview preview, long now) {
+        long remainingMillis = Math.max(1L, preview.expiresAt - now);
+        long delayTicks = Math.max(1L, (remainingMillis + 49L) / 50L);
+        plugin.getServer().getScheduler().runTaskLater(plugin,
+                () -> expirePreview(preview, System.currentTimeMillis()), delayTicks);
+    }
+
+    private void expirePreview(RollbackPreview preview, long now) {
+        if (previews.get(preview.token) != preview) {
+            return;
+        }
+        if (now < preview.expiresAt) {
+            schedulePreviewExpiration(preview, now);
+            return;
+        }
+        previews.remove(preview.token);
+    }
+
+    private void removeExpiredPreviews(long now) {
+        previews.entrySet().removeIf(entry -> entry.getValue().expiresAt <= now);
+    }
+
+    private void removePreviewsFor(UUID actorUuid) {
+        previews.entrySet().removeIf(entry -> entry.getValue().actorUuid.equals(actorUuid));
+    }
+
     private void handleRollbackConfirmation(Player player, String[] args) {
         if (args.length != 3) {
             player.sendMessage(color("&cUsage: &f/fg rollback confirm <token>"));
@@ -304,8 +347,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         }
 
         RollbackPreview preview = previews.get(args[2]);
-        if (preview == null || preview.expiresAt < System.currentTimeMillis()) {
-            previews.remove(args[2]);
+        if (preview == null) {
+            player.sendMessage(color("&cThat rollback confirmation token is invalid or has expired."));
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (preview.expiresAt <= now) {
+            expirePreview(preview, now);
             player.sendMessage(color("&cThat rollback confirmation token is invalid or has expired."));
             return;
         }
@@ -318,7 +366,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        previews.remove(preview.token);
+        if (previews.get(preview.token) == preview) {
+            previews.remove(preview.token);
+        }
         player.sendMessage(color("&7Saving rollback job and undo information..."));
         database.createRollbackJobAsync(preview.actorUuid.toString(), preview.actorName, preview.worldName,
                         preview.centerX, preview.centerZ, preview.radius, preview.targetTimestamp,
@@ -1359,8 +1409,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         }
         if (subCommand.equals("rollback") || subCommand.equals("rb")) {
             if (args.length == 3 && args[1].equalsIgnoreCase("confirm")) {
+                long now = System.currentTimeMillis();
+                removeExpiredPreviews(now);
                 return partial(args[2], previews.values().stream()
                         .filter(preview -> preview.actorUuid.equals(player.getUniqueId()))
+                        .filter(preview -> preview.expiresAt > now)
                         .map(RollbackPreview::token)
                         .toList());
             }

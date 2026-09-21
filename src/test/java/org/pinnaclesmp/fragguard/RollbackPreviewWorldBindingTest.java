@@ -1,8 +1,10 @@
 package org.pinnaclesmp.fragguard;
 
+import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.scheduler.BukkitScheduler;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -36,7 +38,11 @@ class RollbackPreviewWorldBindingTest {
         FragGuardPlugin plugin = mock(FragGuardPlugin.class);
         Database database = mock(Database.class);
         FileConfiguration config = mock(FileConfiguration.class);
+        Server server = mock(Server.class);
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
         when(plugin.getConfig()).thenReturn(config);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getScheduler()).thenReturn(scheduler);
         when(config.getInt("rollback-max-chunks-per-command", 256)).thenReturn(256);
         when(config.getInt("rollback-confirmation-timeout-seconds", 60)).thenReturn(60);
 
@@ -46,6 +52,7 @@ class RollbackPreviewWorldBindingTest {
         when(player.getWorld()).thenReturn(currentWorld);
         when(player.getUniqueId()).thenReturn(UUID.fromString("11111111-1111-1111-1111-111111111111"));
         when(player.getName()).thenReturn("Operator");
+        when(player.isOnline()).thenReturn(true);
 
         FragGuardCommand command = new FragGuardCommand(plugin, database);
         List<RollbackTarget> targets = List.of(new RollbackTarget(

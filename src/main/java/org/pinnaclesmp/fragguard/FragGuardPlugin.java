@@ -15,6 +15,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     static final int DEFAULT_GUI_LOOKUP_FETCH_SIZE = 1000;
 
     private Database database;
+    private FragGuardCommand commandExecutor;
     private boolean storageWarningActive;
     private long lastStorageWarningAt;
     private int guiLookupFetchSize = DEFAULT_GUI_LOOKUP_FETCH_SIZE;
@@ -40,11 +41,12 @@ public final class FragGuardPlugin extends JavaPlugin {
         }
         Bukkit.getPluginManager().registerEvents(new BlockChangeListener(this, database), this);
         Bukkit.getPluginManager().registerEvents(new FragGuardGui(this, database), this);
-        FragGuardCommand executor = new FragGuardCommand(this, database);
+        commandExecutor = new FragGuardCommand(this, database);
+        Bukkit.getPluginManager().registerEvents(commandExecutor, this);
         PluginCommand command = Objects.requireNonNull(getCommand("fg"), "Command /fg is missing from plugin.yml");
-        command.setExecutor(executor);
-        command.setTabCompleter(executor);
-        executor.resumeInterruptedJobs();
+        command.setExecutor(commandExecutor);
+        command.setTabCompleter(commandExecutor);
+        commandExecutor.resumeInterruptedJobs();
         scheduleCleanup();
         scheduleStorageHealthMonitor();
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");
@@ -52,6 +54,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (commandExecutor != null) {
+            commandExecutor.clearRollbackPreviews();
+            commandExecutor = null;
+        }
         if (database == null) return;
         DatabaseShutdownSnapshot before = database.shutdown();
         DatabaseHealth after = database.health();

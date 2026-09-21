@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Fixed #72 by giving rollback previews an explicit lifecycle: previews now expire on a guarded scheduled cleanup, are cleared on operator disconnect and plugin shutdown, are skipped when an async query finishes for an offline player, and expired tokens are filtered from tab completion.
 - Fixed #70 by failing closed when legacy rollback history lacks a block-entity snapshot for a live supported block entity, while preserving normal comparison for ordinary blocks and force-mode override behavior.
 - Fixed #69 by binding asynchronous rollback previews to the world captured when the query starts, so world changes during the query cannot mislabel preview, confirmation, overlap, or rollback-job metadata.
 - Fixed same-tick coalescing merging different actors and actions by only combining consecutive, state-contiguous changes with matching attribution and action.
