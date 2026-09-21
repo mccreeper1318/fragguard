@@ -1381,11 +1381,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter {
         return ChatColor.translateAlternateColorCodes('&', message);
     }
 
-    private static boolean matchesState(String actualData, byte[] actualEntityData,
-                                        String expectedData, byte[] expectedEntityData) {
+    static boolean matchesState(String actualData, byte[] actualEntityData,
+                                String expectedData, byte[] expectedEntityData) {
         return actualData.equals(expectedData)
                 && !Arrays.equals(expectedEntityData, UNKNOWN_ENTITY_STATE)
-                && (expectedEntityData == null || Arrays.equals(actualEntityData, expectedEntityData));
+                && (expectedEntityData == null
+                ? actualEntityData == null
+                : Arrays.equals(actualEntityData, expectedEntityData));
     }
 
     private record PreparedWorldChange(
