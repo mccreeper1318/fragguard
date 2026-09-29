@@ -1,7 +1,8 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -135,6 +136,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                 + (health.lastError().isBlank() ? "." : "; last error: " + health.lastError());
         getLogger().warning(message);
         for (Player player : Bukkit.getOnlinePlayers())
-            if (player.isOp() || player.hasPermission("fragguard.admin")) player.sendMessage(ChatColor.RED + "[FragGuard] " + message);
+            if (player.isOp() || player.hasPermission("fragguard.admin"))
+                player.sendMessage(Component.text("[FragGuard] " + message, NamedTextColor.RED));
     }
 }
