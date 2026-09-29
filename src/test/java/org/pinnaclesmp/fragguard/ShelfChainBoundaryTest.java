@@ -160,6 +160,6 @@ class ShelfChainBoundaryTest {
             int marker
     ) {
         itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents))
-                .thenReturn(new byte[]{1, 0, 0, 0, 3, marker});
+                .thenReturn(new byte[]{1, 0, 0, 0, 3, (byte) marker});
     }
 }
