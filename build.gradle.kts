@@ -16,12 +16,12 @@ java {
 dependencies {
     compileOnly("io.papermc.paper:paper-api:26.3.build.136-beta")
     implementation("org.xerial:sqlite-jdbc:3.53.4.0")
-    implementation("org.slf4j:slf4j-nop:2.0.19")
+    implementation("org.slf4j:slf4j-nop:2.0.20")
 
     testImplementation("io.papermc.paper:paper-api:26.3.build.136-beta")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
-    testImplementation("org.mockito:mockito-core:5.23.0")
+    testImplementation("org.mockito:mockito-core:5.24.0")
 }
 
 dependencyLocking {
