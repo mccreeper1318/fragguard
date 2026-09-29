@@ -1,0 +1,37 @@
+name: Issue 79 Paper 26.3 API audit
+
+on:
+  push:
+    branches:
+      - 79-resolve-paper-26-3-beta-compile-and-api-compatibility
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java 25
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Audit Java and Gradle deprecations
+        shell: bash
+        run: |
+          cat > /tmp/issue79-deprecation.init.gradle <<'EOF'
+          allprojects {
+              tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
+                  options.compilerArgs.addAll(['-Xlint:deprecation'])
+              }
+          }
+          EOF
+          ./gradlew --no-daemon clean compileJava compileTestJava --warning-mode all --init-script /tmp/issue79-deprecation.init.gradle
+
+      - name: Run full compatibility build
+        run: ./gradlew --no-daemon clean test build
