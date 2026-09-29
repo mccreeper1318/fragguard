@@ -28,6 +28,7 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -49,7 +50,7 @@ class ShelfChainBoundaryTest {
         Map<Integer, Block> blocks = new HashMap<>();
 
         when(world.getName()).thenReturn("world");
-        when(world.getBlockAt(any(Integer.class), any(Integer.class), any(Integer.class)))
+        when(world.getBlockAt(anyInt(), anyInt(), anyInt()))
                 .thenAnswer(invocation -> blocks.get(invocation.<Integer>getArgument(0)));
         when(player.getUniqueId()).thenReturn(PLAYER_UUID);
         when(player.getName()).thenReturn("Builder");
