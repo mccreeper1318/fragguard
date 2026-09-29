@@ -30,6 +30,16 @@ jobs:
         run: |
           sed -i '/if text.count(old) != 1:/,+1d' tools/issue80_patch.py
           python3 tools/issue80_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/test/java/org/pinnaclesmp/fragguard/RollbackEntityRestoreFailureRegressionTest.java')
+          text = path.read_text()
+          old = '            snapshots.when(() -> BlockEntitySnapshot.capture(block)).thenReturn(beforeEntityData);\n'
+          new = old + '            snapshots.when(() -> BlockEntitySnapshot.equivalent(beforeEntityData, beforeEntityData))\n                    .thenReturn(true);\n'
+          if old not in text:
+              raise SystemExit('Could not locate block-entity capture mock')
+          path.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Run regression suite
         run: ./gradlew --no-daemon clean test build
