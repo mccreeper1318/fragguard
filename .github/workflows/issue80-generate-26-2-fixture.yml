@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   fix:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check out issue branch
@@ -25,240 +25,18 @@ jobs:
           distribution: temurin
           java-version: '25'
 
-      - name: Apply compatibility fix and regression coverage
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
+      - name: Apply compatibility patch
+        run: python3 tools/issue80_patch.py
 
-          def replace_once(text, old, new, label):
-              if old not in text:
-                  raise SystemExit(f'Missing expected text for {label}')
-              if text.count(old) != 1:
-                  raise SystemExit(f'Expected one occurrence for {label}, found {text.count(old)}')
-              return text.replace(old, new, 1)
-
-          path = Path('src/main/java/org/pinnaclesmp/fragguard/BlockEntitySnapshot.java')
-          text = path.read_text()
-          text = replace_once(text,
-              'import java.util.ArrayList;\nimport java.util.Collection;\n',
-              'import java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.Collection;\n',
-              'BlockEntitySnapshot Arrays import')
-
-          marker = '    static void restore(Block block, byte[] payload) {\n'
-          compatibility = r'''    static boolean equivalent(byte[] first, byte[] second) {
-        if (Arrays.equals(first, second)) {
-            return true;
-        }
-        if (first == null || second == null) {
-            return false;
-        }
-        try {
-            return Arrays.equals(canonicalize(first), canonicalize(second));
-        } catch (IOException | RuntimeException exception) {
-            // Historical state that cannot be proven equivalent must remain a conflict.
-            return false;
-        }
-    }
-
-    private static byte[] canonicalize(byte[] payload) throws IOException {
-        try (DataInputStream input = new DataInputStream(new GZIPInputStream(new ByteArrayInputStream(payload)));
-             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-             DataOutputStream output = new DataOutputStream(bytes)) {
-            if (input.readInt() != MAGIC) {
-                throw new IOException("Invalid block-entity snapshot header");
-            }
-            int version = input.readUnsignedByte();
-            if (version != FORMAT_VERSION) {
-                throw new IOException("Unsupported block-entity snapshot format version " + version);
-            }
-
-            Kind kind = Kind.valueOf(input.readUTF());
-            output.writeInt(MAGIC);
-            output.writeByte(version);
-            output.writeUTF(kind.name());
-            writeComponent(output, readComponent(input));
-
-            switch (kind) {
-                case SIGN -> canonicalizeSign(input, output);
-                case BANNER -> canonicalizeBanner(input, output);
-                case SKULL -> canonicalizeSkull(input, output);
-                case LECTERN -> {
-                    canonicalizeInventory(input, output);
-                    output.writeInt(input.readInt());
-                }
-                case DECORATED_POT -> {
-                    canonicalizeInventory(input, output);
-                    int count = readCollectionSize(input, "decorated-pot sides");
-                    writeCollectionSize(output, count, "decorated-pot sides");
-                    for (int index = 0; index < count; index++) {
-                        output.writeUTF(input.readUTF());
-                        output.writeUTF(input.readUTF());
-                    }
-                }
-                case INVENTORY -> canonicalizeInventory(input, output);
-            }
-
-            if (input.read() != -1) {
-                throw new IOException("Unexpected trailing block-entity snapshot data");
-            }
-            output.flush();
-            return bytes.toByteArray();
-        }
-    }
-
-    private static void canonicalizeSign(DataInputStream input, DataOutputStream output) throws IOException {
-        output.writeBoolean(input.readBoolean());
-        for (int side = 0; side < 2; side++) {
-            output.writeUTF(input.readUTF());
-            output.writeBoolean(input.readBoolean());
-            int count = readCollectionSize(input, "sign lines");
-            writeCollectionSize(output, count, "sign lines");
-            for (int index = 0; index < count; index++) {
-                writeComponent(output, readComponent(input));
-            }
-        }
-    }
-
-    private static void canonicalizeBanner(DataInputStream input, DataOutputStream output) throws IOException {
-        int count = readCollectionSize(input, "banner patterns");
-        writeCollectionSize(output, count, "banner patterns");
-        for (int index = 0; index < count; index++) {
-            output.writeUTF(input.readUTF());
-            output.writeUTF(input.readUTF());
-        }
-    }
-
-    private static void canonicalizeSkull(DataInputStream input, DataOutputStream output) throws IOException {
-        boolean present = input.readBoolean();
-        output.writeBoolean(present);
-        if (!present) {
-            return;
-        }
-        writeNullableString(output, readNullableString(input));
-        writeNullableString(output, readNullableString(input));
-        int count = readCollectionSize(input, "skull profile properties");
-        writeCollectionSize(output, count, "skull profile properties");
-        for (int index = 0; index < count; index++) {
-            output.writeUTF(input.readUTF());
-            output.writeUTF(input.readUTF());
-            writeNullableString(output, readNullableString(input));
-        }
-    }
-
-    private static void canonicalizeInventory(DataInputStream input, DataOutputStream output) throws IOException {
-        int length = input.readInt();
-        validateInventoryLength(length);
-        byte[] storedItems = input.readNBytes(length);
-        if (storedItems.length != length) {
-            throw new IOException("Incomplete serialized inventory");
-        }
-
-        ItemStack[] contents = ItemStack.deserializeItemsFromBytes(storedItems);
-        byte[] currentItems = ItemStack.serializeItemsAsBytes(contents);
-        validateInventoryLength(currentItems.length);
-        output.writeInt(currentItems.length);
-        output.write(currentItems);
-    }
-
-'''
-          text = replace_once(text, marker, compatibility + marker, 'BlockEntitySnapshot compatibility methods')
-          path.write_text(text)
-
-          path = Path('src/main/java/org/pinnaclesmp/fragguard/FragGuardCommand.java')
-          text = path.read_text()
-          old = '''        return actualData.equals(expectedData)
-                && !Arrays.equals(expectedEntityData, UNKNOWN_ENTITY_STATE)
-                && (expectedEntityData == null
-                ? actualEntityData == null
-                : Arrays.equals(actualEntityData, expectedEntityData));'''
-          new = '''        return actualData.equals(expectedData)
-                && !Arrays.equals(expectedEntityData, UNKNOWN_ENTITY_STATE)
-                && (expectedEntityData == null
-                ? actualEntityData == null
-                : actualEntityData != null && BlockEntitySnapshot.equivalent(actualEntityData, expectedEntityData));'''
-          text = replace_once(text, old, new, 'rollback block-entity comparison')
-          path.write_text(text)
-
-          path = Path('src/test/java/org/pinnaclesmp/fragguard/Paper262PersistenceCompatibilityTest.java')
-          text = path.read_text()
-          marker = '    @Test\n    void preservesExactPaper26_2ItemBytesInContainerLecternAndPotEnvelopes() throws Exception {\n'
-          test = '''    @Test
-    void comparesEquivalentFormatOneSnapshotsAfterTransportEncodingChanges() throws Exception {
-        byte[] original = signSnapshot();
-        byte[] sameContentsDifferentGzipHeader = original.clone();
-        sameContentsDifferentGzipHeader[4] = 1;
-
-        assertFalse(java.util.Arrays.equals(original, sameContentsDifferentGzipHeader));
-        assertTrue(BlockEntitySnapshot.equivalent(original, sameContentsDifferentGzipHeader),
-                "format-one comparison should use decoded persistent state rather than transport bytes");
-        assertFalse(BlockEntitySnapshot.equivalent(original, new byte[]{1, 2, 3}),
-                "undecodable history must fail closed");
-    }
-
-'''
-          text = replace_once(text, marker, test + marker, 'compatibility comparator test')
-          path.write_text(text)
-
-          path = Path('changelog.md')
-          text = path.read_text()
-          marker = '### Fixed\n\n'
-          line = '- Fixed #80 cross-version rollback conflicts by comparing compatible format-v1 block-entity snapshots after in-memory normalization through the current Paper item serializer; Paper 26.2 history, container contents, rollback snapshots, and undo data remain stored byte-for-byte and require no schema rewrite.\n'
-          if line not in text:
-              text = replace_once(text, marker, marker + line, '26.3 Fixed changelog section')
-              path.write_text(text)
-          PY
-
-      - name: Run unit and persistence regression suite
+      - name: Run regression suite
         run: ./gradlew --no-daemon clean test build
 
-      - name: Verify real Paper 26.2 item snapshot equivalence on Paper 26.3
+      - name: Commit verified fix
         shell: bash
         run: |
-          cp src/main/java/org/pinnaclesmp/fragguard/FragGuardPlugin.java /tmp/FragGuardPlugin.java
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('src/main/java/org/pinnaclesmp/fragguard/FragGuardPlugin.java')
-          text = path.read_text()
-          needle = '    public void onEnable() {\n'
-          injected = '''    public void onEnable() {\n        if (Boolean.getBoolean("fragguard.issue80.verify262")) {\n            try {\n                byte[] issue80OldItems = java.util.Base64.getDecoder().decode(\n                        "AQAAAAMAAABMH4sIAAAAAAAA/+NiYGBm4HZJLEkMSy0qzszPY2AQVudgYMpMYRDMzcxLTS5KTCuxSslMzM3PS2FmYE3OL80rYQBpAgAFZtm1OgAAAAAAAAAAAABPH4sIAAAAAAAA/+NiYGBm4HZJLEkMSy0qzszPY2AQVudgYMpMYRDKzcxLTS5KTCuxyk/Mji/OTM9jZmBNzi/NK2FgYGBiAABEjV0KOwAAAA==");\n                org.bukkit.inventory.ItemStack[] issue80CurrentContents = new org.bukkit.inventory.ItemStack[]{\n                        new org.bukkit.inventory.ItemStack(org.bukkit.Material.DIAMOND, 3),\n                        null,\n                        new org.bukkit.inventory.ItemStack(org.bukkit.Material.OAK_SIGN, 2)\n                };\n                byte[] issue80CurrentItems = org.bukkit.inventory.ItemStack.serializeItemsAsBytes(issue80CurrentContents);\n                java.util.function.Function<byte[], byte[]> issue80Envelope = itemBytes -> {\n                    try {\n                        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();\n                        try (java.io.DataOutputStream output = new java.io.DataOutputStream(new java.util.zip.GZIPOutputStream(bytes))) {\n                            output.writeInt(0x46474245);\n                            output.writeByte(1);\n                            output.writeUTF("INVENTORY");\n                            output.writeBoolean(false);\n                            output.writeInt(itemBytes.length);\n                            output.write(itemBytes);\n                        }\n                        return bytes.toByteArray();\n                    } catch (java.io.IOException exception) {\n                        throw new IllegalStateException(exception);\n                    }\n                };\n                byte[] issue80OldSnapshot = issue80Envelope.apply(issue80OldItems);\n                byte[] issue80CurrentSnapshot = issue80Envelope.apply(issue80CurrentItems);\n                org.bukkit.inventory.ItemStack[] issue80Decoded =\n                        org.bukkit.inventory.ItemStack.deserializeItemsFromBytes(issue80OldItems);\n                getLogger().info("ISSUE80_DECODED="\n                        + issue80Decoded[0].getType().getKey() + " x" + issue80Decoded[0].getAmount()\n                        + ", " + issue80Decoded[1].getType().getKey() + " x" + issue80Decoded[1].getAmount()\n                        + ", " + issue80Decoded[2].getType().getKey() + " x" + issue80Decoded[2].getAmount());\n                if (!BlockEntitySnapshot.equivalent(issue80OldSnapshot, issue80CurrentSnapshot)) {\n                    throw new IllegalStateException("26.2 and 26.3 inventory snapshots were not semantically equivalent");\n                }\n                if (!FragGuardCommand.matchesState("minecraft:chest", issue80CurrentSnapshot,\n                        "minecraft:chest", issue80OldSnapshot)) {\n                    throw new IllegalStateException("rollback conflict comparison rejected unchanged 26.2 container history");\n                }\n                getLogger().info("ISSUE80_262_SNAPSHOT_COMPATIBILITY=PASS");\n                org.bukkit.Bukkit.shutdown();\n                return;\n            } catch (RuntimeException exception) {\n                throw exception;\n            }\n        }\n'''
-          if needle not in text:
-              raise SystemExit('Could not locate onEnable')
-          path.write_text(text.replace(needle, injected, 1))
-          PY
-          ./gradlew --no-daemon shadowJar
-          mv /tmp/FragGuardPlugin.java src/main/java/org/pinnaclesmp/fragguard/FragGuardPlugin.java
-
-          USER_AGENT='FragGuard-compatibility-test/26.3-1.2.0 (github.com/mccreeper1318/fragguard)'
-          BUILDS=$(curl -fsSL -H "User-Agent: $USER_AGENT" \
-            https://fill.papermc.io/v3/projects/paper/versions/26.3/builds)
-          URL=$(printf '%s' "$BUILDS" | jq -r 'first(.[] | select(.id == 136) | .downloads."server:default".url) // empty')
-          test -n "$URL"
-          curl -fsSL -H "User-Agent: $USER_AGENT" -o paper.jar "$URL"
-
-          mkdir -p server/plugins
-          cp paper.jar server/paper.jar
-          cp build/libs/*.jar server/plugins/
-          printf 'eula=true\n' > server/eula.txt
-          cd server
-          set +e
-          timeout 180 java -Dfragguard.issue80.verify262=true -Xms512M -Xmx1G -jar paper.jar --nogui 2>&1 | tee server.log
-          STATUS=${PIPESTATUS[0]}
-          set -e
-          if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 124 ]; then
-            exit "$STATUS"
-          fi
-          grep 'ISSUE80_262_SNAPSHOT_COMPATIBILITY=PASS' server.log
-
-      - name: Commit verified issue fix
-        shell: bash
-        run: |
+          rm tools/issue80_patch.py
           rm .github/workflows/issue80-generate-26-2-fixture.yml
-          git add src/main/java/org/pinnaclesmp/fragguard/BlockEntitySnapshot.java \
-                  src/main/java/org/pinnaclesmp/fragguard/FragGuardCommand.java \
-                  src/test/java/org/pinnaclesmp/fragguard/Paper262PersistenceCompatibilityTest.java \
-                  changelog.md \
-                  .github/workflows/issue80-generate-26-2-fixture.yml
+          git add -A
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Preserve Paper 26.2 rollback snapshot compatibility (#80)'
