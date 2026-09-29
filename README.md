@@ -225,7 +225,7 @@ Changing grouping thresholds changes only presentation. Exact raw history remain
 
 ## Build
 
-Requires Java 25. The Gradle 9.7.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
+Requires Java 25. The Gradle 9.8.0 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
 The current development feature version is `26.3-1.2.0`. Development targets Paper API `26.3.build.136-beta`, with `api-version: '26.3'`, following Paper 26.3's promotion to the beta release channel.
 
