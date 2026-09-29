@@ -22,6 +22,7 @@
 
 ### Fixed
 
+- Fixed #81 by logging Paper 26.3 Shelf inventory swaps even when block data is unchanged, including connected powered shelves, and added Shelf-specific lookup/raw-detail, conflict-protection, rollback, and undo coverage while retaining the generic `TileStateInventoryHolder` snapshot format.
 - Fixed #80 cross-version rollback conflicts by comparing compatible format-v1 block-entity snapshots after in-memory normalization through the current Paper item serializer; Paper 26.2 history, container contents, rollback snapshots, and undo data remain stored byte-for-byte and require no schema rewrite.
 - Fixed #72 by giving rollback previews an explicit lifecycle: previews now expire on a guarded scheduled cleanup, are cleared on operator disconnect and plugin shutdown, are skipped when an async query finishes for an offline player, and expired tokens are filtered from tab completion.
 - Fixed #70 by failing closed when legacy rollback history lacks a block-entity snapshot for a live supported block entity, while preserving normal comparison for ordinary blocks and force-mode override behavior.
@@ -44,7 +45,7 @@
 
 - Started the 26.2-1.1.1 maintenance release line and updated the project/build documentation to produce `FragGuard-26.2-1.1.1.jar`.
 - Dependabot version-update pull requests now target the long-lived `dev` branch so dependency and GitHub Actions updates can be validated before they reach `main`.
-- Updated the Gradle wrapper from `9.3.0` to `9.7.1`, SLF4J NOP from `2.0.18` to `2.0.19`, and SQLite JDBC from `3.53.2.1` to `3.53.4.0`, with regenerated dependency locks and full Java 25 CI validation.
+- Updated the Gradle wrapper from `9.3.0` to `9.8.0`, SLF4J NOP from `2.0.18` to `2.0.20`, and SQLite JDBC from `3.53.2.1` to `3.53.4.0`, with regenerated dependency locks and full Java 25 CI validation.
 - Updated pinned GitHub Actions to `actions/checkout@7.0.1`, `actions/setup-java@6.0.0`, `gradle/actions/setup-gradle@6.3.0`, `actions/upload-artifact@7.0.1`, and `actions/download-artifact@8.0.1`.
 - Updated Paper API from `26.2.build.62-beta` to the current stable `26.2.build.121-stable` release and regenerated the dependency lock. Dependabot remains disabled for `io.papermc.paper:paper-api` because Paper's repository version syntax caused it to propose older `26.2-rc-2.build.*-alpha` coordinates as upgrades, so future Paper API updates are reviewed manually.
 
