@@ -21,7 +21,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - name: Apply patch from helper and correct fixture
+      - name: Apply review fix and update legacy test fixtures
         shell: bash
         run: |
           python3 - <<'PY'
@@ -35,9 +35,29 @@ jobs:
           PY
           python3 /tmp/pr89_fix.py
           sed -i 's/output\.writeUTF(""INVENTORY");/output.writeUTF("INVENTORY");/' src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotTest.java
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/test/java/org/pinnaclesmp/fragguard/BlockChangeListenerTest.java')
+          text = path.read_text()
+          replacements = {
+              'byte[] serializedBefore = beforeOccupied ? new byte[]{1, 2, 3} : new byte[]{4, 5, 6};':
+                  'byte[] serializedBefore = beforeOccupied ? new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 1, 1} : new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 0};',
+              'byte[] serializedAfter = beforeOccupied ? new byte[]{4, 5, 6} : new byte[]{1, 2, 3};':
+                  'byte[] serializedAfter = beforeOccupied ? new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 0} : new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 1, 1};',
+              'byte[] serializedBook = new byte[]{7, 5, 3};':
+                  'byte[] serializedBook = new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 1, 7};',
+              'byte[] serializedEmpty = new byte[]{2, 4, 6};':
+                  'byte[] serializedEmpty = new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 0};',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'Missing listener fixture: {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
       - name: Run focused and full tests
         run: |
-          ./gradlew --no-daemon test --tests org.pinnaclesmp.fragguard.BlockEntitySnapshotTest --tests org.pinnaclesmp.fragguard.BlockEntitySnapshotDescriptionTest --tests org.pinnaclesmp.fragguard.Paper262PersistenceCompatibilityTest
+          ./gradlew --no-daemon test --tests org.pinnaclesmp.fragguard.BlockEntitySnapshotTest --tests org.pinnaclesmp.fragguard.BlockEntitySnapshotDescriptionTest --tests org.pinnaclesmp.fragguard.Paper262PersistenceCompatibilityTest --tests org.pinnaclesmp.fragguard.BlockChangeListenerTest
           ./gradlew --no-daemon clean build
       - name: Commit validated fix and remove helpers
         shell: bash
@@ -48,6 +68,7 @@ jobs:
           git add src/main/java/org/pinnaclesmp/fragguard/BlockEntitySnapshot.java \
                   src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotTest.java \
                   src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotDescriptionTest.java \
+                  src/test/java/org/pinnaclesmp/fragguard/BlockChangeListenerTest.java \
                   .github/workflows/pr89-codex-fix.yml \
                   .github/workflows/pr89-codex-fix2.yml
           git commit -m "Validate serialized inventory framing before decode"
