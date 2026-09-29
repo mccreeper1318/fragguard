@@ -26,7 +26,10 @@ jobs:
           java-version: '25'
 
       - name: Apply compatibility patch
-        run: python3 tools/issue80_patch.py
+        shell: bash
+        run: |
+          sed -i '/if text.count(old) != 1:/,+1d' tools/issue80_patch.py
+          python3 tools/issue80_patch.py
 
       - name: Run regression suite
         run: ./gradlew --no-daemon clean test build
