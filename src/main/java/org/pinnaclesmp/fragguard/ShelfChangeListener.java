@@ -62,10 +62,6 @@ final class ShelfChangeListener implements Listener {
         captureShelf(beforeStates, clickedBlock, clickedData, clickedState);
         captureConnectedShelves(beforeStates, clickedBlock, shelfData);
 
-        if (beforeStates.isEmpty()) {
-            return;
-        }
-
         Player player = event.getPlayer();
         long happenedAt = System.currentTimeMillis();
         long serverTick = Bukkit.getCurrentTick();
@@ -83,7 +79,8 @@ final class ShelfChangeListener implements Listener {
             Block clickedShelf,
             org.bukkit.block.data.type.Shelf shelfData
     ) {
-        if (!shelfData.isPowered() || shelfData.getSideChain() == SideChaining.ChainPart.UNCONNECTED) {
+        SideChaining.ChainPart clickedPart = shelfData.getSideChain();
+        if (!shelfData.isPowered() || clickedPart == SideChaining.ChainPart.UNCONNECTED) {
             return;
         }
 
@@ -91,34 +88,108 @@ final class ShelfChangeListener implements Listener {
         if (left == null) {
             return;
         }
-        captureShelfChain(beforeStates, clickedShelf, left, shelfData.getFacing());
-        captureShelfChain(beforeStates, clickedShelf, left.getOppositeFace(), shelfData.getFacing());
+        BlockFace right = left.getOppositeFace();
+
+        switch (clickedPart) {
+            case LEFT -> captureFromLeftEnd(beforeStates, clickedShelf, right, shelfData.getFacing());
+            case CENTER -> {
+                captureExpectedPart(beforeStates, clickedShelf.getRelative(left), shelfData.getFacing(),
+                        SideChaining.ChainPart.LEFT);
+                captureExpectedPart(beforeStates, clickedShelf.getRelative(right), shelfData.getFacing(),
+                        SideChaining.ChainPart.RIGHT);
+            }
+            case RIGHT -> captureFromRightEnd(beforeStates, clickedShelf, left, shelfData.getFacing());
+            case UNCONNECTED -> {
+                // Handled above; kept for exhaustiveness if Paper adds no additional chain states.
+            }
+        }
     }
 
-    private void captureShelfChain(
+    private void captureFromLeftEnd(
             Map<BlockPosition, CapturedShelfState> beforeStates,
             Block origin,
-            BlockFace direction,
+            BlockFace right,
             BlockFace expectedFacing
     ) {
-        for (int distance = 1; distance <= 2; distance++) {
-            Block shelfBlock = origin.getRelative(direction, distance);
-            if (shelfBlock == null) {
-                return;
-            }
-            BlockData shelfBlockData = shelfBlock.getBlockData();
-            if (!(shelfBlockData instanceof org.bukkit.block.data.type.Shelf adjacentData)
-                    || adjacentData.getFacing() != expectedFacing
-                    || adjacentData.getSideChain() == SideChaining.ChainPart.UNCONNECTED) {
-                return;
-            }
-
-            BlockState shelfState = shelfBlock.getState();
-            if (!(shelfState instanceof Shelf)) {
-                return;
-            }
-            captureShelf(beforeStates, shelfBlock, shelfBlockData, shelfState);
+        ConnectedShelf first = connectedShelf(origin.getRelative(right), expectedFacing);
+        if (first == null) {
+            return;
         }
+        if (first.part() == SideChaining.ChainPart.RIGHT) {
+            captureConnectedShelf(beforeStates, first);
+            return;
+        }
+        if (first.part() != SideChaining.ChainPart.CENTER) {
+            return;
+        }
+
+        ConnectedShelf terminal = connectedShelf(origin.getRelative(right, 2), expectedFacing);
+        if (terminal == null || terminal.part() != SideChaining.ChainPart.RIGHT) {
+            return;
+        }
+        captureConnectedShelf(beforeStates, first);
+        captureConnectedShelf(beforeStates, terminal);
+    }
+
+    private void captureFromRightEnd(
+            Map<BlockPosition, CapturedShelfState> beforeStates,
+            Block origin,
+            BlockFace left,
+            BlockFace expectedFacing
+    ) {
+        ConnectedShelf first = connectedShelf(origin.getRelative(left), expectedFacing);
+        if (first == null) {
+            return;
+        }
+        if (first.part() == SideChaining.ChainPart.LEFT) {
+            captureConnectedShelf(beforeStates, first);
+            return;
+        }
+        if (first.part() != SideChaining.ChainPart.CENTER) {
+            return;
+        }
+
+        ConnectedShelf terminal = connectedShelf(origin.getRelative(left, 2), expectedFacing);
+        if (terminal == null || terminal.part() != SideChaining.ChainPart.LEFT) {
+            return;
+        }
+        captureConnectedShelf(beforeStates, first);
+        captureConnectedShelf(beforeStates, terminal);
+    }
+
+    private void captureExpectedPart(
+            Map<BlockPosition, CapturedShelfState> beforeStates,
+            Block block,
+            BlockFace expectedFacing,
+            SideChaining.ChainPart expectedPart
+    ) {
+        ConnectedShelf shelf = connectedShelf(block, expectedFacing);
+        if (shelf != null && shelf.part() == expectedPart) {
+            captureConnectedShelf(beforeStates, shelf);
+        }
+    }
+
+    private ConnectedShelf connectedShelf(Block block, BlockFace expectedFacing) {
+        BlockData blockData = block.getBlockData();
+        if (!(blockData instanceof org.bukkit.block.data.type.Shelf shelfData)
+                || !shelfData.isPowered()
+                || shelfData.getFacing() != expectedFacing
+                || shelfData.getSideChain() == SideChaining.ChainPart.UNCONNECTED) {
+            return null;
+        }
+
+        BlockState blockState = block.getState();
+        if (!(blockState instanceof Shelf)) {
+            return null;
+        }
+        return new ConnectedShelf(block, blockData, blockState, shelfData.getSideChain());
+    }
+
+    private void captureConnectedShelf(
+            Map<BlockPosition, CapturedShelfState> beforeStates,
+            ConnectedShelf shelf
+    ) {
+        captureShelf(beforeStates, shelf.block(), shelf.blockData(), shelf.blockState());
     }
 
     private void captureShelf(
@@ -191,5 +262,13 @@ final class ShelfChangeListener implements Listener {
     }
 
     private record CapturedShelfState(String blockData, byte[] entityData) {
+    }
+
+    private record ConnectedShelf(
+            Block block,
+            BlockData blockData,
+            BlockState blockState,
+            SideChaining.ChainPart part
+    ) {
     }
 }
