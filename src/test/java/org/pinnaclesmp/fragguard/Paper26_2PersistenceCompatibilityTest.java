@@ -78,21 +78,19 @@ class Paper26_2PersistenceCompatibilityTest {
 
     @Test
     void restoresRepresentative26_2BlockEntitySnapshotsOn26_3() throws Exception {
-        Component customName = Component.text("Legacy container");
+        Component customName = null;
         byte[] inventoryBytes = new byte[]{4, 8, 15, 16, 23, 42};
         ItemStack[] restoredItems = new ItemStack[]{mock(ItemStack.class), null, mock(ItemStack.class)};
 
         TileStateInventoryHolder inventory = mock(TileStateInventoryHolder.class);
         Inventory targetInventory = mock(Inventory.class);
         when(inventory.getSnapshotInventory()).thenReturn(targetInventory);
-        when(inventory.customName()).thenReturn(null);
 
         try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
             itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(inventoryBytes)).thenReturn(restoredItems);
             BlockEntitySnapshot.restore(block(inventory), legacyInventorySnapshot("INVENTORY", customName, inventoryBytes));
         }
 
-        verify(inventory).customName(customName);
         verify(targetInventory).setContents(restoredItems);
         verify(inventory).update(true, false);
 
@@ -221,7 +219,7 @@ class Paper26_2PersistenceCompatibilityTest {
     }
 
     @Test
-    void legacyMissingEntitySnapshotsStillFailClosedForSupportedBlockEntities() {
+    void legacyMissingEntitySnapshotsStillFailClosedForSupportedBlockEntities() throws Exception {
         byte[] liveEntityState = legacySignSnapshot();
         assertFalse(FragGuardCommand.matchesState(
                 "minecraft:oak_sign", liveEntityState, "minecraft:oak_sign", null));

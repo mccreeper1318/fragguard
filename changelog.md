@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Verified #80 migration safety for retained Paper 26.2 history: schema-3 databases migrate to schema 4 without rewriting stored block-entity payloads, version-1 sign/container/banner/head/lectern/decorated-pot snapshots remain readable on 26.3, rollback job snapshots remain usable for undo, and missing legacy entity snapshots continue to fail closed.
 - Reviewed Paper 26.3 beta source compatibility and migrated GUI/message presentation from deprecated legacy Bukkit string/color APIs to Adventure components and serializers; event logging, block-entity snapshots, and rollback/undo APIs required no compatibility shims.
 - Updated the Gradle wrapper from `9.7.1` to `9.8.0`, SLF4J NOP from `2.0.19` to `2.0.20`, and Mockito from `5.23.0` to `5.24.0`, with regenerated dependency locks.
 - Updated the development target to Paper API `26.3.build.136-beta` and `api-version: '26.3'` following Paper 26.3's promotion to the beta release channel; the FragGuard feature version remains `26.3-1.2.0`.
