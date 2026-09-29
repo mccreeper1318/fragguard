@@ -46,6 +46,7 @@ final class BlockEntitySnapshot {
     static final int FORMAT_VERSION = 1;
     private static final int MAGIC = 0x46474245;
     private static final int MAX_ITEM_BYTES = 16 * 1024 * 1024;
+    private static final int PAPER_ITEM_ARRAY_SERIALIZATION_VERSION = 1;
     private static final int MAX_COLLECTION_SIZE = 4_096;
     private static final int MAX_DESCRIBED_INVENTORY_SLOTS = 6;
 
@@ -250,7 +251,7 @@ final class BlockEntitySnapshot {
             throw new IOException("Incomplete serialized inventory");
         }
 
-        ItemStack[] contents = ItemStack.deserializeItemsFromBytes(storedItems);
+        ItemStack[] contents = deserializeItemsSafely(storedItems);
         byte[] currentItems = ItemStack.serializeItemsAsBytes(contents);
         validateInventoryLength(currentItems.length);
         output.writeInt(currentItems.length);
@@ -491,7 +492,7 @@ final class BlockEntitySnapshot {
         if (items.length != length) {
             throw new IOException("Incomplete serialized inventory");
         }
-        ItemStack[] contents = ItemStack.deserializeItemsFromBytes(items);
+        ItemStack[] contents = deserializeItemsSafely(items);
         int nonEmpty = 0;
         for (ItemStack item : contents) {
             if (item != null && item.getType() != null && !item.getType().isAir()) {
@@ -520,12 +521,39 @@ final class BlockEntitySnapshot {
         if (items.length != length) {
             throw new IOException("Incomplete serialized inventory");
         }
-        holder.getSnapshotInventory().setContents(ItemStack.deserializeItemsFromBytes(items));
+        holder.getSnapshotInventory().setContents(deserializeItemsSafely(items));
     }
 
     private static void validateInventoryLength(int length) throws IOException {
         if (length < 0 || length > MAX_ITEM_BYTES) {
             throw new IOException("Invalid serialized inventory length: " + length);
+        }
+    }
+
+    private static ItemStack[] deserializeItemsSafely(byte[] items) throws IOException {
+        validateSerializedItemArray(items);
+        return ItemStack.deserializeItemsFromBytes(items);
+    }
+
+    private static void validateSerializedItemArray(byte[] items) throws IOException {
+        validateInventoryLength(items.length);
+        try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(items))) {
+            int version = input.readUnsignedByte();
+            if (version != PAPER_ITEM_ARRAY_SERIALIZATION_VERSION) {
+                throw new IOException("Unsupported serialized inventory version: " + version);
+            }
+
+            int count = readCollectionSize(input, "serialized inventory slots");
+            for (int slot = 0; slot < count; slot++) {
+                int itemLength = input.readInt();
+                if (itemLength < 0 || itemLength > MAX_ITEM_BYTES || itemLength > input.available()) {
+                    throw new IOException("Invalid serialized item length at slot " + slot + ": " + itemLength);
+                }
+                input.skipNBytes(itemLength);
+            }
+            if (input.read() != -1) {
+                throw new IOException("Unexpected trailing serialized inventory data");
+            }
         }
     }
 

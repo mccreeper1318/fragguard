@@ -91,7 +91,7 @@ class BlockEntitySnapshotTest {
         TileStateInventoryHolder target = mock(TileStateInventoryHolder.class);
         Inventory targetInventory = mock(Inventory.class);
         when(target.getSnapshotInventory()).thenReturn(targetInventory);
-        byte[] serializedItems = new byte[]{4, 8, 15, 16, 23, 42};
+        byte[] serializedItems = serializedItems(new byte[]{4, 8}, null, new byte[]{15, 16, 23, 42});
 
         try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
             itemStacks.when(() -> ItemStack.serializeItemsAsBytes(items)).thenReturn(serializedItems);
@@ -114,7 +114,7 @@ class BlockEntitySnapshotTest {
         TileStateInventoryHolder target = mock(TileStateInventoryHolder.class);
         Inventory targetInventory = mock(Inventory.class);
         when(target.getSnapshotInventory()).thenReturn(targetInventory);
-        byte[] serializedContents = new byte[16 * 1024 * 1024];
+        byte[] serializedContents = serializedItemsWithTotalLength(16 * 1024 * 1024);
 
         try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
             itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents)).thenReturn(serializedContents);
@@ -159,7 +159,7 @@ class BlockEntitySnapshotTest {
         TileStateInventoryHolder corrected = mock(TileStateInventoryHolder.class);
         Inventory correctedInventory = mock(Inventory.class);
         when(corrected.getSnapshotInventory()).thenReturn(correctedInventory);
-        byte[] serializedContents = new byte[]{3, 1, 4, 1, 5};
+        byte[] serializedContents = serializedItems(new byte[]{3, 1, 4, 1, 5});
 
         try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
             itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents)).thenReturn(serializedContents);
@@ -202,7 +202,7 @@ class BlockEntitySnapshotTest {
         Lectern target = mock(Lectern.class);
         Inventory targetInventory = mock(Inventory.class);
         when(target.getSnapshotInventory()).thenReturn(targetInventory);
-        byte[] serializedBook = new byte[]{9, 7, 5};
+        byte[] serializedBook = serializedItems(new byte[]{9, 7, 5});
 
         try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
             itemStacks.when(() -> ItemStack.serializeItemsAsBytes(book)).thenReturn(serializedBook);
@@ -231,7 +231,7 @@ class BlockEntitySnapshotTest {
         DecoratedPot target = mock(DecoratedPot.class);
         DecoratedPotInventory targetInventory = mock(DecoratedPotInventory.class);
         when(target.getSnapshotInventory()).thenReturn(targetInventory);
-        byte[] serializedContents = new byte[]{2, 4, 6};
+        byte[] serializedContents = serializedItems(new byte[]{2, 4, 6});
 
         try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
             itemStacks.when(() -> ItemStack.serializeItemsAsBytes(contents)).thenReturn(serializedContents);
@@ -336,6 +336,30 @@ class BlockEntitySnapshotTest {
     }
 
     @Test
+    void rejectsMalformedInventoryFramingBeforeInvokingPaperDecoder() throws Exception {
+        byte[][] malformedArrays = {
+                java.nio.ByteBuffer.allocate(5)
+                        .put((byte) 1).putInt(Integer.MAX_VALUE).array(),
+                java.nio.ByteBuffer.allocate(9)
+                        .put((byte) 1).putInt(1).putInt(Integer.MAX_VALUE).array()
+        };
+
+        try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+            for (byte[] malformed : malformedArrays) {
+                byte[] snapshot = inventorySnapshot(malformed);
+                byte[] differentTransport = snapshot.clone();
+                differentTransport[4] ^= 1;
+
+                assertFalse(BlockEntitySnapshot.equivalent(snapshot, differentTransport),
+                        "malformed item-array framing must fail closed during conflict comparison");
+                assertFalse(BlockEntitySnapshot.describe(snapshot).readable(),
+                        "malformed item-array framing must be rejected during lookup description");
+            }
+            itemStacks.verifyNoInteractions();
+        }
+    }
+
+    @Test
     void ignoresUnsupportedBlocksAndRejectsUnknownSnapshotFormats() throws Exception {
         assertNull(BlockEntitySnapshot.capture((BlockState) null));
         assertNull(BlockEntitySnapshot.capture(mock(BlockState.class)));
@@ -349,6 +373,52 @@ class BlockEntitySnapshotTest {
         IllegalStateException failure = assertThrows(IllegalStateException.class,
                 () -> BlockEntitySnapshot.restore(block(mock(Sign.class)), bytes.toByteArray()));
         assertEquals("Unsupported block-entity snapshot format version 2", failure.getCause().getMessage());
+    }
+
+    private byte[] serializedItems(byte[]... payloads) {
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (DataOutputStream output = new DataOutputStream(bytes)) {
+                output.writeByte(1);
+                output.writeInt(payloads.length);
+                for (byte[] payload : payloads) {
+                    if (payload == null) {
+                        output.writeInt(0);
+                    } else {
+                        output.writeInt(payload.length);
+                        output.write(payload);
+                    }
+                }
+            }
+            return bytes.toByteArray();
+        } catch (java.io.IOException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
+    private byte[] serializedItemsWithTotalLength(int totalLength) {
+        if (totalLength < 9) {
+            throw new IllegalArgumentException("Serialized item array must be at least 9 bytes");
+        }
+        byte[] result = new byte[totalLength];
+        java.nio.ByteBuffer.wrap(result)
+                .put((byte) 1)
+                .putInt(1)
+                .putInt(totalLength - 9);
+        return result;
+    }
+
+    private byte[] inventorySnapshot(byte[] serializedItems) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream output = new DataOutputStream(new GZIPOutputStream(bytes))) {
+            output.writeInt(0x46474245);
+            output.writeByte(BlockEntitySnapshot.FORMAT_VERSION);
+            output.writeUTF("INVENTORY");
+            output.writeBoolean(false);
+            output.writeInt(serializedItems.length);
+            output.write(serializedItems);
+        }
+        return bytes.toByteArray();
     }
 
     private SignSide signSide(DyeColor color, boolean glowing, Component... lines) {
