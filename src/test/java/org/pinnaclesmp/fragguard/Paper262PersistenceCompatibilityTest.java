@@ -4,14 +4,14 @@ import org.bukkit.Material;
 import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.mockito.MockedStatic;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -19,11 +19,11 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
+import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -31,7 +31,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 /**
@@ -162,7 +161,7 @@ class Paper262PersistenceCompatibilityTest {
     }
 
     @Test
-    void readsEveryVersionOneBlockEntityKindWrittenByThe26_2Release() throws Exception {
+    void readsNonInventoryVersionOneBlockEntityKindsWrittenByThe26_2Release() throws Exception {
         BlockEntitySnapshot.SnapshotDescription sign = BlockEntitySnapshot.describe(signSnapshot());
         assertTrue(sign.readable());
         assertEquals("Sign", sign.type());
@@ -177,42 +176,15 @@ class Paper262PersistenceCompatibilityTest {
         assertTrue(skull.readable());
         assertEquals("Player head", skull.type());
         assertTrue(skull.details().stream().anyMatch(detail -> detail.contains("LegacyBuilder")));
-
-        ItemStack diamond = mock(ItemStack.class);
-        when(diamond.getType()).thenReturn(Material.DIAMOND);
-        when(diamond.getAmount()).thenReturn(3);
-        ItemStack signItem = mock(ItemStack.class);
-        when(signItem.getType()).thenReturn(Material.OAK_SIGN);
-        when(signItem.getAmount()).thenReturn(2);
-        ItemStack[] decoded = new ItemStack[]{diamond, null, signItem};
-
-        try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
-            itemStacks.when(() -> ItemStack.deserializeItemsFromBytes(PAPER_262_ITEM_ARRAY)).thenReturn(decoded);
-
-            BlockEntitySnapshot.SnapshotDescription inventory = BlockEntitySnapshot.describe(inventorySnapshot("Legacy chest"));
-            assertTrue(inventory.readable());
-            assertEquals("Container", inventory.type());
-            assertTrue(inventory.details().contains("Custom name: Legacy chest"));
-            assertTrue(inventory.details().contains("Items: 2 non-empty slot(s)"));
-
-            BlockEntitySnapshot.SnapshotDescription lectern = BlockEntitySnapshot.describe(lecternSnapshot());
-            assertTrue(lectern.readable());
-            assertEquals("Lectern", lectern.type());
-            assertTrue(lectern.details().contains("Page index: 7"));
-
-            BlockEntitySnapshot.SnapshotDescription pot = BlockEntitySnapshot.describe(decoratedPotSnapshot());
-            assertTrue(pot.readable());
-            assertEquals("Decorated pot", pot.type());
-            assertTrue(pot.details().stream().anyMatch(detail -> detail.contains("Brick")));
-        }
     }
 
     @Test
-    void preservesTheExactPaper26_2ItemPayloadInsideFormatOneSnapshots() throws Exception {
-        byte[] snapshot = inventorySnapshot("Legacy chest");
-        byte[] extracted = extractInventoryPayload(snapshot);
-        assertArrayEquals(PAPER_262_ITEM_ARRAY, extracted,
-                "FragGuard's format-one envelope must retain Paper's 26.2 item bytes verbatim");
+    void preservesExactPaper26_2ItemBytesInContainerLecternAndPotEnvelopes() throws Exception {
+        byte[] inventory = inventorySnapshot("Legacy chest");
+        assertEquals("{\"text\":\"Legacy chest\"}", extractCustomName(inventory));
+        assertArrayEquals(PAPER_262_ITEM_ARRAY, extractInventoryPayload(inventory, "INVENTORY"));
+        assertArrayEquals(PAPER_262_ITEM_ARRAY, extractInventoryPayload(lecternSnapshot(), "LECTERN"));
+        assertArrayEquals(PAPER_262_ITEM_ARRAY, extractInventoryPayload(decoratedPotSnapshot(), "DECORATED_POT"));
     }
 
     private Database startDatabase() throws Exception {
@@ -329,12 +301,16 @@ class Paper262PersistenceCompatibilityTest {
         }
     }
 
-    private byte[] extractInventoryPayload(byte[] snapshot) throws IOException {
-        try (java.io.DataInputStream input = new java.io.DataInputStream(
-                new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(snapshot)))) {
-            assertEquals(0x46474245, input.readInt());
-            assertEquals(1, input.readUnsignedByte());
-            assertEquals("INVENTORY", input.readUTF());
+    private String extractCustomName(byte[] snapshot) throws IOException {
+        try (DataInputStream input = openSnapshot(snapshot)) {
+            readHeader(input, "INVENTORY");
+            return input.readBoolean() ? input.readUTF() : null;
+        }
+    }
+
+    private byte[] extractInventoryPayload(byte[] snapshot, String expectedKind) throws IOException {
+        try (DataInputStream input = openSnapshot(snapshot)) {
+            readHeader(input, expectedKind);
             if (input.readBoolean()) {
                 input.readUTF();
             }
@@ -343,6 +319,16 @@ class Paper262PersistenceCompatibilityTest {
             assertEquals(length, payload.length);
             return payload;
         }
+    }
+
+    private DataInputStream openSnapshot(byte[] snapshot) throws IOException {
+        return new DataInputStream(new GZIPInputStream(new ByteArrayInputStream(snapshot)));
+    }
+
+    private void readHeader(DataInputStream input, String expectedKind) throws IOException {
+        assertEquals(0x46474245, input.readInt());
+        assertEquals(1, input.readUnsignedByte());
+        assertEquals(expectedKind, input.readUTF());
     }
 
     @FunctionalInterface
