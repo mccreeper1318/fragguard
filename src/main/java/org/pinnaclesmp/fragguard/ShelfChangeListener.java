@@ -93,9 +93,9 @@ final class ShelfChangeListener implements Listener {
         switch (clickedPart) {
             case LEFT -> captureFromLeftEnd(beforeStates, clickedShelf, right, shelfData.getFacing());
             case CENTER -> {
-                captureExpectedPart(beforeStates, clickedShelf.getRelative(left), shelfData.getFacing(),
+                captureExpectedPart(beforeStates, clickedShelf.getRelative(left, 1), shelfData.getFacing(),
                         SideChaining.ChainPart.LEFT);
-                captureExpectedPart(beforeStates, clickedShelf.getRelative(right), shelfData.getFacing(),
+                captureExpectedPart(beforeStates, clickedShelf.getRelative(right, 1), shelfData.getFacing(),
                         SideChaining.ChainPart.RIGHT);
             }
             case RIGHT -> captureFromRightEnd(beforeStates, clickedShelf, left, shelfData.getFacing());
@@ -111,7 +111,7 @@ final class ShelfChangeListener implements Listener {
             BlockFace right,
             BlockFace expectedFacing
     ) {
-        ConnectedShelf first = connectedShelf(origin.getRelative(right), expectedFacing);
+        ConnectedShelf first = connectedShelf(origin.getRelative(right, 1), expectedFacing);
         if (first == null) {
             return;
         }
@@ -137,7 +137,7 @@ final class ShelfChangeListener implements Listener {
             BlockFace left,
             BlockFace expectedFacing
     ) {
-        ConnectedShelf first = connectedShelf(origin.getRelative(left), expectedFacing);
+        ConnectedShelf first = connectedShelf(origin.getRelative(left, 1), expectedFacing);
         if (first == null) {
             return;
         }
