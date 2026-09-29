@@ -23,34 +23,44 @@ jobs:
           distribution: temurin
           java-version: '25'
 
-      - name: Generate real 26.2 ItemStack payload
+      - name: Build temporary 26.2 fixture plugin
         shell: bash
         run: |
-          cat >> build.gradle.kts <<'EOF'
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/main/java/org/pinnaclesmp/fragguard/FragGuardPlugin.java')
+          text = path.read_text()
+          needle = '    public void onEnable() {\n'
+          injected = '''    public void onEnable() {\n        org.bukkit.inventory.ItemStack[] issue80Items = new org.bukkit.inventory.ItemStack[]{\n                new org.bukkit.inventory.ItemStack(org.bukkit.Material.DIAMOND, 3),\n                null,\n                new org.bukkit.inventory.ItemStack(org.bukkit.Material.OAK_SIGN, 2)\n        };\n        byte[] issue80Bytes = org.bukkit.inventory.ItemStack.serializeItemsAsBytes(issue80Items);\n        getLogger().info("ISSUE80_262_ITEMSTACK_BASE64="\n                + java.util.Base64.getEncoder().encodeToString(issue80Bytes));\n        org.bukkit.Bukkit.shutdown();\n        return;\n'''
+          if needle not in text:
+              raise SystemExit('Could not locate onEnable')
+          path.write_text(text.replace(needle, injected, 1))
+          PY
+          ./gradlew --no-daemon shadowJar
 
-          tasks.test {
-              testLogging.showStandardStreams = true
-          }
-          EOF
-          cat > src/test/java/org/pinnaclesmp/fragguard/Issue80Generate262FixtureTest.java <<'EOF'
-          package org.pinnaclesmp.fragguard;
+      - name: Download Paper 26.2 build 121
+        shell: bash
+        run: |
+          USER_AGENT='FragGuard-compatibility-test/26.3-1.2.0 (github.com/mccreeper1318/fragguard)'
+          BUILDS=$(curl -fsSL -H "User-Agent: $USER_AGENT" \
+            https://fill.papermc.io/v3/projects/paper/versions/26.2/builds)
+          URL=$(printf '%s' "$BUILDS" | jq -r 'first(.[] | select(.id == 121) | .downloads."server:default".url) // empty')
+          test -n "$URL"
+          curl -fsSL -H "User-Agent: $USER_AGENT" -o paper.jar "$URL"
 
-          import org.bukkit.Material;
-          import org.bukkit.inventory.ItemStack;
-          import org.junit.jupiter.api.Test;
-          import java.util.Base64;
-
-          class Issue80Generate262FixtureTest {
-              @Test
-              void printFixture() {
-                  ItemStack[] items = new ItemStack[]{
-                          new ItemStack(Material.DIAMOND, 3),
-                          null,
-                          new ItemStack(Material.OAK_SIGN, 2)
-                  };
-                  byte[] bytes = ItemStack.serializeItemsAsBytes(items);
-                  System.out.println("ISSUE80_262_ITEMSTACK_BASE64=" + Base64.getEncoder().encodeToString(bytes));
-              }
-          }
-          EOF
-          ./gradlew --no-daemon test --tests org.pinnaclesmp.fragguard.Issue80Generate262FixtureTest
+      - name: Run fixture plugin on Paper 26.2
+        shell: bash
+        run: |
+          mkdir -p server/plugins
+          cp paper.jar server/paper.jar
+          cp build/libs/*.jar server/plugins/
+          printf 'eula=true\n' > server/eula.txt
+          cd server
+          set +e
+          timeout 180 java -Xms512M -Xmx1G -jar paper.jar --nogui 2>&1 | tee server.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 124 ]; then
+            exit "$STATUS"
+          fi
+          grep 'ISSUE80_262_ITEMSTACK_BASE64=' server.log
