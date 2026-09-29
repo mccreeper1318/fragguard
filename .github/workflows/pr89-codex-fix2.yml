@@ -25,13 +25,13 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import base64, re
+          import base64
           from pathlib import Path
           text = Path('.github/workflows/pr89-codex-fix.yml').read_text()
-          match = re.search(r"echo '([A-Za-z0-9+/=]+)' \\| base64 -d", text)
-          if not match:
-              raise SystemExit('Could not extract patch script')
-          Path('/tmp/pr89_fix.py').write_bytes(base64.b64decode(match.group(1)))
+          marker = "echo '"
+          start = text.index(marker) + len(marker)
+          end = text.index("' | base64 -d", start)
+          Path('/tmp/pr89_fix.py').write_bytes(base64.b64decode(text[start:end]))
           PY
           python3 /tmp/pr89_fix.py
           sed -i 's/output\.writeUTF(""INVENTORY");/output.writeUTF("INVENTORY");/' src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotTest.java
