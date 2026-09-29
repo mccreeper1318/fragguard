@@ -31,7 +31,7 @@ jobs:
           path = Path('src/main/java/org/pinnaclesmp/fragguard/FragGuardPlugin.java')
           text = path.read_text()
           needle = '    public void onEnable() {\n'
-          injected = '''    public void onEnable() {\n        org.bukkit.inventory.ItemStack[] issue80Items = new org.bukkit.inventory.ItemStack[]{\n                new org.bukkit.inventory.ItemStack(org.bukkit.Material.DIAMOND, 3),\n                null,\n                new org.bukkit.inventory.ItemStack(org.bukkit.Material.OAK_SIGN, 2)\n        };\n        byte[] issue80Bytes = org.bukkit.inventory.ItemStack.serializeItemsAsBytes(issue80Items);\n        getLogger().info("ISSUE80_262_ITEMSTACK_BASE64="\n                + java.util.Base64.getEncoder().encodeToString(issue80Bytes));\n        org.bukkit.Bukkit.shutdown();\n        return;\n'''
+          injected = '''    public void onEnable() {\n        if (Boolean.getBoolean("fragguard.issue80.fixture")) {\n            org.bukkit.inventory.ItemStack[] issue80Items = new org.bukkit.inventory.ItemStack[]{\n                    new org.bukkit.inventory.ItemStack(org.bukkit.Material.DIAMOND, 3),\n                    null,\n                    new org.bukkit.inventory.ItemStack(org.bukkit.Material.OAK_SIGN, 2)\n            };\n            byte[] issue80Bytes = org.bukkit.inventory.ItemStack.serializeItemsAsBytes(issue80Items);\n            getLogger().info("ISSUE80_262_ITEMSTACK_BASE64="\n                    + java.util.Base64.getEncoder().encodeToString(issue80Bytes));\n            org.bukkit.Bukkit.shutdown();\n            return;\n        }\n'''
           if needle not in text:
               raise SystemExit('Could not locate onEnable')
           path.write_text(text.replace(needle, injected, 1))
@@ -57,7 +57,7 @@ jobs:
           printf 'eula=true\n' > server/eula.txt
           cd server
           set +e
-          timeout 180 java -Xms512M -Xmx1G -jar paper.jar --nogui 2>&1 | tee server.log
+          timeout 180 java -Dfragguard.issue80.fixture=true -Xms512M -Xmx1G -jar paper.jar --nogui 2>&1 | tee server.log
           STATUS=${PIPESTATUS[0]}
           set -e
           if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 124 ]; then
