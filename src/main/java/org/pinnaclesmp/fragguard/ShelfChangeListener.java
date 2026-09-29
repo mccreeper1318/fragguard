@@ -219,10 +219,20 @@ final class ShelfChangeListener implements Listener {
             }
 
             Block afterBlock = world.getBlockAt(position.x(), position.y(), position.z());
-            String afterData = afterBlock.getBlockData().getAsString();
-            byte[] afterEntityData = BlockEntitySnapshot.capture(afterBlock);
+            BlockData afterBlockData = afterBlock.getBlockData();
             CapturedShelfState before = entry.getValue();
-            if (before.blockData().equals(afterData) && Arrays.equals(before.entityData(), afterEntityData)) {
+            if (!(afterBlockData instanceof org.bukkit.block.data.type.Shelf)
+                    || !before.blockData().equals(afterBlockData.getAsString())) {
+                continue;
+            }
+
+            BlockState afterState = afterBlock.getState();
+            if (!(afterState instanceof Shelf)) {
+                continue;
+            }
+
+            byte[] afterEntityData = BlockEntitySnapshot.capture(afterState);
+            if (Arrays.equals(before.entityData(), afterEntityData)) {
                 continue;
             }
 
@@ -237,7 +247,7 @@ final class ShelfChangeListener implements Listener {
                     position.z(),
                     ChangeAction.PLAYER_INTERACT,
                     before.blockData(),
-                    afterData,
+                    afterBlockData.getAsString(),
                     before.entityData(),
                     afterEntityData
             ));
