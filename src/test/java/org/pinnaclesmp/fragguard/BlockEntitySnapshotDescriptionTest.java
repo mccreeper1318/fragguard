@@ -25,7 +25,7 @@ class BlockEntitySnapshotDescriptionTest {
         TileStateInventoryHolder source = mock(TileStateInventoryHolder.class);
         Inventory inventory = mock(Inventory.class);
         ItemStack[] contents = new ItemStack[]{null, null, null};
-        byte[] serialized = new byte[]{4, 8, 15, 16, 23, 42};
+        byte[] serialized = new byte[]{1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
         when(source.getSnapshotInventory()).thenReturn(inventory);
         when(inventory.getContents()).thenReturn(contents);

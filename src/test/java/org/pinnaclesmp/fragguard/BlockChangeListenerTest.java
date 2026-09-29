@@ -989,8 +989,8 @@ class BlockChangeListenerTest {
             ItemStack[] emptyContents = new ItemStack[]{null};
             ItemStack[] beforeContents = beforeOccupied ? occupiedContents : emptyContents;
             ItemStack[] afterContents = beforeOccupied ? emptyContents : occupiedContents;
-            byte[] serializedBefore = beforeOccupied ? new byte[]{1, 2, 3} : new byte[]{4, 5, 6};
-            byte[] serializedAfter = beforeOccupied ? new byte[]{4, 5, 6} : new byte[]{1, 2, 3};
+            byte[] serializedBefore = beforeOccupied ? new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 1, 1} : new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 0};
+            byte[] serializedAfter = beforeOccupied ? new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 0} : new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 1, 1};
 
             when(beforeState.getSnapshotInventory()).thenReturn(beforeInventory);
             when(beforeInventory.getContents()).thenReturn(beforeContents);
@@ -1051,8 +1051,8 @@ class BlockChangeListenerTest {
             Inventory emptyInventory = mock(Inventory.class);
             ItemStack[] book = new ItemStack[]{mock(ItemStack.class)};
             ItemStack[] empty = new ItemStack[]{null};
-            byte[] serializedBook = new byte[]{7, 5, 3};
-            byte[] serializedEmpty = new byte[]{2, 4, 6};
+            byte[] serializedBook = new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 1, 7};
+            byte[] serializedEmpty = new byte[]{1, 0, 0, 0, 1, 0, 0, 0, 0};
 
             when(occupiedBlockData.getAsString()).thenReturn(occupiedData);
             when(emptyBlockData.getAsString()).thenReturn(emptyData);

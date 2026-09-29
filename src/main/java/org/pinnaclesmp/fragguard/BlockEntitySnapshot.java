@@ -32,6 +32,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
@@ -45,6 +46,7 @@ final class BlockEntitySnapshot {
     static final int FORMAT_VERSION = 1;
     private static final int MAGIC = 0x46474245;
     private static final int MAX_ITEM_BYTES = 16 * 1024 * 1024;
+    private static final int PAPER_ITEM_ARRAY_SERIALIZATION_VERSION = 1;
     private static final int MAX_COLLECTION_SIZE = 4_096;
     private static final int MAX_DESCRIBED_INVENTORY_SLOTS = 6;
 
@@ -139,6 +141,121 @@ final class BlockEntitySnapshot {
             return new SnapshotDescription("Stored block entity",
                     List.of("Stored snapshot could not be decoded."), false);
         }
+    }
+
+    static boolean equivalent(byte[] first, byte[] second) {
+        if (Arrays.equals(first, second)) {
+            return true;
+        }
+        if (first == null || second == null) {
+            return false;
+        }
+        try {
+            return Arrays.equals(canonicalize(first), canonicalize(second));
+        } catch (IOException | RuntimeException exception) {
+            // Historical state that cannot be proven equivalent must remain a conflict.
+            return false;
+        }
+    }
+
+    private static byte[] canonicalize(byte[] payload) throws IOException {
+        try (DataInputStream input = new DataInputStream(new GZIPInputStream(new ByteArrayInputStream(payload)));
+             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+             DataOutputStream output = new DataOutputStream(bytes)) {
+            if (input.readInt() != MAGIC) {
+                throw new IOException("Invalid block-entity snapshot header");
+            }
+            int version = input.readUnsignedByte();
+            if (version != FORMAT_VERSION) {
+                throw new IOException("Unsupported block-entity snapshot format version " + version);
+            }
+
+            Kind kind = Kind.valueOf(input.readUTF());
+            output.writeInt(MAGIC);
+            output.writeByte(version);
+            output.writeUTF(kind.name());
+            writeComponent(output, readComponent(input));
+
+            switch (kind) {
+                case SIGN -> canonicalizeSign(input, output);
+                case BANNER -> canonicalizeBanner(input, output);
+                case SKULL -> canonicalizeSkull(input, output);
+                case LECTERN -> {
+                    canonicalizeInventory(input, output);
+                    output.writeInt(input.readInt());
+                }
+                case DECORATED_POT -> {
+                    canonicalizeInventory(input, output);
+                    int count = readCollectionSize(input, "decorated-pot sides");
+                    writeCollectionSize(output, count, "decorated-pot sides");
+                    for (int index = 0; index < count; index++) {
+                        output.writeUTF(input.readUTF());
+                        output.writeUTF(input.readUTF());
+                    }
+                }
+                case INVENTORY -> canonicalizeInventory(input, output);
+            }
+
+            if (input.read() != -1) {
+                throw new IOException("Unexpected trailing block-entity snapshot data");
+            }
+            output.flush();
+            return bytes.toByteArray();
+        }
+    }
+
+    private static void canonicalizeSign(DataInputStream input, DataOutputStream output) throws IOException {
+        output.writeBoolean(input.readBoolean());
+        for (int side = 0; side < 2; side++) {
+            output.writeUTF(input.readUTF());
+            output.writeBoolean(input.readBoolean());
+            int count = readCollectionSize(input, "sign lines");
+            writeCollectionSize(output, count, "sign lines");
+            for (int index = 0; index < count; index++) {
+                writeComponent(output, readComponent(input));
+            }
+        }
+    }
+
+    private static void canonicalizeBanner(DataInputStream input, DataOutputStream output) throws IOException {
+        int count = readCollectionSize(input, "banner patterns");
+        writeCollectionSize(output, count, "banner patterns");
+        for (int index = 0; index < count; index++) {
+            output.writeUTF(input.readUTF());
+            output.writeUTF(input.readUTF());
+        }
+    }
+
+    private static void canonicalizeSkull(DataInputStream input, DataOutputStream output) throws IOException {
+        boolean present = input.readBoolean();
+        output.writeBoolean(present);
+        if (!present) {
+            return;
+        }
+        writeNullableString(output, readNullableString(input));
+        writeNullableString(output, readNullableString(input));
+        int count = readCollectionSize(input, "skull profile properties");
+        writeCollectionSize(output, count, "skull profile properties");
+        for (int index = 0; index < count; index++) {
+            output.writeUTF(input.readUTF());
+            output.writeUTF(input.readUTF());
+            writeNullableString(output, readNullableString(input));
+        }
+    }
+
+    private static void canonicalizeInventory(DataInputStream input, DataOutputStream output) throws IOException {
+        int length = input.readInt();
+        validateInventoryLength(length);
+        byte[] storedItems = input.readNBytes(length);
+        if (storedItems.length != length) {
+            throw new IOException("Incomplete serialized inventory");
+        }
+
+        ItemStack[] contents = deserializeItemsSafely(storedItems);
+        byte[] currentItems = ItemStack.serializeItemsAsBytes(contents);
+        validateInventoryLength(currentItems.length);
+        output.writeInt(currentItems.length);
+        output.write(currentItems);
     }
 
     static void restore(Block block, byte[] payload) {
@@ -375,7 +492,7 @@ final class BlockEntitySnapshot {
         if (items.length != length) {
             throw new IOException("Incomplete serialized inventory");
         }
-        ItemStack[] contents = ItemStack.deserializeItemsFromBytes(items);
+        ItemStack[] contents = deserializeItemsSafely(items);
         int nonEmpty = 0;
         for (ItemStack item : contents) {
             if (item != null && item.getType() != null && !item.getType().isAir()) {
@@ -404,12 +521,39 @@ final class BlockEntitySnapshot {
         if (items.length != length) {
             throw new IOException("Incomplete serialized inventory");
         }
-        holder.getSnapshotInventory().setContents(ItemStack.deserializeItemsFromBytes(items));
+        holder.getSnapshotInventory().setContents(deserializeItemsSafely(items));
     }
 
     private static void validateInventoryLength(int length) throws IOException {
         if (length < 0 || length > MAX_ITEM_BYTES) {
             throw new IOException("Invalid serialized inventory length: " + length);
+        }
+    }
+
+    private static ItemStack[] deserializeItemsSafely(byte[] items) throws IOException {
+        validateSerializedItemArray(items);
+        return ItemStack.deserializeItemsFromBytes(items);
+    }
+
+    private static void validateSerializedItemArray(byte[] items) throws IOException {
+        validateInventoryLength(items.length);
+        try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(items))) {
+            int version = input.readUnsignedByte();
+            if (version != PAPER_ITEM_ARRAY_SERIALIZATION_VERSION) {
+                throw new IOException("Unsupported serialized inventory version: " + version);
+            }
+
+            int count = readCollectionSize(input, "serialized inventory slots");
+            for (int slot = 0; slot < count; slot++) {
+                int itemLength = input.readInt();
+                if (itemLength < 0 || itemLength > MAX_ITEM_BYTES || itemLength > input.available()) {
+                    throw new IOException("Invalid serialized item length at slot " + slot + ": " + itemLength);
+                }
+                input.skipNBytes(itemLength);
+            }
+            if (input.read() != -1) {
+                throw new IOException("Unexpected trailing serialized inventory data");
+            }
         }
     }
 

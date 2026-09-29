@@ -1444,7 +1444,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 && !Arrays.equals(expectedEntityData, UNKNOWN_ENTITY_STATE)
                 && (expectedEntityData == null
                 ? actualEntityData == null
-                : Arrays.equals(actualEntityData, expectedEntityData));
+                : actualEntityData != null && BlockEntitySnapshot.equivalent(actualEntityData, expectedEntityData));
     }
 
     private record PreparedWorldChange(

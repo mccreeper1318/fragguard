@@ -154,6 +154,8 @@ class RollbackEntityRestoreFailureRegressionTest {
              MockedStatic<BlockEntitySnapshot> snapshots = mockStatic(BlockEntitySnapshot.class)) {
             bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
             snapshots.when(() -> BlockEntitySnapshot.capture(block)).thenReturn(beforeEntityData);
+            snapshots.when(() -> BlockEntitySnapshot.equivalent(beforeEntityData, beforeEntityData))
+                    .thenReturn(true);
             snapshots.when(() -> BlockEntitySnapshot.restore(block, desiredEntityData))
                     .thenThrow(new IllegalStateException("simulated decode rejection"));
 
