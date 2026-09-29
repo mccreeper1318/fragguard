@@ -1,0 +1,33 @@
+name: Issue 80 clean generated outputs
+
+on:
+  push:
+    branches:
+      - 80-verify-26-2-history-and-rollback-snapshots-remain-compatible-on-paper-26-3
+
+permissions:
+  contents: write
+
+jobs:
+  clean:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out issue branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 80-verify-26-2-history-and-rollback-snapshots-remain-compatible-on-paper-26-3
+          fetch-depth: 0
+
+      - name: Restore generated paths to dev
+        shell: bash
+        run: |
+          git fetch origin dev
+          git rm -r --ignore-unmatch .gradle build
+          git checkout origin/dev -- .gradle build
+          rm .github/workflows/issue80-clean-generated.yml
+          git add -A .gradle build .github/workflows/issue80-clean-generated.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Clean generated files from issue #80 branch'
+          git push origin HEAD:80-verify-26-2-history-and-rollback-snapshots-remain-compatible-on-paper-26-3
