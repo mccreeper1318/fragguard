@@ -227,7 +227,7 @@ Changing grouping thresholds changes only presentation. Exact raw history remain
 
 Requires Java 25. The Gradle 9.7.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-The current development feature version is `26.3-1.2.0`. Development remains compiled against Paper API `26.2.build.121-stable`, with `api-version: '26.2'`, while Paper 26.3 stabilizes.
+The current development feature version is `26.3-1.2.0`. Development targets Paper API `26.3.build.136-beta`, with `api-version: '26.3'`, following Paper 26.3's promotion to the beta release channel.
 
 ```bash
 ./gradlew build
