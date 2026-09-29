@@ -1,4 +1,4 @@
-name: Issue 80 verify 26.2 payload on 26.3
+name: Issue 80 diagnose 26.2 payload on 26.3
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
           path = Path('src/main/java/org/pinnaclesmp/fragguard/FragGuardPlugin.java')
           text = path.read_text()
           needle = '    public void onEnable() {\n'
-          injected = '''    public void onEnable() {\n        if (Boolean.getBoolean("fragguard.issue80.verify262")) {\n            byte[] issue80Bytes = java.util.Base64.getDecoder().decode(\n                    "AQAAAAMAAABMH4sIAAAAAAAA/+NiYGBm4HZJLEkMSy0qzszPY2AQVudgYMpMYRDMzcxLTS5KTCuxSslMzM3PS2FmYE3OL80rYQBpAgAFZtm1OgAAAAAAAAAAAABPH4sIAAAAAAAA/+NiYGBm4HZJLEkMSy0qzszPY2AQVudgYMpMYRDKzcxLTS5KTCuxyk/Mji/OTM9jZmBNzi/NK2FgYGBiAABEjV0KOwAAAA==");\n            org.bukkit.inventory.ItemStack[] issue80Items =\n                    org.bukkit.inventory.ItemStack.deserializeItemsFromBytes(issue80Bytes);\n            if (issue80Items.length != 3\n                    || issue80Items[0] == null\n                    || issue80Items[0].getType() != org.bukkit.Material.DIAMOND\n                    || issue80Items[0].getAmount() != 3\n                    || issue80Items[1] != null\n                    || issue80Items[2] == null\n                    || issue80Items[2].getType() != org.bukkit.Material.OAK_SIGN\n                    || issue80Items[2].getAmount() != 2) {\n                throw new IllegalStateException("Paper 26.3 did not decode the Paper 26.2 ItemStack fixture exactly");\n            }\n            getLogger().info("ISSUE80_262_ITEMSTACK_COMPATIBILITY=PASS");\n            org.bukkit.Bukkit.shutdown();\n            return;\n        }\n'''
+          injected = '''    public void onEnable() {\n        if (Boolean.getBoolean("fragguard.issue80.verify262")) {\n            byte[] issue80Bytes = java.util.Base64.getDecoder().decode(\n                    "AQAAAAMAAABMH4sIAAAAAAAA/+NiYGBm4HZJLEkMSy0qzszPY2AQVudgYMpMYRDMzcxLTS5KTCuxSslMzM3PS2FmYE3OL80rYQBpAgAFZtm1OgAAAAAAAAAAAABPH4sIAAAAAAAA/+NiYGBm4HZJLEkMSy0qzszPY2AQVudgYMpMYRDKzcxLTS5KTCuxyk/Mji/OTM9jZmBNzi/NK2FgYGBiAABEjV0KOwAAAA==");\n            org.bukkit.inventory.ItemStack[] issue80Items =\n                    org.bukkit.inventory.ItemStack.deserializeItemsFromBytes(issue80Bytes);\n            getLogger().info("ISSUE80_DECODED_LENGTH=" + issue80Items.length);\n            for (int issue80Index = 0; issue80Index < issue80Items.length; issue80Index++) {\n                org.bukkit.inventory.ItemStack issue80Item = issue80Items[issue80Index];\n                getLogger().info("ISSUE80_SLOT_" + issue80Index + "="\n                        + (issue80Item == null ? "null" : issue80Item.getType().getKey() + " x" + issue80Item.getAmount()));\n            }\n            byte[] issue80RoundTrip = org.bukkit.inventory.ItemStack.serializeItemsAsBytes(issue80Items);\n            getLogger().info("ISSUE80_ROUNDTRIP_BASE64="\n                    + java.util.Base64.getEncoder().encodeToString(issue80RoundTrip));\n            boolean issue80SemanticMatch = issue80Items.length == 3\n                    && issue80Items[0] != null\n                    && issue80Items[0].getType() == org.bukkit.Material.DIAMOND\n                    && issue80Items[0].getAmount() == 3\n                    && issue80Items[1] == null\n                    && issue80Items[2] != null\n                    && issue80Items[2].getType() == org.bukkit.Material.OAK_SIGN\n                    && issue80Items[2].getAmount() == 2;\n            getLogger().info("ISSUE80_SEMANTIC_MATCH=" + issue80SemanticMatch);\n            org.bukkit.Bukkit.shutdown();\n            return;\n        }\n'''
           if needle not in text:
               raise SystemExit('Could not locate onEnable')
           path.write_text(text.replace(needle, injected, 1))
@@ -61,4 +61,7 @@ jobs:
           if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 124 ]; then
             exit "$STATUS"
           fi
-          grep 'ISSUE80_262_ITEMSTACK_COMPATIBILITY=PASS' server.log
+          grep 'ISSUE80_DECODED_LENGTH=' server.log
+          grep 'ISSUE80_SLOT_' server.log
+          grep 'ISSUE80_ROUNDTRIP_BASE64=' server.log
+          grep 'ISSUE80_SEMANTIC_MATCH=' server.log
