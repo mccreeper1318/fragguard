@@ -31,6 +31,7 @@ import java.util.Map;
 final class ShelfChangeListener implements Listener {
     private final FragGuardPlugin plugin;
     private final Database database;
+    private final Map<BlockPosition, PendingShelfChange> pendingChanges = new LinkedHashMap<>();
 
     ShelfChangeListener(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
@@ -62,16 +63,28 @@ final class ShelfChangeListener implements Listener {
         captureShelf(beforeStates, clickedBlock, clickedData, clickedState);
         captureConnectedShelves(beforeStates, clickedBlock, shelfData);
 
+        // If another Shelf interaction reaches any of the same coordinates before the deferred comparison runs,
+        // the state observed here is the exact intermediate state after the earlier interaction and before this one.
+        // Close the earlier transitions now so the later interaction cannot be absorbed into the earlier actor's row.
+        closeOverlappingPendingChanges(beforeStates);
+
         Player player = event.getPlayer();
         long happenedAt = System.currentTimeMillis();
         long serverTick = Bukkit.getCurrentTick();
-        Bukkit.getScheduler().runTask(plugin, () -> writeChanges(
-                beforeStates,
-                happenedAt,
-                serverTick,
-                player.getUniqueId().toString(),
-                player.getName()
-        ));
+        Map<BlockPosition, PendingShelfChange> scheduledChanges = new LinkedHashMap<>();
+        for (Map.Entry<BlockPosition, CapturedShelfState> entry : beforeStates.entrySet()) {
+            PendingShelfChange pending = new PendingShelfChange(
+                    entry.getValue(),
+                    happenedAt,
+                    serverTick,
+                    player.getUniqueId().toString(),
+                    player.getName()
+            );
+            pendingChanges.put(entry.getKey(), pending);
+            scheduledChanges.put(entry.getKey(), pending);
+        }
+
+        Bukkit.getScheduler().runTask(plugin, () -> flushPendingChanges(scheduledChanges));
     }
 
     private void captureConnectedShelves(
@@ -204,54 +217,76 @@ final class ShelfChangeListener implements Listener {
         );
     }
 
-    private void writeChanges(
-            Map<BlockPosition, CapturedShelfState> beforeStates,
-            long happenedAt,
-            long serverTick,
-            String actorUuid,
-            String actorName
-    ) {
-        for (Map.Entry<BlockPosition, CapturedShelfState> entry : beforeStates.entrySet()) {
-            BlockPosition position = entry.getKey();
-            World world = Bukkit.getWorld(position.worldName());
-            if (world == null) {
-                continue;
+    private void closeOverlappingPendingChanges(Map<BlockPosition, CapturedShelfState> observedStates) {
+        for (Map.Entry<BlockPosition, CapturedShelfState> entry : observedStates.entrySet()) {
+            PendingShelfChange pending = pendingChanges.remove(entry.getKey());
+            if (pending != null) {
+                writeChange(entry.getKey(), pending, entry.getValue());
             }
-
-            Block afterBlock = world.getBlockAt(position.x(), position.y(), position.z());
-            BlockData afterBlockData = afterBlock.getBlockData();
-            CapturedShelfState before = entry.getValue();
-            if (!(afterBlockData instanceof org.bukkit.block.data.type.Shelf)
-                    || !before.blockData().equals(afterBlockData.getAsString())) {
-                continue;
-            }
-
-            BlockState afterState = afterBlock.getState();
-            if (!(afterState instanceof Shelf)) {
-                continue;
-            }
-
-            byte[] afterEntityData = BlockEntitySnapshot.capture(afterState);
-            if (Arrays.equals(before.entityData(), afterEntityData)) {
-                continue;
-            }
-
-            database.insertAsync(new BlockChange(
-                    happenedAt,
-                    serverTick,
-                    actorUuid,
-                    actorName,
-                    position.worldName(),
-                    position.x(),
-                    position.y(),
-                    position.z(),
-                    ChangeAction.PLAYER_INTERACT,
-                    before.blockData(),
-                    afterBlockData.getAsString(),
-                    before.entityData(),
-                    afterEntityData
-            ));
         }
+    }
+
+    private void flushPendingChanges(Map<BlockPosition, PendingShelfChange> scheduledChanges) {
+        for (Map.Entry<BlockPosition, PendingShelfChange> entry : scheduledChanges.entrySet()) {
+            BlockPosition position = entry.getKey();
+            PendingShelfChange pending = entry.getValue();
+            if (pendingChanges.get(position) != pending) {
+                continue;
+            }
+            pendingChanges.remove(position);
+
+            CapturedShelfState after = captureCurrentShelfState(position, pending.before().blockData());
+            if (after != null) {
+                writeChange(position, pending, after);
+            }
+        }
+    }
+
+    private CapturedShelfState captureCurrentShelfState(BlockPosition position, String expectedBlockData) {
+        World world = Bukkit.getWorld(position.worldName());
+        if (world == null) {
+            return null;
+        }
+
+        Block afterBlock = world.getBlockAt(position.x(), position.y(), position.z());
+        BlockData afterBlockData = afterBlock.getBlockData();
+        if (!(afterBlockData instanceof org.bukkit.block.data.type.Shelf)
+                || !expectedBlockData.equals(afterBlockData.getAsString())) {
+            return null;
+        }
+
+        BlockState afterState = afterBlock.getState();
+        if (!(afterState instanceof Shelf)) {
+            return null;
+        }
+        return new CapturedShelfState(afterBlockData.getAsString(), BlockEntitySnapshot.capture(afterState));
+    }
+
+    private void writeChange(
+            BlockPosition position,
+            PendingShelfChange pending,
+            CapturedShelfState after
+    ) {
+        CapturedShelfState before = pending.before();
+        if (!before.blockData().equals(after.blockData()) || Arrays.equals(before.entityData(), after.entityData())) {
+            return;
+        }
+
+        database.insertAsync(new BlockChange(
+                pending.happenedAt(),
+                pending.serverTick(),
+                pending.actorUuid(),
+                pending.actorName(),
+                position.worldName(),
+                position.x(),
+                position.y(),
+                position.z(),
+                ChangeAction.PLAYER_INTERACT,
+                before.blockData(),
+                after.blockData(),
+                before.entityData(),
+                after.entityData()
+        ));
     }
 
     private BlockFace shelfLeftOf(BlockFace facing) {
@@ -272,6 +307,15 @@ final class ShelfChangeListener implements Listener {
     }
 
     private record CapturedShelfState(String blockData, byte[] entityData) {
+    }
+
+    private record PendingShelfChange(
+            CapturedShelfState before,
+            long happenedAt,
+            long serverTick,
+            String actorUuid,
+            String actorName
+    ) {
     }
 
     private record ConnectedShelf(
