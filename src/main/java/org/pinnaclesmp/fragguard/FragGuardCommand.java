@@ -1,7 +1,8 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
@@ -39,6 +40,9 @@ import java.util.logging.Level;
 final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z")
             .withZone(ZoneId.systemDefault());
+    private static final LegacyComponentSerializer LEGACY_INPUT = LegacyComponentSerializer.legacyAmpersand();
+    private static final LegacyComponentSerializer LEGACY_OUTPUT = LegacyComponentSerializer.legacySection();
+    private static final PlainTextComponentSerializer PLAIN_TEXT = PlainTextComponentSerializer.plainText();
     private static final String OPERATION_QUEUE_FULL = "FragGuard's database operation queue is full.";
     private static final byte[] UNKNOWN_ENTITY_STATE = new byte[]{0};
     private static final int MAX_FORCE_REVALIDATION_RETRIES = 8;
@@ -1317,7 +1321,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         if (player != null && player.isOnline()) {
             player.sendMessage(color(text));
         } else {
-            plugin.getLogger().info(ChatColor.stripColor(color(text)));
+            plugin.getLogger().info(PLAIN_TEXT.serialize(LEGACY_INPUT.deserialize(text)));
         }
     }
 
@@ -1431,7 +1435,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     }
 
     private String color(String message) {
-        return ChatColor.translateAlternateColorCodes('&', message);
+        return LEGACY_OUTPUT.serialize(LEGACY_INPUT.deserialize(message));
     }
 
     static boolean matchesState(String actualData, byte[] actualEntityData,

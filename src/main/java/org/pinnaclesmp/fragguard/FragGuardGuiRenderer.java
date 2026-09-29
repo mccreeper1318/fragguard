@@ -1,7 +1,8 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -22,6 +23,7 @@ final class FragGuardGuiRenderer {
     static final int UNDO_JOBS_PER_PAGE = 36;
     private static final int MAX_BLOCK_ENTITY_DETAIL_LINES = 8;
     private static final int MAX_LORE_DETAIL_LENGTH = 72;
+    private static final LegacyComponentSerializer LEGACY_TEXT = LegacyComponentSerializer.legacyAmpersand();
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("MMM d, yyyy h:mm:ss a")
             .withZone(ZoneId.systemDefault());
 
@@ -29,7 +31,7 @@ final class FragGuardGuiRenderer {
     }
 
     static Inventory mainMenu() {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard"));
         inv.setItem(10, item(Material.SPYGLASS, "&bLookup History", "&7Browse retained history graphically."));
         inv.setItem(12, item(Material.RECOVERY_COMPASS, "&eRollback",
                 "&7Configure, preview, and confirm", "&7an area rollback."));
@@ -42,7 +44,7 @@ final class FragGuardGuiRenderer {
     }
 
     static Inventory lookupSetup(int radius, String timeLabel) {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &bLookup"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &bLookup"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         inv.setItem(10, item(Material.GRASS_BLOCK, "&bRadius: &f" + radius + " blocks",
                 "&7Left-click: next preset", "&7Right-click: previous preset"));
@@ -59,7 +61,7 @@ final class FragGuardGuiRenderer {
     static RenderedResults results(List<LookupRow> rows, List<LookupActivity> activities,
                                    boolean grouped, int requestedPage, int totalRows,
                                    String filterSummary, boolean filtersActive) {
-        Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &bResults"));
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &bResults"));
         fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
         fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
         int count = grouped ? activities.size() : rows.size();
@@ -110,7 +112,7 @@ final class FragGuardGuiRenderer {
 
     static Inventory lookupFilters(String playerFilter, String actionFilter, String materialFilter,
                                    boolean filtersActive) {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &eFilters"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &eFilters"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         inv.setItem(10, item(Material.PLAYER_HEAD, "&bPlayer: &f" + playerFilter,
                 "&7Choose from actors returned", "&7by this exact lookup."));
@@ -140,8 +142,7 @@ final class FragGuardGuiRenderer {
         int end = Math.min(choices.size(), start + FILTER_OPTIONS_PER_PAGE);
         List<LookupFilters.Option> visible = List.copyOf(choices.subList(start, end));
 
-        Inventory inv = Bukkit.createInventory(null, 54,
-                color("&8FragGuard &7• &e" + category.displayName()));
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &e" + category.displayName()));
         for (int i = 0; i < visible.size(); i++) {
             LookupFilters.Option option = visible.get(i);
             boolean selected = Objects.equals(selectedKey, option.key());
@@ -165,7 +166,7 @@ final class FragGuardGuiRenderer {
     }
 
     static Inventory rollbackSetup(int radius, String timeLabel, boolean force, boolean activePreview) {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &eRollback"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &eRollback"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         inv.setItem(10, item(Material.GRASS_BLOCK, "&eRadius: &f" + radius + " blocks",
                 "&7Left-click: next preset", "&7Right-click: previous preset"));
@@ -190,7 +191,7 @@ final class FragGuardGuiRenderer {
     }
 
     static RenderedUndoJobs undoJobs(List<GuiRollbackJob> jobs, int requestedPage) {
-        Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &6Undo"));
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &6Undo"));
         fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
         fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
         int pages = Math.max(1, (int) Math.ceil(jobs.size() / (double) UNDO_JOBS_PER_PAGE));
@@ -218,7 +219,7 @@ final class FragGuardGuiRenderer {
     }
 
     static Inventory undoConfirmation(GuiRollbackJob job) {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &cConfirm Undo"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &cConfirm Undo"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         inv.setItem(10, undoJobItem(job));
         inv.setItem(14, item(Material.REDSTONE_BLOCK, "&cConfirm Undo #" + job.id(),
@@ -229,7 +230,7 @@ final class FragGuardGuiRenderer {
     }
 
     static Inventory activityDetail(LookupActivity activity) {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &eActivity"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &eActivity"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         inv.setItem(10, item(Material.PLAYER_HEAD, "&b" + actor(activity.actorName()), "&7Recorded actor"));
         inv.setItem(12, item(icon(activity.materialKey()),
@@ -250,7 +251,7 @@ final class FragGuardGuiRenderer {
     }
 
     static RenderedRaw activityRaw(LookupActivity activity, int requestedPage) {
-        Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &fRaw Events"));
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &fRaw Events"));
         List<LookupRow> rows = activity.rows();
         int pages = Math.max(1, (int) Math.ceil(rows.size() / 45.0));
         int page = Math.max(0, Math.min(requestedPage, pages - 1));
@@ -279,7 +280,7 @@ final class FragGuardGuiRenderer {
             BlockEntitySnapshot.SnapshotDescription afterEntity,
             boolean blockEntityChanged
     ) {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &fExact Event"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &fExact Event"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         String material = LookupActivityGrouper.materialKey(row);
 
@@ -394,9 +395,9 @@ final class FragGuardGuiRenderer {
     private static ItemStack item(Material material, String name, List<String> lore) {
         ItemStack stack = new ItemStack(material);
         ItemMeta meta = stack.getItemMeta();
-        meta.setDisplayName(color(name));
+        meta.displayName(component(name));
         if (!lore.isEmpty()) {
-            meta.setLore(lore.stream().map(FragGuardGuiRenderer::color).toList());
+            meta.lore(lore.stream().map(FragGuardGuiRenderer::component).toList());
         }
         stack.setItemMeta(meta);
         return stack;
@@ -418,8 +419,8 @@ final class FragGuardGuiRenderer {
         return value == null ? "unknown" : value.replace("minecraft:", "");
     }
 
-    private static String color(String value) {
-        return ChatColor.translateAlternateColorCodes('&', value);
+    private static Component component(String value) {
+        return LEGACY_TEXT.deserialize(value);
     }
 
     private static void fill(Inventory inv, Material material) {

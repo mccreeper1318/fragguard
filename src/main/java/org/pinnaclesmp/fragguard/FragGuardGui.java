@@ -1,7 +1,7 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -22,6 +22,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
 final class FragGuardGui implements Listener {
+    private static final LegacyComponentSerializer LEGACY_INPUT = LegacyComponentSerializer.legacyAmpersand();
+    private static final LegacyComponentSerializer LEGACY_OUTPUT = LegacyComponentSerializer.legacySection();
     private final FragGuardPlugin plugin;
     private final Database database;
     private final GuiLookupStore guiLookupStore;
@@ -805,7 +807,7 @@ final class FragGuardGui implements Listener {
     }
 
     private String color(String text) {
-        return ChatColor.translateAlternateColorCodes('&', text);
+        return LEGACY_OUTPUT.serialize(LEGACY_INPUT.deserialize(text));
     }
 
     private Throwable root(Throwable throwable) {

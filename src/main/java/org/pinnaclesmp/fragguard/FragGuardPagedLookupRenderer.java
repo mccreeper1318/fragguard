@@ -1,7 +1,8 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -17,6 +18,7 @@ import java.util.Locale;
 
 /** Rendering for database-backed lookup pages that are already bounded before reaching the server thread. */
 final class FragGuardPagedLookupRenderer {
+    private static final LegacyComponentSerializer LEGACY_TEXT = LegacyComponentSerializer.legacyAmpersand();
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("MMM d, yyyy h:mm:ss a")
             .withZone(ZoneId.systemDefault());
 
@@ -35,7 +37,7 @@ final class FragGuardPagedLookupRenderer {
             boolean hasPrevious,
             boolean hasNext
     ) {
-        Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &bResults"));
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &bResults"));
         fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
         fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
 
@@ -89,7 +91,7 @@ final class FragGuardPagedLookupRenderer {
     }
 
     static Inventory activityDetail(GuiActivitySummary activity) {
-        Inventory inv = Bukkit.createInventory(null, 27, color("&8FragGuard &7• &eActivity"));
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &eActivity"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
         inv.setItem(10, item(Material.PLAYER_HEAD, "&b" + actor(activity.actorName()), "&7Recorded actor"));
         inv.setItem(12, item(icon(activity.materialKey()),
@@ -117,7 +119,7 @@ final class FragGuardPagedLookupRenderer {
             boolean hasPrevious,
             boolean hasNext
     ) {
-        Inventory inv = Bukkit.createInventory(null, 54, color("&8FragGuard &7• &fRaw Events"));
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &fRaw Events"));
         for (int i = 0; i < rows.size() && i < 45; i++) {
             inv.setItem(i, rawEventItem(rows.get(i)));
         }
@@ -169,9 +171,9 @@ final class FragGuardPagedLookupRenderer {
     private static ItemStack item(Material material, String name, List<String> lore) {
         ItemStack stack = new ItemStack(material);
         ItemMeta meta = stack.getItemMeta();
-        meta.setDisplayName(color(name));
+        meta.displayName(component(name));
         if (!lore.isEmpty()) {
-            meta.setLore(lore.stream().map(FragGuardPagedLookupRenderer::color).toList());
+            meta.lore(lore.stream().map(FragGuardPagedLookupRenderer::component).toList());
         }
         stack.setItemMeta(meta);
         return stack;
@@ -201,8 +203,8 @@ final class FragGuardPagedLookupRenderer {
         return value.substring(0, maximum - 3) + "...";
     }
 
-    private static String color(String value) {
-        return ChatColor.translateAlternateColorCodes('&', value);
+    private static Component component(String value) {
+        return LEGACY_TEXT.deserialize(value);
     }
 
     private static void fill(Inventory inv, Material material) {
