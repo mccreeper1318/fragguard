@@ -41,6 +41,7 @@ public final class FragGuardPlugin extends JavaPlugin {
             return;
         }
         Bukkit.getPluginManager().registerEvents(new BlockChangeListener(this, database), this);
+        Bukkit.getPluginManager().registerEvents(new ShelfChangeListener(this, database), this);
         Bukkit.getPluginManager().registerEvents(new FragGuardGui(this, database), this);
         commandExecutor = new FragGuardCommand(this, database);
         Bukkit.getPluginManager().registerEvents(commandExecutor, this);
