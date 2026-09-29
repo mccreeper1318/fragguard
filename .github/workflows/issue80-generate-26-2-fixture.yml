@@ -1,0 +1,56 @@
+name: Issue 80 generate 26.2 fixture
+
+on:
+  push:
+    branches:
+      - 80-verify-26-2-history-and-rollback-snapshots-remain-compatible-on-paper-26-3
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out 26.2 release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 26.2-1.1.2
+
+      - name: Set up Java 25
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Generate real 26.2 ItemStack payload
+        shell: bash
+        run: |
+          cat >> build.gradle.kts <<'EOF'
+
+          tasks.test {
+              testLogging.showStandardStreams = true
+          }
+          EOF
+          cat > src/test/java/org/pinnaclesmp/fragguard/Issue80Generate262FixtureTest.java <<'EOF'
+          package org.pinnaclesmp.fragguard;
+
+          import org.bukkit.Material;
+          import org.bukkit.inventory.ItemStack;
+          import org.junit.jupiter.api.Test;
+          import java.util.Base64;
+
+          class Issue80Generate262FixtureTest {
+              @Test
+              void printFixture() {
+                  ItemStack[] items = new ItemStack[]{
+                          new ItemStack(Material.DIAMOND, 3),
+                          null,
+                          new ItemStack(Material.OAK_SIGN, 2)
+                  };
+                  byte[] bytes = ItemStack.serializeItemsAsBytes(items);
+                  System.out.println("ISSUE80_262_ITEMSTACK_BASE64=" + Base64.getEncoder().encodeToString(bytes));
+              }
+          }
+          EOF
+          ./gradlew --no-daemon test --tests org.pinnaclesmp.fragguard.Issue80Generate262FixtureTest
