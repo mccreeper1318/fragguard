@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-13T09:40:54.597Z" hostname="runnervmlun5p" time="0.018">
+<testsuite name="org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-29T14:15:29.167Z" hostname="runnervmtr4k5" time="0.015">
   <properties/>
-  <testcase name="restoreFailureAfterBlockMutationKeepsCurrentAuditAndUnknownEntityState()" classname="org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest" time="0.009"/>
-  <testcase name="entityOnlyRestoreFailureWithoutMutationRetractsCurrentAudit()" classname="org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest" time="0.008"/>
+  <testcase name="restoreFailureAfterBlockMutationKeepsCurrentAuditAndUnknownEntityState()" classname="org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest" time="0.008"/>
+  <testcase name="entityOnlyRestoreFailureWithoutMutationRetractsCurrentAudit()" classname="org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest" time="0.007"/>
   <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.FragGuardCommand failJob
+  <system-err><![CDATA[Sep 29, 2026 2:15:29 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
 SEVERE: FragGuard rollback job #41 failed
 java.lang.IllegalStateException: simulated restore rejection
-	at org.pinnaclesmp.fragguard.BlockEntitySnapshot.restore(BlockEntitySnapshot.java:95)
-	at org.pinnaclesmp.fragguard.FragGuardCommand.lambda$applyPersistedCandidates$1(FragGuardCommand.java:883)
+	at org.pinnaclesmp.fragguard.BlockEntitySnapshot.restore(BlockEntitySnapshot.java:261)
+	at org.pinnaclesmp.fragguard.FragGuardCommand.lambda$applyPersistedCandidates$1(FragGuardCommand.java:937)
 	at org.pinnaclesmp.fragguard.BlockLoggingSuppression.runSuppressed(BlockLoggingSuppression.java:17)
-	at org.pinnaclesmp.fragguard.FragGuardCommand.applyPersistedCandidates(FragGuardCommand.java:882)
+	at org.pinnaclesmp.fragguard.FragGuardCommand.applyPersistedCandidates(FragGuardCommand.java:936)
 	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
 	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
-	at org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest.applyPersistedCandidates(RollbackEntityRestoreFailureRegressionTest.java:187)
+	at org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest.applyPersistedCandidates(RollbackEntityRestoreFailureRegressionTest.java:189)
 	at org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest.restoreFailureAfterBlockMutationKeepsCurrentAuditAndUnknownEntityState(RollbackEntityRestoreFailureRegressionTest.java:96)
 	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
 	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
@@ -107,19 +107,19 @@ java.lang.IllegalStateException: simulated restore rejection
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.run(GradleWorkerMain.java:69)
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.main(GradleWorkerMain.java:74)
 
-Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.FragGuardCommand message
+Sep 29, 2026 2:15:29 PM org.pinnaclesmp.fragguard.FragGuardCommand message
 INFO: Rollback job #41 failed: simulated restore rejection Saved changes can be reversed with /fg undo 41
-Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.FragGuardCommand failJob
+Sep 29, 2026 2:15:29 PM org.pinnaclesmp.fragguard.FragGuardCommand failJob
 SEVERE: FragGuard rollback job #41 failed
 java.lang.IllegalStateException: simulated decode rejection
-	at org.pinnaclesmp.fragguard.BlockEntitySnapshot.restore(BlockEntitySnapshot.java:95)
-	at org.pinnaclesmp.fragguard.FragGuardCommand.lambda$applyPersistedCandidates$1(FragGuardCommand.java:883)
+	at org.pinnaclesmp.fragguard.BlockEntitySnapshot.restore(BlockEntitySnapshot.java:261)
+	at org.pinnaclesmp.fragguard.FragGuardCommand.lambda$applyPersistedCandidates$1(FragGuardCommand.java:937)
 	at org.pinnaclesmp.fragguard.BlockLoggingSuppression.runSuppressed(BlockLoggingSuppression.java:17)
-	at org.pinnaclesmp.fragguard.FragGuardCommand.applyPersistedCandidates(FragGuardCommand.java:882)
+	at org.pinnaclesmp.fragguard.FragGuardCommand.applyPersistedCandidates(FragGuardCommand.java:936)
 	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
 	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
-	at org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest.applyPersistedCandidates(RollbackEntityRestoreFailureRegressionTest.java:187)
-	at org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest.entityOnlyRestoreFailureWithoutMutationRetractsCurrentAudit(RollbackEntityRestoreFailureRegressionTest.java:160)
+	at org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest.applyPersistedCandidates(RollbackEntityRestoreFailureRegressionTest.java:189)
+	at org.pinnaclesmp.fragguard.RollbackEntityRestoreFailureRegressionTest.entityOnlyRestoreFailureWithoutMutationRetractsCurrentAudit(RollbackEntityRestoreFailureRegressionTest.java:162)
 	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
 	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
 	at org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:700)
@@ -212,7 +212,7 @@ java.lang.IllegalStateException: simulated decode rejection
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.run(GradleWorkerMain.java:69)
 	at worker.org.gradle.process.internal.worker.GradleWorkerMain.main(GradleWorkerMain.java:74)
 
-Sep 13, 2026 9:40:54 AM org.pinnaclesmp.fragguard.FragGuardCommand message
+Sep 29, 2026 2:15:29 PM org.pinnaclesmp.fragguard.FragGuardCommand message
 INFO: Rollback job #41 failed: simulated decode rejection Saved changes can be reversed with /fg undo 41
 ]]></system-err>
 </testsuite>

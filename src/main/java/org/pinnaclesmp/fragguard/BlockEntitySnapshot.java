@@ -32,6 +32,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
@@ -139,6 +140,121 @@ final class BlockEntitySnapshot {
             return new SnapshotDescription("Stored block entity",
                     List.of("Stored snapshot could not be decoded."), false);
         }
+    }
+
+    static boolean equivalent(byte[] first, byte[] second) {
+        if (Arrays.equals(first, second)) {
+            return true;
+        }
+        if (first == null || second == null) {
+            return false;
+        }
+        try {
+            return Arrays.equals(canonicalize(first), canonicalize(second));
+        } catch (IOException | RuntimeException exception) {
+            // Historical state that cannot be proven equivalent must remain a conflict.
+            return false;
+        }
+    }
+
+    private static byte[] canonicalize(byte[] payload) throws IOException {
+        try (DataInputStream input = new DataInputStream(new GZIPInputStream(new ByteArrayInputStream(payload)));
+             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+             DataOutputStream output = new DataOutputStream(bytes)) {
+            if (input.readInt() != MAGIC) {
+                throw new IOException("Invalid block-entity snapshot header");
+            }
+            int version = input.readUnsignedByte();
+            if (version != FORMAT_VERSION) {
+                throw new IOException("Unsupported block-entity snapshot format version " + version);
+            }
+
+            Kind kind = Kind.valueOf(input.readUTF());
+            output.writeInt(MAGIC);
+            output.writeByte(version);
+            output.writeUTF(kind.name());
+            writeComponent(output, readComponent(input));
+
+            switch (kind) {
+                case SIGN -> canonicalizeSign(input, output);
+                case BANNER -> canonicalizeBanner(input, output);
+                case SKULL -> canonicalizeSkull(input, output);
+                case LECTERN -> {
+                    canonicalizeInventory(input, output);
+                    output.writeInt(input.readInt());
+                }
+                case DECORATED_POT -> {
+                    canonicalizeInventory(input, output);
+                    int count = readCollectionSize(input, "decorated-pot sides");
+                    writeCollectionSize(output, count, "decorated-pot sides");
+                    for (int index = 0; index < count; index++) {
+                        output.writeUTF(input.readUTF());
+                        output.writeUTF(input.readUTF());
+                    }
+                }
+                case INVENTORY -> canonicalizeInventory(input, output);
+            }
+
+            if (input.read() != -1) {
+                throw new IOException("Unexpected trailing block-entity snapshot data");
+            }
+            output.flush();
+            return bytes.toByteArray();
+        }
+    }
+
+    private static void canonicalizeSign(DataInputStream input, DataOutputStream output) throws IOException {
+        output.writeBoolean(input.readBoolean());
+        for (int side = 0; side < 2; side++) {
+            output.writeUTF(input.readUTF());
+            output.writeBoolean(input.readBoolean());
+            int count = readCollectionSize(input, "sign lines");
+            writeCollectionSize(output, count, "sign lines");
+            for (int index = 0; index < count; index++) {
+                writeComponent(output, readComponent(input));
+            }
+        }
+    }
+
+    private static void canonicalizeBanner(DataInputStream input, DataOutputStream output) throws IOException {
+        int count = readCollectionSize(input, "banner patterns");
+        writeCollectionSize(output, count, "banner patterns");
+        for (int index = 0; index < count; index++) {
+            output.writeUTF(input.readUTF());
+            output.writeUTF(input.readUTF());
+        }
+    }
+
+    private static void canonicalizeSkull(DataInputStream input, DataOutputStream output) throws IOException {
+        boolean present = input.readBoolean();
+        output.writeBoolean(present);
+        if (!present) {
+            return;
+        }
+        writeNullableString(output, readNullableString(input));
+        writeNullableString(output, readNullableString(input));
+        int count = readCollectionSize(input, "skull profile properties");
+        writeCollectionSize(output, count, "skull profile properties");
+        for (int index = 0; index < count; index++) {
+            output.writeUTF(input.readUTF());
+            output.writeUTF(input.readUTF());
+            writeNullableString(output, readNullableString(input));
+        }
+    }
+
+    private static void canonicalizeInventory(DataInputStream input, DataOutputStream output) throws IOException {
+        int length = input.readInt();
+        validateInventoryLength(length);
+        byte[] storedItems = input.readNBytes(length);
+        if (storedItems.length != length) {
+            throw new IOException("Incomplete serialized inventory");
+        }
+
+        ItemStack[] contents = ItemStack.deserializeItemsFromBytes(storedItems);
+        byte[] currentItems = ItemStack.serializeItemsAsBytes(contents);
+        validateInventoryLength(currentItems.length);
+        output.writeInt(currentItems.length);
+        output.write(currentItems);
     }
 
     static void restore(Block block, byte[] payload) {

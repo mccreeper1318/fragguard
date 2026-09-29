@@ -179,6 +179,19 @@ class Paper262PersistenceCompatibilityTest {
     }
 
     @Test
+    void comparesEquivalentFormatOneSnapshotsAfterTransportEncodingChanges() throws Exception {
+        byte[] original = signSnapshot();
+        byte[] sameContentsDifferentGzipHeader = original.clone();
+        sameContentsDifferentGzipHeader[4] = 1;
+
+        assertFalse(java.util.Arrays.equals(original, sameContentsDifferentGzipHeader));
+        assertTrue(BlockEntitySnapshot.equivalent(original, sameContentsDifferentGzipHeader),
+                "format-one comparison should use decoded persistent state rather than transport bytes");
+        assertFalse(BlockEntitySnapshot.equivalent(original, new byte[]{1, 2, 3}),
+                "undecodable history must fail closed");
+    }
+
+    @Test
     void preservesExactPaper26_2ItemBytesInContainerLecternAndPotEnvelopes() throws Exception {
         byte[] inventory = inventorySnapshot("Legacy chest");
         assertEquals("{\"text\":\"Legacy chest\"}", extractCustomName(inventory));
