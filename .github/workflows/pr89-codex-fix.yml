@@ -1,0 +1,221 @@
+name: PR 89 Codex framing fix
+
+on:
+  push:
+    branches:
+      - 80-verify-26-2-history-and-rollback-snapshots-remain-compatible-on-paper-26-3
+    paths:
+      - .github/workflows/pr89-codex-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 80-verify-26-2-history-and-rollback-snapshots-remain-compatible-on-paper-26-3
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Apply review fix and tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('src/main/java/org/pinnaclesmp/fragguard/BlockEntitySnapshot.java')
+          source = source_path.read_text()
+
+          source = source.replace(
+              '    private static final int MAX_ITEM_BYTES = 16 * 1024 * 1024;\n',
+              '    private static final int MAX_ITEM_BYTES = 16 * 1024 * 1024;\n'
+              '    private static final int PAPER_ITEM_ARRAY_SERIALIZATION_VERSION = 1;\n',
+              1,
+          )
+
+          replacements = {
+              'ItemStack[] contents = ItemStack.deserializeItemsFromBytes(storedItems);':
+                  'ItemStack[] contents = deserializeItemsSafely(storedItems);',
+              'ItemStack[] contents = ItemStack.deserializeItemsFromBytes(items);':
+                  'ItemStack[] contents = deserializeItemsSafely(items);',
+              'holder.getSnapshotInventory().setContents(ItemStack.deserializeItemsFromBytes(items));':
+                  'holder.getSnapshotInventory().setContents(deserializeItemsSafely(items));',
+          }
+          for old, new in replacements.items():
+              if old not in source:
+                  raise SystemExit(f'missing source replacement: {old}')
+              source = source.replace(old, new, 1)
+
+          anchor = '''    private static void validateInventoryLength(int length) throws IOException {
+              if (length < 0 || length > MAX_ITEM_BYTES) {
+                  throw new IOException("Invalid serialized inventory length: " + length);
+              }
+          }
+'''
+          addition = anchor + '''
+    private static ItemStack[] deserializeItemsSafely(byte[] items) throws IOException {
+        validateSerializedItemArray(items);
+        return ItemStack.deserializeItemsFromBytes(items);
+    }
+
+    private static void validateSerializedItemArray(byte[] items) throws IOException {
+        validateInventoryLength(items.length);
+        try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(items))) {
+            int version = input.readUnsignedByte();
+            if (version != PAPER_ITEM_ARRAY_SERIALIZATION_VERSION) {
+                throw new IOException("Unsupported serialized inventory version: " + version);
+            }
+
+            int count = readCollectionSize(input, "serialized inventory slots");
+            for (int slot = 0; slot < count; slot++) {
+                int itemLength = input.readInt();
+                if (itemLength < 0 || itemLength > input.available()) {
+                    throw new IOException("Invalid serialized item length at slot " + slot + ": " + itemLength);
+                }
+                input.skipNBytes(itemLength);
+            }
+            if (input.read() != -1) {
+                throw new IOException("Unexpected trailing serialized inventory data");
+            }
+        }
+    }
+'''
+          if anchor not in source:
+              raise SystemExit('missing validateInventoryLength anchor')
+          source = source.replace(anchor, addition, 1)
+          source_path.write_text(source)
+
+          test_path = Path('src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotTest.java')
+          test = test_path.read_text()
+          test_replacements = {
+              'byte[] serializedItems = new byte[]{4, 8, 15, 16, 23, 42};':
+                  'byte[] serializedItems = serializedItems(new byte[]{4, 8}, null, new byte[]{15, 16, 23, 42});',
+              'byte[] serializedContents = new byte[16 * 1024 * 1024];':
+                  'byte[] serializedContents = serializedItemsWithTotalLength(16 * 1024 * 1024);',
+              'byte[] serializedContents = new byte[]{3, 1, 4, 1, 5};':
+                  'byte[] serializedContents = serializedItems(new byte[]{3, 1, 4, 1, 5});',
+              'byte[] serializedBook = new byte[]{9, 7, 5};':
+                  'byte[] serializedBook = serializedItems(new byte[]{9, 7, 5});',
+              'byte[] serializedContents = new byte[]{2, 4, 6};':
+                  'byte[] serializedContents = serializedItems(new byte[]{2, 4, 6});',
+          }
+          for old, new in test_replacements.items():
+              if old not in test:
+                  raise SystemExit(f'missing test replacement: {old}')
+              test = test.replace(old, new, 1)
+
+          test_anchor = '''    @Test
+    void ignoresUnsupportedBlocksAndRejectsUnknownSnapshotFormats() throws Exception {
+'''
+          security_test = '''    @Test
+    void rejectsMalformedInventoryFramingBeforeInvokingPaperDecoder() throws Exception {
+        byte[][] malformedArrays = {
+                java.nio.ByteBuffer.allocate(5)
+                        .put((byte) 1).putInt(Integer.MAX_VALUE).array(),
+                java.nio.ByteBuffer.allocate(9)
+                        .put((byte) 1).putInt(1).putInt(Integer.MAX_VALUE).array()
+        };
+
+        try (MockedStatic<ItemStack> itemStacks = mockStatic(ItemStack.class)) {
+            for (byte[] malformed : malformedArrays) {
+                byte[] snapshot = inventorySnapshot(malformed);
+                byte[] differentTransport = snapshot.clone();
+                differentTransport[4] ^= 1;
+
+                assertFalse(BlockEntitySnapshot.equivalent(snapshot, differentTransport),
+                        "malformed item-array framing must fail closed during conflict comparison");
+                assertFalse(BlockEntitySnapshot.describe(snapshot).readable(),
+                        "malformed item-array framing must be rejected during lookup description");
+            }
+            itemStacks.verifyNoInteractions();
+        }
+    }
+
+'''
+          if test_anchor not in test:
+              raise SystemExit('missing security test anchor')
+          test = test.replace(test_anchor, security_test + test_anchor, 1)
+
+          helper_anchor = '''    private SignSide signSide(DyeColor color, boolean glowing, Component... lines) {
+'''
+          helpers = '''    private byte[] serializedItems(byte[]... payloads) {
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (DataOutputStream output = new DataOutputStream(bytes)) {
+                output.writeByte(1);
+                output.writeInt(payloads.length);
+                for (byte[] payload : payloads) {
+                    if (payload == null) {
+                        output.writeInt(0);
+                    } else {
+                        output.writeInt(payload.length);
+                        output.write(payload);
+                    }
+                }
+            }
+            return bytes.toByteArray();
+        } catch (java.io.IOException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
+    private byte[] serializedItemsWithTotalLength(int totalLength) {
+        if (totalLength < 9) {
+            throw new IllegalArgumentException("Serialized item array must be at least 9 bytes");
+        }
+        byte[] result = new byte[totalLength];
+        java.nio.ByteBuffer.wrap(result)
+                .put((byte) 1)
+                .putInt(1)
+                .putInt(totalLength - 9);
+        return result;
+    }
+
+    private byte[] inventorySnapshot(byte[] serializedItems) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream output = new DataOutputStream(new GZIPOutputStream(bytes))) {
+            output.writeInt(0x46474245);
+            output.writeByte(BlockEntitySnapshot.FORMAT_VERSION);
+            output.writeUTF("INVENTORY");
+            output.writeBoolean(false);
+            output.writeInt(serializedItems.length);
+            output.write(serializedItems);
+        }
+        return bytes.toByteArray();
+    }
+
+'''
+          if helper_anchor not in test:
+              raise SystemExit('missing helper anchor')
+          test = test.replace(helper_anchor, helpers + helper_anchor, 1)
+          test_path.write_text(test)
+
+          desc_path = Path('src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotDescriptionTest.java')
+          desc = desc_path.read_text()
+          old = 'byte[] serialized = new byte[]{4, 8, 15, 16, 23, 42};'
+          new = ('byte[] serialized = new byte[]{1, 0, 0, 0, 3, '
+                 '0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};')
+          if old not in desc:
+              raise SystemExit('missing description fixture replacement')
+          desc_path.write_text(desc.replace(old, new, 1))
+          PY
+      - name: Run focused and full tests
+        run: |
+          ./gradlew --no-daemon test --tests org.pinnaclesmp.fragguard.BlockEntitySnapshotTest --tests org.pinnaclesmp.fragguard.BlockEntitySnapshotDescriptionTest --tests org.pinnaclesmp.fragguard.Paper262PersistenceCompatibilityTest
+          ./gradlew --no-daemon clean build
+      - name: Commit fix and remove helper workflow
+        shell: bash
+        run: |
+          rm .github/workflows/pr89-codex-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main/java/org/pinnaclesmp/fragguard/BlockEntitySnapshot.java \
+                  src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotTest.java \
+                  src/test/java/org/pinnaclesmp/fragguard/BlockEntitySnapshotDescriptionTest.java \
+                  .github/workflows/pr89-codex-fix.yml
+          git commit -m "Validate serialized inventory framing before decode"
+          git push origin HEAD:80-verify-26-2-history-and-rollback-snapshots-remain-compatible-on-paper-26-3
