@@ -2,194 +2,148 @@
 
 This checklist is the release gate for FragGuard `26.3-1.2.0` on Paper `26.3.build.136-beta`.
 
-Run it on a disposable copy of a real server, not the production world. Use an existing `plugins/FragGuard` directory so startup, schema, history, and rollback recovery are exercised against real retained data.
+Run it on a disposable copy of a real server. Preserve the complete `plugins/FragGuard` directory while the server is stopped before beginning.
 
 ## Record before testing
 
-Capture these values before the first test:
+Capture:
 
 ```text
 Paper build: 26.3.build.136-beta
-FragGuard build: 26.3-1.2.0
+FragGuard build: 26.3-1.2.0-beta.1 or newer candidate
 Java: 25
-Existing FragGuard schema: 4
+Starting FragGuard version:
+Starting FragGuard schema:
 Test operator:
 World name:
 World UUID:
 ```
 
-Also preserve the complete pre-test `plugins/FragGuard` directory while the server is fully stopped.
+For the migration release gate, at least one run must begin from an actual FragGuard `26.2-1.1.2` data directory using **schema 3**. A second startup/restart after migration verifies normal schema-4 reopening.
 
-## Result notation
+Use one of these beside every section:
 
-Use one of these beside every test:
-
-- `PASS` — behaved exactly as expected.
+- `PASS` — behaved as expected.
 - `FAIL` — reproducible FragGuard defect.
 - `BLOCKED` — test could not be performed; state why.
-- `N/A` — only when the scenario genuinely does not apply.
+- `N/A` — only when the scenario genuinely does not apply, with a reason.
 
-For any failure, capture:
+For a failure, capture the console/log excerpt, exact command or action, world/coordinates, expected result, actual result, and whether restart reproduces it.
 
-```text
-Paper console/log excerpt:
-Exact command or action:
-World + coordinates:
-Expected result:
-Actual result:
-Whether restart reproduces it:
-```
+## 1. Startup, schema upgrade, storage, and restart
 
-## 1. Startup, upgrade, and storage
+### Schema-3 upgrade run
 
-1. Start Paper with the existing FragGuard data directory and the new plugin JAR.
-2. Confirm FragGuard enables without `NoSuchMethodError`, `ClassNotFoundException`, linkage errors, or plugin-disable messages.
-3. Run `/fg status`.
-4. Confirm storage reports healthy and queue/drop counters are normal.
-5. Confirm the database remains schema 4; Paper 26.3 alone must not trigger another schema migration.
-6. Perform several normal block changes, stop the server cleanly, and start it again.
-7. Confirm FragGuard starts cleanly after restart and the newly recorded history is still present.
+1. Start from a preserved `26.2-1.1.2` FragGuard data directory with `PRAGMA user_version=3`.
+2. Install the Paper 26.3 FragGuard release candidate and start the server.
+3. Confirm FragGuard enables without `NoSuchMethodError`, `ClassNotFoundException`, `NoClassDefFoundError`, `LinkageError`, or plugin-disable messages.
+4. Confirm the v3→v4 migration completes successfully.
+5. Run `/fg status` and confirm storage is healthy.
+6. Verify existing retained history is still queryable.
+7. Verify representative retained block-entity/history data remains readable.
+
+### Schema-4 reopen run
+
+8. Make several normal changes and confirm they are logged.
+9. Stop the server cleanly and start it again.
+10. Confirm FragGuard reopens schema 4 without another migration and the newly accepted history remains present.
 
 Expected:
 
-- startup succeeds;
-- no Paper-version-only schema rewrite occurs;
+- the production schema-3→4 path is exercised;
+- retained history is preserved;
+- startup and restart succeed;
 - SQLite remains healthy;
-- restart does not lose accepted history.
+- Paper 26.3 alone does not trigger another schema change after schema 4 is reached.
 
 ## 2. Ordinary and multi-block player logging
 
-Use a quiet test area.
-
-1. Place and break a normal full block such as stone.
-2. Open raw history for the location.
-3. Verify actor, world, coordinates, timestamp, action, before block data, and after block data.
-4. Repeat with representative multi-block or attached structures, for example a door and a bed.
-5. Verify every affected block coordinate is represented and no unrelated coordinate is added.
-
-Expected:
-
-- player attribution is correct;
-- before/after states are exact;
-- both halves/affected blocks of multi-block structures are retained.
+1. Place and break a normal full block.
+2. Inspect raw history and verify actor, world, coordinates, timestamp, action, and before/after block data.
+3. Repeat with representative multi-block/attached structures such as a door and bed.
+4. Verify all affected coordinates are represented and unrelated coordinates are not added.
 
 ## 3. GUI and lookup
 
 1. Open `/fg`.
-2. Run a short lookup around the test area.
-3. Browse Condensed Activities.
-4. Open an activity and then View All Raw Events.
-5. Verify all represented raw rows remain reachable.
-6. Exercise Player, Action, and Material filters.
-7. Page forward and backward through results.
-8. Run a substantially larger lookup containing enough history to require multiple database pages.
-9. While one large lookup/page/filter request is still resolving, immediately start a newer one.
-10. Verify the older async completion does not replace the newer GUI state.
-11. Open raw details for a block-entity event and verify before/after block-entity details are shown.
-
-Expected:
-
-- condensed grouping never hides access to raw rows;
-- filters apply correctly;
-- paging is deterministic;
-- stale async work is discarded;
-- block-entity BLOB details load only when the exact event is opened.
+2. Run short and large lookups.
+3. Browse Condensed Activities and then View All Raw Events.
+4. Verify every represented raw row remains reachable.
+5. Exercise Player, Action, and Material filters.
+6. Page forward/backward through results.
+7. Start a newer GUI request while an older async request is still resolving and verify the older completion cannot replace newer state.
+8. Open a block-entity raw event and verify before/after persistent details load correctly.
 
 ## 4. Block-entity live validation
 
-For each type below, create a known persistent-state change, verify lookup details, roll it back, and then undo that rollback.
+Create a recognizable persistent-state change for each applicable type, inspect it, roll it back, then undo the rollback:
 
-Test at least:
+- chest or barrel;
+- Shelf;
+- sign;
+- banner;
+- player head;
+- lectern;
+- decorated pot.
 
-- chest or barrel with recognizable items;
-- Shelf, including an item swap;
-- sign with recognizable text;
-- banner with a recognizable pattern;
-- player head with a known profile/texture;
-- lectern with a book and page state;
-- decorated pot with recognizable sherds/items.
-
-For every block entity verify:
-
-1. History records the expected before and after persistent state.
-2. Raw-event details display the persistent state correctly.
-3. A rollback restores the earlier persistent state.
-4. Undo restores the state that existed immediately before rollback.
-5. A conflicting live edit is not silently overwritten in normal mode.
+For each, verify history, raw details, rollback restoration, undo restoration, and normal-mode conflict protection.
 
 ### Shelf-specific checks
 
 1. Test an unpowered Shelf item swap.
 2. Test a powered connected three-Shelf chain.
-3. Verify all changed Shelves are logged.
-4. Place a second independent three-Shelf chain directly beside the first and verify interacting with one chain does not attribute changes from the neighboring chain.
-5. If possible, have two players interact with the same Shelf/chain during the same server tick or as close together as practical; verify history remains state-contiguous and actor attribution does not collapse both swaps into the first player.
+3. Verify every changed Shelf is logged.
+4. Put a second independent chain directly beside the first and verify the neighboring chain is not attributed to the clicked chain.
+5. If practical, test two near-simultaneous actors on the same Shelf/chain and verify actor/state boundaries remain correct.
 
 ## 5. Explosions
 
 ### TNT
 
 1. Prime TNT by a player.
-2. Let it explode blocks.
-3. Verify TNT removal/priming and explosion block changes are logged with the most specific available player attribution.
+2. Allow it to destroy blocks.
+3. Verify TNT priming/removal and destroyed blocks are logged with the most specific available attribution.
 
 ### Entity explosion
 
-Trigger a representative entity-caused explosion and verify destroyed blocks are recorded with the correct entity/player cause when available.
+Trigger a representative entity-caused explosion and verify destroyed blocks and available causal attribution.
 
-Expected:
-
-- no missing destroyed blocks;
-- no duplicate contradictory rows for the same mutation;
-- attribution is preserved where Paper exposes a causal player/projectile source.
+Expected: no missing destroyed blocks and no duplicate contradictory rows for one mutation.
 
 ## 6. Fire
 
-Test separately:
+Test:
 
-1. initial player ignition;
-2. fire spread to another block;
-3. a block destroyed by fire.
+- initial ignition;
+- fire spread;
+- a block destroyed by fire;
+- a player-fired flaming projectile when practical.
 
-Verify each persistent block transition appears in history and rollback restores destroyed blocks correctly.
-
-Also test a player-fired flaming projectile if practical and confirm the player, not merely the projectile UUID, is retained as actor when Paper exposes the shooter.
+Verify persistent transitions are logged, destroyed blocks can be restored, and player shooter attribution is retained when Paper exposes it.
 
 ## 7. Liquids and buckets
 
 Test:
 
-- natural/placed water flow;
+- water flow;
 - lava flow;
-- source/level retraction or decay;
-- player bucket placement;
-- player bucket removal;
+- liquid source/level retraction or decay;
+- player bucket placement/removal;
 - dispenser bucket placement/removal;
 - sponge absorption;
 - a block broken by liquid flow.
 
-Expected:
-
-- source and destination changes needed to reconstruct the liquid state are retained;
-- removal/retraction is not lost;
-- player/dispenser/environment attribution is correct;
-- rollback removes/restores liquids and liquid-broken blocks correctly.
+Verify source/destination transitions required for reconstruction are retained and rollback restores/removes liquid states correctly.
 
 ## 8. Pistons
 
-Test:
+Test piston extension, retraction, multiple moved blocks, and a piston-caused block break where applicable. Verify source/destination/moved states are complete and rollback reconstructs the prior arrangement.
 
-1. piston extension moving multiple blocks;
-2. piston retraction;
-3. a piston-caused block break where applicable.
-
-Verify source/destination/moved states are represented without partial history and that rollback reconstructs the earlier arrangement.
-
-## 9. Growth, formation, spread, and entity changes
+## 9. Growth, formation, spread, fertilization, and entity changes
 
 Exercise representative examples of:
 
-- natural block growth;
+- natural growth;
 - block form/fade;
 - block spread;
 - leaves decay;
@@ -197,22 +151,17 @@ Exercise representative examples of:
 - structure/tree growth;
 - entity-caused block formation/change.
 
-Expected:
-
-- specialized events keep their intended FragGuard action/cause instead of being relabeled by a generic inherited Bukkit event handler;
-- no duplicate competing rows describe one mutation.
+Verify specialized events retain their intended action/cause and one mutation is not duplicated under competing inherited handlers.
 
 ## 10. Dragon egg teleport
 
 1. Trigger a dragon egg teleport.
-2. Verify the source removal and destination placement are both present under the dedicated teleport action.
-3. Roll back the event and confirm the egg returns to the expected prior state.
+2. Verify source removal and destination placement are both recorded under the teleport action.
+3. Roll it back and verify the prior state is restored.
 
 ## 11. Rollback preview and normal confirmation
 
-Create several known changes in a small radius, then run a rollback preview using either the GUI or command path.
-
-Example command:
+Create known changes and run a preview, for example:
 
 ```text
 /fg rollback r:10 t:5m
@@ -220,99 +169,86 @@ Example command:
 
 Verify:
 
-1. Preview does not mutate the world.
-2. Preview reports the expected affected blocks/chunks and target time.
-3. Confirmation applies only the previewed scope.
-4. The confirmation token is operator-bound, single-use, and expires normally.
-5. A completed rollback receives a durable job ID.
+- preview does not mutate the world;
+- affected blocks/chunks and target time are sensible;
+- confirmation applies only the previewed scope;
+- token binding/expiry/single-use behavior works;
+- the completed rollback receives a durable job ID.
 
 ## 12. Non-force conflict protection
 
-1. Create history that would be targeted by rollback.
-2. Generate the preview.
-3. Before confirmation reaches a target block, make a conflicting live edit to that block.
-4. Confirm the rollback.
+1. Create a rollback preview.
+2. Make a conflicting live edit before the target is applied.
+3. Confirm the rollback.
 
-Expected:
-
-- the conflicting live edit is skipped/rejected rather than overwritten;
-- unaffected targets still apply normally;
-- the job/audit state reports the conflict consistently.
+Verify the conflict is skipped/rejected, unrelated targets continue normally, and job/audit state reports the conflict consistently.
 
 ## 13. Force rollback revalidation
 
-1. Repeat a conflict scenario with force mode enabled.
-2. Change the live block after preview.
-3. Confirm the force rollback.
-
-Expected:
-
-- FragGuard revalidates from the latest observed live state;
-- it does not blindly apply a stale prepared state;
-- resulting audit/undo data describes what was actually changed.
+Repeat the conflict scenario in force mode. Verify FragGuard revalidates from current live state rather than blindly applying a stale prepared state, and audit/undo data represents what actually changed.
 
 ## 14. Undo
 
-1. Complete a rollback that changes multiple ordinary blocks and at least one supported block entity.
-2. Record its job ID.
-3. Run:
-
-```text
-/fg undo <job-id>
-```
-
-Verify the exact pre-rollback state is restored, including block-entity contents.
-
-Then edit one rolled-back target after the rollback but before undo and repeat on a fresh job.
-
-Expected:
-
-- normal undo does not overwrite a conflicting later player edit;
-- unresolved conflicts remain retryable as designed.
+1. Complete a rollback containing ordinary blocks and at least one supported block entity.
+2. Run `/fg undo <job-id>`.
+3. Verify the exact pre-rollback state returns.
+4. On a fresh job, make a later conflicting edit before undo and verify normal undo does not overwrite that edit and leaves the conflict retryable as designed.
 
 ## 15. Overlap protection
 
-1. Start a rollback job in one world that remains active long enough to overlap another request.
-2. Attempt a second rollback whose area/job conflicts with the first.
-
-Expected:
-
-- conflicting jobs in the same world are rejected;
-- an unrelated operation in another world or non-overlapping allowed scope is not incorrectly blocked.
+1. Start a rollback job that remains active.
+2. Attempt a conflicting rollback in the same world.
+3. Verify it is rejected.
+4. Verify unrelated work is not incorrectly blocked.
 
 ## 16. Multi-chunk and TPS/tick safeguards
 
-Use a disposable area spanning several already-generated chunks.
+Use an already-generated disposable area spanning several chunks.
 
-1. Create enough history to require a multi-slice/multi-chunk rollback.
-2. Keep `rollback-blocks-per-tick` and `rollback-max-millis-per-tick` at normal values first.
-3. Confirm the server remains responsive while the rollback progresses.
-4. Verify required chunks are loaded without generating unrelated terrain.
-5. Raise `rollback-minimum-tps` temporarily above the server's current TPS so work pauses.
-6. Lower it again and verify the job resumes.
+### Multi-chunk/tick-budget pass
+
+1. Create enough history to require multiple slices/chunks.
+2. Use normal `rollback-blocks-per-tick` and `rollback-max-millis-per-tick` values.
+3. Start the rollback and verify the server remains responsive.
+4. Verify existing chunks are loaded without generating unrelated terrain.
+5. Verify chunk tickets are released as work advances/completes.
+
+### TPS pause/resume pass
+
+FragGuard does **not** hot-reload `config.yml`; `rollback-minimum-tps` is read from the cached configuration loaded when the plugin enables. Do not edit the YAML while the server is running and expect the active plugin instance to see it.
+
+Use this reproducible restart-based sequence:
+
+1. Stop the server cleanly.
+2. Set `rollback-minimum-tps` above attainable server TPS (for example `21.0`) before startup.
+3. Start the server and begin or recover a sufficiently large rollback.
+4. Verify rollback mutation work remains paused because current TPS is below the configured threshold.
+5. Stop the server cleanly while the job remains persisted.
+6. Set `rollback-minimum-tps` back to the normal value (for example `18.0`, or `0` to disable TPS gating for the recovery check).
+7. Start the server again.
+8. Verify the persisted rollback is recovered and resumes without losing progress.
+9. Restore the server's intended normal configuration after the test.
 
 Expected:
 
-- chunk tickets are released as work advances/completes;
-- no unintended terrain generation occurs;
-- time/block budgets split work across ticks;
-- TPS pause/resume works without losing job progress.
-
-Restore the original configuration after this test.
+- per-tick work remains bounded;
+- TPS gating pauses mutation work;
+- restart with the lowered threshold allows persisted work to resume;
+- no rollback progress is fabricated or lost.
 
 ## 17. Restart during active rollback
 
-1. Start a rollback large enough to remain active for multiple ticks/slices.
-2. Stop/restart the server while the job is active. Prefer a normal stop first; if a crash-window test is performed, use only a disposable copy of the server.
-3. After restart, verify FragGuard loads the persisted job state.
-4. Verify prepared/unapplied work is not falsely exposed as completed history.
-5. Verify already-applied mutations remain represented for later undo.
+1. Start a rollback large enough to remain active for multiple slices.
+2. Stop/restart while it is active.
+3. Verify persisted job state loads on restart.
+4. Verify prepared-but-unapplied work is not exposed as completed history.
+5. Verify already-applied mutations remain represented for undo.
 6. Allow recovery/resume to finish.
-7. Undo the recovered completed job and verify the expected pre-rollback state returns.
+7. Undo the recovered job and verify the expected pre-rollback state returns.
 
 ## 18. Final log review
 
-Search the server log from the entire run for:
+Review the complete test log for:
 
 ```text
 NoSuchMethodError
@@ -325,12 +261,12 @@ FragGuard
 
 Expected:
 
-- no Paper 26.3 linkage/runtime compatibility errors;
-- no unexplained database-health degradation;
-- no dropped-write warning unless deliberately induced during a separate stress test.
+- no Paper 26.3 linkage/runtime compatibility error;
+- no unexplained storage-health degradation;
+- no unexpected dropped-write warning.
 
 ## Release decision
 
-`26.3-1.2.0` is release-ready only when every issue #82 acceptance item is `PASS`, or an explicitly non-applicable item is documented as `N/A` with a reason.
+`26.3-1.2.0` is release-ready only when all issue #82 acceptance items are explicitly represented by `PASS`, or by a justified `N/A` when genuinely non-applicable.
 
-Any reproducible migration/runtime defect discovered here should be fixed on the issue #82 branch or filed as a release-blocking issue before #82 is closed.
+Store the completed outcomes in `PAPER_26_3_RUNTIME_VALIDATION_RESULT.md`. Any reproducible runtime defect discovered during this gate must be fixed or filed as release-blocking before #82 is closed.
