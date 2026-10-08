@@ -227,7 +227,7 @@ Changing grouping thresholds changes only presentation. Exact raw history remain
 
 Requires Java 25. The Gradle 9.8.0 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-The current development feature version is `26.3-1.2.0`. Development targets Paper API `26.3.build.136-beta`, with `api-version: '26.3'`, following Paper 26.3's promotion to the beta release channel.
+The current development feature version is `26.3-1.2.1`. Development targets Paper API `26.3.build.159-beta`, with `api-version: '26.3'`, following Paper 26.3's promotion to the beta release channel.
 
 ```bash
 ./gradlew build
@@ -236,7 +236,7 @@ The current development feature version is `26.3-1.2.0`. Development targets Pap
 The plugin JAR is produced under:
 
 ```text
-build/libs/FragGuard-26.3-1.2.0.jar
+build/libs/FragGuard-26.3-1.2.1.jar
 ```
 
 Put the JAR in the server's `plugins` folder and restart Paper.

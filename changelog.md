@@ -1,5 +1,12 @@
 # FG Changelog
 
+## 26.3-1.2.1
+
+### Changed
+
+- Started the `26.3-1.2.1` development line and updated the Gradle project version so development builds produce `FragGuard-26.3-1.2.1.jar`.
+- Updated the Paper API development target from `26.3.build.136-beta` to `26.3.build.159-beta` and updated the dependency lock to match the new Paper coordinate.
+
 ## 26.3-1.2.0
 
 ### Added

@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "org.pinnaclesmp"
-version = "26.3-1.2.0"
+version = "26.3-1.2.1"
 
 java {
     // Paper 26.x uses the newer Paper API versioning and currently documents Java 25 for 26.x builds.
@@ -14,11 +14,11 @@ java {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:26.3.build.136-beta")
+    compileOnly("io.papermc.paper:paper-api:26.3.build.159-beta")
     implementation("org.xerial:sqlite-jdbc:3.53.4.0")
     implementation("org.slf4j:slf4j-nop:2.0.20")
 
-    testImplementation("io.papermc.paper:paper-api:26.3.build.136-beta")
+    testImplementation("io.papermc.paper:paper-api:26.3.build.159-beta")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
     testImplementation("org.mockito:mockito-core:5.24.0")
