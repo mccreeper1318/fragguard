@@ -22,6 +22,7 @@
 
 ### Fixed
 
+- Fixed #108: GUI history inventories now show a safe fallback icon for non-item Minecraft block states (including water cauldrons, moving pistons, and water), preventing large condensed/raw lookups and material filters from crashing without changing any recorded history.
 - Fixed #81 by logging Paper 26.3 Shelf inventory swaps even when block data is unchanged, including connected powered shelves, and added Shelf-specific lookup/raw-detail, conflict-protection, rollback, and undo coverage while retaining the generic `TileStateInventoryHolder` snapshot format.
 - Fixed #80 cross-version rollback conflicts by comparing compatible format-v1 block-entity snapshots after in-memory normalization through the current Paper item serializer; Paper 26.2 history, container contents, rollback snapshots, and undo data remain stored byte-for-byte and require no schema rewrite.
 - Fixed #72 by giving rollback previews an explicit lifecycle: previews now expire on a guarded scheduled cleanup, are cleared on operator disconnect and plugin shutdown, are skipped when an async query finishes for an offline player, and expired tokens are filtered from tab completion.
