@@ -185,7 +185,7 @@ final class FragGuardPagedLookupRenderer {
         return stack;
     }
 
-    private static Material icon(String key) {
+    static Material icon(String key) {
         return GuiMaterialIcon.fromHistory(key);
     }
 
