@@ -354,7 +354,7 @@ final class FragGuardGuiRenderer {
         return item(Material.RECOVERY_COMPASS, "&6Rollback Job #" + job.id(), lore);
     }
 
-    static Material filterIcon(LookupFilters.Category category, String key) {
+    private static Material filterIcon(LookupFilters.Category category, String key) {
         if (key == null) {
             return Material.BARRIER;
         }
@@ -409,7 +409,7 @@ final class FragGuardGuiRenderer {
         return stack;
     }
 
-    static Material icon(String key) {
+    private static Material icon(String key) {
         return GuiMaterialIcon.fromHistory(key);
     }
 
