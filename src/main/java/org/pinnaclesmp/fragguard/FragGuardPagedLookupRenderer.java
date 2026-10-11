@@ -14,7 +14,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 
 /** Rendering for database-backed lookup pages that are already bounded before reaching the server thread. */
 final class FragGuardPagedLookupRenderer {
@@ -169,22 +168,25 @@ final class FragGuardPagedLookupRenderer {
     }
 
     private static ItemStack item(Material material, String name, List<String> lore) {
-        ItemStack stack = new ItemStack(material);
+        ItemStack stack = new ItemStack(GuiMaterialIcon.asItem(material));
         ItemMeta meta = stack.getItemMeta();
-        meta.displayName(component(name));
-        if (!lore.isEmpty()) {
-            meta.lore(lore.stream().map(FragGuardPagedLookupRenderer::component).toList());
+        if (meta == null) {
+            // A metadata-less item must not break rendering of the history page.
+            stack = new ItemStack(Material.PAPER);
+            meta = stack.getItemMeta();
         }
-        stack.setItemMeta(meta);
+        if (meta != null) {
+            meta.displayName(component(name));
+            if (!lore.isEmpty()) {
+                meta.lore(lore.stream().map(FragGuardPagedLookupRenderer::component).toList());
+            }
+            stack.setItemMeta(meta);
+        }
         return stack;
     }
 
     private static Material icon(String key) {
-        if (key == null) {
-            return Material.PAPER;
-        }
-        Material material = Material.matchMaterial(key.replace("minecraft:", "").toUpperCase(Locale.ROOT));
-        return material == null || material.isAir() ? Material.PAPER : material;
+        return GuiMaterialIcon.fromHistory(key);
     }
 
     private static String actor(String value) {
