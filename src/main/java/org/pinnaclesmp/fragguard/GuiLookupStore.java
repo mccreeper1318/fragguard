@@ -287,6 +287,7 @@ final class GuiLookupStore {
             int pageSize
     ) {
         return boundedQueryAsync("selectRawPageAsync", () -> {
+            long started = System.nanoTime();
             try (Connection connection = openReadConnection()) {
                 List<LookupRow> fetched = selectRows(connection, query, startInclusive,
                         Math.max(1, pageSize) + 1);
@@ -295,6 +296,7 @@ final class GuiLookupStore {
                 GuiLookupCursor next = fetched.size() > visibleCount
                         ? GuiLookupCursor.of(fetched.get(visibleCount))
                         : null;
+                logTiming("raw-page rows=" + visible.size(), started, query);
                 return new GuiRawPage(visible, next);
             } catch (SQLException exception) {
                 throw new CompletionException(exception);
