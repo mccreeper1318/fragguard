@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Added #112 deep GUI regression coverage for page 3 and 10+, all 36-slot raw/condensed and 45-slot activity-raw boundaries, non-item block rendering, database timeout and renderer recovery, fixed snapshots, filters, and stale callbacks. Documented the Paper 26.3 in-game sign-off checklist in `docs/gui-regression-matrix-26.3-1.2.0.md`.
 - Reviewed Paper 26.3 beta source compatibility and migrated GUI/message presentation from deprecated legacy Bukkit string/color APIs to Adventure components and serializers; event logging, block-entity snapshots, and rollback/undo APIs required no compatibility shims.
 - Updated the Gradle wrapper from `9.7.1` to `9.8.0`, gradle/actions/setup-gradle from `6.3.0` to `6.4.0` SLF4J NOP from `2.0.19` to `2.0.20`, and Mockito from `5.23.0` to `5.24.0`, with regenerated dependency locks.
 - Updated the development target to Paper API `26.3.build.159-beta` from `26.3.build.136-beta`, with `api-version: '26.3'`; the FragGuard feature version remains `26.3-1.2.0`.
