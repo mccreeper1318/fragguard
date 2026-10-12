@@ -1,6 +1,8 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -10,12 +12,15 @@ import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
+import java.sql.SQLTimeoutException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
@@ -80,6 +85,7 @@ final class FragGuardGui implements Listener {
             case ROLLBACK_SETUP -> clickRollbackSetup(player, session, slot, event.isRightClick());
             case UNDO_LIST -> clickUndoList(player, session, slot);
             case UNDO_CONFIRM -> clickUndoConfirm(player, session, slot);
+            case RECOVERY -> clickRecovery(player, session, slot);
         }
     }
 
@@ -181,7 +187,6 @@ final class FragGuardGui implements Listener {
         int maxSpan = Math.max(0,
                 plugin.getConfig().getInt("gui-activity-max-span", LookupActivityGrouper.DEFAULT_MAX_SPAN));
 
-        player.closeInventory();
         player.sendMessage(color("&7Loading FragGuard lookup..."));
 
         // Keep the main Database read barrier so every accepted gameplay write submitted before this
@@ -196,16 +201,21 @@ final class FragGuardGui implements Listener {
                     }
                     if (throwable != null) {
                         reportLookupFailure(player, throwable);
-                        openSetup(player, session);
-                        return;
+                        return; // Keep the lookup setup inventory open for retry.
                     }
+                    Session.LookupView savedView = session.captureLookupView();
                     session.initializeLookup(
                             query, overview, maxGapMillis, maxDistance, maxDurationMillis, maxSpan);
-                    loadResultsPage(player, session, 0, false);
+                    loadResultsPage(player, session, 0, false, savedView);
                 }));
     }
 
     private void loadResultsPage(Player player, Session session, int targetPage, boolean recount) {
+        loadResultsPage(player, session, targetPage, recount, session.captureLookupView());
+    }
+
+    private void loadResultsPage(Player player, Session session, int targetPage, boolean recount,
+                                 Session.LookupView previousView) {
         if (session.baseQuery == null || targetPage < 0 || targetPage >= session.resultPageStarts.size()) {
             return;
         }
@@ -217,7 +227,7 @@ final class FragGuardGui implements Listener {
         boolean grouped = session.grouped;
         long existingCount = session.filteredTotalRows;
 
-        player.closeInventory();
+        Inventory expectedInventory = session.inventory;
         player.sendMessage(color("&7Loading FragGuard history page..."));
 
         CompletableFuture<Long> countFuture = recount
@@ -237,37 +247,47 @@ final class FragGuardGui implements Listener {
                     .thenApply(page -> new PreparedResultsPage(count, page, null));
         }).whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
             if (!player.isOnline() || sessions.get(playerId) != session
-                    || !session.lookupRequests.isCurrent(requestGeneration)) {
+                    || !session.lookupRequests.isCurrent(requestGeneration)
+                    || !sameDisplayedInventory(player, session, expectedInventory)) {
                 return;
             }
             if (throwable != null) {
+                session.restoreLookupView(previousView);
                 reportLookupFailure(player, throwable);
-                if (session.baseQuery == null) {
-                    openSetup(player, session);
-                } else {
-                    renderResults(player, session);
-                }
-                return;
+                return; // Never try rendering the same failed page as an error fallback.
             }
 
-            session.filteredTotalRows = prepared.totalRows();
-            session.page = targetPage;
-            session.visibleRows = prepared.rawPage() == null
+            List<LookupRow> newRows = prepared.rawPage() == null
                     ? List.of() : prepared.rawPage().rows();
-            session.visibleActivities = prepared.activityPage() == null
+            List<GuiActivitySummary> newActivities = prepared.activityPage() == null
                     ? List.of() : prepared.activityPage().activities();
             GuiLookupCursor next = prepared.rawPage() != null
                     ? prepared.rawPage().nextCursor()
                     : prepared.activityPage().nextCursor();
+
+            boolean opened = show(player, session, Screen.RESULTS, () -> FragGuardPagedLookupRenderer.results(
+                    newRows, newActivities, grouped, targetPage,
+                    prepared.totalRows(), session.totalRows,
+                    LookupFilters.summary(session.filters, session.filterCatalog),
+                    session.filters.active(), targetPage > 0, next != null),
+                    "results page " + (targetPage + 1) + " (" + (grouped ? "grouped" : "raw") + ")");
+            if (!opened) {
+                session.restoreLookupView(previousView);
+                return;
+            }
+            session.filteredTotalRows = prepared.totalRows();
+            session.page = targetPage;
+            session.visibleRows = newRows;
+            session.visibleActivities = newActivities;
             session.rememberResultNext(targetPage, next);
-            renderResults(player, session);
         }));
     }
 
     private void reportLookupFailure(Player player, Throwable throwable) {
         Throwable cause = root(throwable);
-        if (cause instanceof TimeoutException) {
-            player.sendMessage(color("&cLookup timed out. Reduce the radius or time window and try again."));
+        if (cause instanceof TimeoutException || cause instanceof SQLTimeoutException) {
+            plugin.getLogger().log(Level.WARNING, "FragGuard GUI database lookup timed out", cause);
+            player.sendMessage(color("&cDatabase lookup timed out. Narrow the radius/time or retry."));
         } else {
             plugin.getLogger().log(Level.WARNING, "FragGuard GUI lookup failed", cause);
             player.sendMessage(color("&cFragGuard GUI lookup failed. Check console for details."));
@@ -279,8 +299,7 @@ final class FragGuardGui implements Listener {
             openSetup(player, session);
             return;
         }
-        session.screen = Screen.RESULTS;
-        open(player, session, FragGuardPagedLookupRenderer.results(
+        show(player, session, Screen.RESULTS, () -> FragGuardPagedLookupRenderer.results(
                 session.visibleRows,
                 session.visibleActivities,
                 session.grouped,
@@ -290,7 +309,7 @@ final class FragGuardGui implements Listener {
                 LookupFilters.summary(session.filters, session.filterCatalog),
                 session.filters.active(),
                 session.page > 0,
-                session.resultHasNext));
+                session.resultHasNext), "return to results page " + (session.page + 1));
     }
 
     private void clickResults(Player player, Session session, int slot) {
@@ -313,18 +332,20 @@ final class FragGuardGui implements Listener {
         switch (slot) {
             case 2 -> openFilters(player, session);
             case 4 -> {
+                Session.LookupView previous = session.captureLookupView();
                 session.grouped = !session.grouped;
                 session.resetResultPaging();
                 session.detail = null;
-                loadResultsPage(player, session, 0, false);
+                loadResultsPage(player, session, 0, false, previous);
             }
             case 6 -> {
                 if (session.filters.active()) {
+                    Session.LookupView previous = session.captureLookupView();
                     session.filters = LookupFilters.State.empty();
                     session.filteredTotalRows = session.totalRows;
                     session.resetResultPaging();
                     session.detail = null;
-                    loadResultsPage(player, session, 0, false);
+                    loadResultsPage(player, session, 0, false, previous);
                 }
             }
             case 8 -> player.closeInventory();
