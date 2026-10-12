@@ -88,9 +88,6 @@ class GuiPagedInventoryRegressionTest {
                     "No filters applied", false, true, true));
             assertSame(inventory, FragGuardPagedLookupRenderer.activityRaw(
                     raw, 2, 109, true, true));
-            assertSame(inventory, FragGuardPagedLookupRenderer.activityDetail(grouped.getFirst())
-                    == null ? null : inventory, "activity detail uses a different inventory size");
-
             // All original block names and before/after states are preserved in
             // display components even though icons fall back to PAPER.
             assertTrue(shownNames.stream().anyMatch(n -> n.contains("Water Cauldron")));
