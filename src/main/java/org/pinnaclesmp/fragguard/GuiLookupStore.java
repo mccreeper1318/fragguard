@@ -595,7 +595,7 @@ final class GuiLookupStore {
                 SELECT %s
                 FROM block_changes
                 WHERE %s
-                """.formatted(LIGHTWEIGHT_COLUMNS, AREA_FILTER));
+                """.formatted(LIGHTWEIGHT_COLUMNS, areaFilter(query)));
         appendFilterSql(sql, query.filters());
         if (startInclusive != null) {
             sql.append("""
