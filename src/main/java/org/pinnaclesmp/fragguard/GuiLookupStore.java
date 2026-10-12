@@ -84,16 +84,22 @@ final class GuiLookupStore {
     private final File databaseFile;
     private final int queryTimeoutSeconds;
     private final Logger logger;
+    private final boolean explainQueries;
     private final ThreadLocal<QueryCancellation> activeRequest = new ThreadLocal<>();
 
     GuiLookupStore(File dataFolder, int queryTimeoutSeconds) {
-        this(dataFolder, queryTimeoutSeconds, Logger.getLogger("FragGuard"));
+        this(dataFolder, queryTimeoutSeconds, Logger.getLogger("FragGuard"), false);
     }
 
     GuiLookupStore(File dataFolder, int queryTimeoutSeconds, Logger logger) {
+        this(dataFolder, queryTimeoutSeconds, logger, false);
+    }
+
+    GuiLookupStore(File dataFolder, int queryTimeoutSeconds, Logger logger, boolean explainQueries) {
         this.databaseFile = new File(dataFolder, "fragguard.db");
         this.queryTimeoutSeconds = Math.max(1, queryTimeoutSeconds);
         this.logger = logger;
+        this.explainQueries = explainQueries;
     }
 
     /**
@@ -136,7 +142,7 @@ final class GuiLookupStore {
     }
 
     private PreparedStatement readStatement(Connection connection, String sql) throws SQLException {
-        PreparedStatement statement = readStatement(connection,sql);
+        PreparedStatement statement = connection.prepareStatement(sql);
         QueryCancellation cancellation = activeRequest.get();
         if (cancellation != null) {
             cancellation.track(statement);
@@ -173,6 +179,33 @@ final class GuiLookupStore {
                     // The UI already received TimeoutException; cancellation is best effort.
                 }
             }
+        }
+    }
+
+    private void explain(Connection connection, String phase, String sql,
+                         GuiLookupQuery query, GuiLookupCursor cursor, Integer limit) {
+        if (!explainQueries) {
+            return;
+        }
+        // Bind the same area/filter/cursor values as the live SQL, but never log them.
+        try (PreparedStatement statement = connection.prepareStatement("EXPLAIN QUERY PLAN " + sql)) {
+            statement.setQueryTimeout(queryTimeoutSeconds);
+            int index = bindArea(statement, query);
+            index = bindFilters(statement, index, query.filters());
+            if (cursor != null) {
+                index = bindCursorUpper(statement, index, cursor);
+            }
+            if (limit != null) {
+                statement.setInt(index, limit);
+            }
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    logger.info("FragGuard GUI EXPLAIN " + phase + ": " + rows.getString("detail"));
+                }
+            }
+        } catch (SQLException error) {
+            // Planner diagnostics cannot cause a valid history lookup to fail.
+            logger.log(Level.WARNING, "FragGuard GUI could not EXPLAIN " + phase, error);
         }
     }
 
@@ -450,7 +483,8 @@ final class GuiLookupStore {
     private long countRows(Connection connection, GuiLookupQuery query) throws SQLException {
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM block_changes WHERE ").append(AREA_FILTER);
         appendFilterSql(sql, query.filters());
-        try (PreparedStatement statement = readStatement(connection,sql.toString())) {
+        explain(connection, "count", sql.toString(), query, null, null);
+        try (PreparedStatement statement = readStatement(connection, sql.toString())) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             int index = bindArea(statement, query);
             bindFilters(statement, index, query.filters());
@@ -473,8 +507,9 @@ final class GuiLookupStore {
                 WHERE %s
                 GROUP BY actor_identity
                 """.formatted(ACTOR_IDENTITY, AREA_FILTER);
+        explain(connection, "catalog-player", playerSql, unfiltered, null, null);
         long playerStarted = System.nanoTime();
-        try (PreparedStatement statement = readStatement(connection,playerSql)) {
+        try (PreparedStatement statement = readStatement(connection, playerSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
             try (ResultSet rows = statement.executeQuery()) {
@@ -493,8 +528,9 @@ final class GuiLookupStore {
                 WHERE %s
                 GROUP BY action
                 """.formatted(AREA_FILTER);
+        explain(connection, "catalog-action", actionSql, unfiltered, null, null);
         long actionStarted = System.nanoTime();
-        try (PreparedStatement statement = readStatement(connection,actionSql)) {
+        try (PreparedStatement statement = readStatement(connection, actionSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
             try (ResultSet rows = statement.executeQuery()) {
@@ -513,8 +549,9 @@ final class GuiLookupStore {
                 WHERE %s
                 GROUP BY material_key
                 """.formatted(MATERIAL_KEY, AREA_FILTER);
+        explain(connection, "catalog-material", materialSql, unfiltered, null, null);
         long materialStarted = System.nanoTime();
-        try (PreparedStatement statement = readStatement(connection,materialSql)) {
+        try (PreparedStatement statement = readStatement(connection, materialSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
             try (ResultSet rows = statement.executeQuery()) {
@@ -568,7 +605,9 @@ final class GuiLookupStore {
         }
         sql.append("\nORDER BY happened_at DESC, id DESC\nLIMIT ?");
 
-        try (PreparedStatement statement = readStatement(connection,sql.toString())) {
+        explain(connection, "page-" + (startInclusive == null ? "first" : "next"),
+                sql.toString(), query, startInclusive, Math.max(1, limit));
+        try (PreparedStatement statement = readStatement(connection, sql.toString())) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             int index = bindArea(statement, query);
             index = bindFilters(statement, index, query.filters());
