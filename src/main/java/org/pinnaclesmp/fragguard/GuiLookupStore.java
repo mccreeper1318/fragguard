@@ -63,8 +63,8 @@ final class GuiLookupStore {
             AND (world_uuid = ? OR world = ?)
             AND happened_at >= ?
             AND happened_at <= ?
-            AND chunk_x BETWEEN ? AND ?
-            AND chunk_z BETWEEN ? AND ?
+            AND %s
+            AND %s
             AND x BETWEEN ? AND ?
             AND z BETWEEN ? AND ?
             AND ((CAST(x AS INTEGER) - ?) * (CAST(x AS INTEGER) - ?)
@@ -379,7 +379,7 @@ final class GuiLookupStore {
                     SELECT %s
                     FROM block_changes
                     WHERE %s
-                    """.formatted(LIGHTWEIGHT_COLUMNS, AREA_FILTER));
+                    """.formatted(LIGHTWEIGHT_COLUMNS, areaFilter(query)));
             appendFilterSql(sql, query.filters());
             sql.append("""
                     
@@ -481,7 +481,7 @@ final class GuiLookupStore {
     }
 
     private long countRows(Connection connection, GuiLookupQuery query) throws SQLException {
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM block_changes WHERE ").append(AREA_FILTER);
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM block_changes WHERE ").append(areaFilter(query));
         appendFilterSql(sql, query.filters());
         explain(connection, "count", sql.toString(), query, null, null);
         try (PreparedStatement statement = readStatement(connection, sql.toString())) {
@@ -506,7 +506,7 @@ final class GuiLookupStore {
                 FROM block_changes
                 WHERE %s
                 GROUP BY actor_identity
-                """.formatted(ACTOR_IDENTITY, AREA_FILTER);
+                """.formatted(ACTOR_IDENTITY, areaFilter(unfiltered));
         explain(connection, "catalog-player", playerSql, unfiltered, null, null);
         long playerStarted = System.nanoTime();
         try (PreparedStatement statement = readStatement(connection, playerSql)) {
@@ -527,7 +527,7 @@ final class GuiLookupStore {
                 FROM block_changes
                 WHERE %s
                 GROUP BY action
-                """.formatted(AREA_FILTER);
+                """.formatted(areaFilter(unfiltered));
         explain(connection, "catalog-action", actionSql, unfiltered, null, null);
         long actionStarted = System.nanoTime();
         try (PreparedStatement statement = readStatement(connection, actionSql)) {
@@ -548,7 +548,7 @@ final class GuiLookupStore {
                 FROM block_changes
                 WHERE %s
                 GROUP BY material_key
-                """.formatted(MATERIAL_KEY, AREA_FILTER);
+                """.formatted(MATERIAL_KEY, areaFilter(unfiltered));
         explain(connection, "catalog-material", materialSql, unfiltered, null, null);
         long materialStarted = System.nanoTime();
         try (PreparedStatement statement = readStatement(connection, materialSql)) {
@@ -655,6 +655,56 @@ final class GuiLookupStore {
         return connection;
     }
 
+    // Index idx_fg_spatial_time begins with (world_uuid, chunk_x, chunk_z, happened_at).
+    // BETWEEN on chunk_x is a range and prevents SQLite using equality on chunk_z
+    // and the timestamp suffix of that composite index. Enumerating the few
+    // intersected chunk coordinates as IN lists makes both chunk dimensions
+    // usable for indexed seeks even when the world database contains millions
+    // of records outside the requested radius.
+    private static final long MAX_INDEXED_CHUNK_VALUES = 64L;
+
+    private static long minChunk(int center, int radius) {
+        return Math.floorDiv((long) center - radius, 16L);
+    }
+
+    private static long maxChunk(int center, int radius) {
+        return Math.floorDiv((long) center + radius, 16L);
+    }
+
+    private static boolean enumerateChunks(long first, long last) {
+        return last >= first && last - first < MAX_INDEXED_CHUNK_VALUES;
+    }
+
+    private static String chunkPredicate(String column, long first, long last) {
+        if (!enumerateChunks(first, last)) {
+            return column + " BETWEEN ? AND ?";
+        }
+        return column + " IN (" + "?,".repeat((int) (last - first)) + "?)";
+    }
+
+    private String areaFilter(GuiLookupQuery query) {
+        return AREA_FILTER.formatted(
+                chunkPredicate("chunk_x",
+                        minChunk(query.centerX(), query.radius()),
+                        maxChunk(query.centerX(), query.radius())),
+                chunkPredicate("chunk_z",
+                        minChunk(query.centerZ(), query.radius()),
+                        maxChunk(query.centerZ(), query.radius())));
+    }
+
+    private static int bindChunkPredicate(PreparedStatement statement, int index,
+                                          long first, long last) throws SQLException {
+        if (!enumerateChunks(first, last)) {
+            statement.setLong(index++, first);
+            statement.setLong(index++, last);
+            return index;
+        }
+        for (long value = first; value <= last; value++) {
+            statement.setLong(index++, value);
+        }
+        return index;
+    }
+
     private int bindArea(PreparedStatement statement, GuiLookupQuery query) throws SQLException {
         long minX = (long) query.centerX() - query.radius();
         long maxX = (long) query.centerX() + query.radius();
@@ -668,10 +718,10 @@ final class GuiLookupStore {
         statement.setString(index++, query.worldName());
         statement.setLong(index++, query.cutoffTimestamp());
         statement.setLong(index++, query.snapshotTimestamp());
-        statement.setLong(index++, Math.floorDiv(minX, 16L));
-        statement.setLong(index++, Math.floorDiv(maxX, 16L));
-        statement.setLong(index++, Math.floorDiv(minZ, 16L));
-        statement.setLong(index++, Math.floorDiv(maxZ, 16L));
+        index = bindChunkPredicate(statement, index,
+                Math.floorDiv(minX, 16L), Math.floorDiv(maxX, 16L));
+        index = bindChunkPredicate(statement, index,
+                Math.floorDiv(minZ, 16L), Math.floorDiv(maxZ, 16L));
         statement.setLong(index++, minX);
         statement.setLong(index++, maxX);
         statement.setLong(index++, minZ);
