@@ -498,6 +498,18 @@ final class Database {
         }), false);
     }
 
+    /**
+     * Completes after all accepted block writes ahead of this operation are durable.
+     *
+     * <p>The database worker flushes {@code operation.writeBarrier} before executing
+     * this no-op. Unlike {@code lookupSinceAsync(..., pageSize=0)}, this performs
+     * no legacy COUNT, page query, or block-entity data loading. The GUI can then
+     * capture its bounded snapshot and count through GuiLookupStore exactly once.</p>
+     */
+    CompletableFuture<Void> awaitWritesAsync() {
+        return submit(databaseConnection -> null, true);
+    }
+
     CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
                                               int page, int pageSize, int retentionDays) {
         String worldUuid = resolveWorldUuid(worldName);
