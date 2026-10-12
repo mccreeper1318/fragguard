@@ -117,8 +117,7 @@ final class FragGuardGui implements Listener {
     private void openMain(Player player) {
         Session session = sessions.computeIfAbsent(player.getUniqueId(), ignored -> new Session());
         session.reset(plugin.getRetentionDays(), maxRadius(), maxRollbackRadius());
-        session.screen = Screen.MAIN;
-        open(player, session, FragGuardGuiRenderer.mainMenu());
+        show(player, session, Screen.MAIN, FragGuardGuiRenderer::mainMenu, "main menu");
     }
 
     private void clickMain(Player player, Session session, int slot) {
@@ -140,8 +139,9 @@ final class FragGuardGui implements Listener {
     }
 
     private void openSetup(Player player, Session session) {
-        session.screen = Screen.SETUP;
-        open(player, session, FragGuardGuiRenderer.lookupSetup(session.radius, times().get(session.timeIndex).label()));
+        show(player, session, Screen.SETUP,
+                () -> FragGuardGuiRenderer.lookupSetup(session.radius, times().get(session.timeIndex).label()),
+                "lookup setup");
     }
 
     private void clickSetup(Player player, Session session, int slot, boolean rightClick) {
@@ -576,7 +576,7 @@ final class FragGuardGui implements Listener {
 
         long requestGeneration = session.detailRequests.begin();
         UUID playerId = player.getUniqueId();
-        player.closeInventory();
+        Inventory expectedInventory = session.inventory;
         player.sendMessage(color("&7Loading exact block-entity details..."));
         guiLookupStore.loadEventPayloadAsync(row.id())
                 .thenApplyAsync(payload -> new PreparedExactEvent(
@@ -587,16 +587,22 @@ final class FragGuardGui implements Listener {
                 ))
                 .whenComplete((prepared, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
-                            || !session.detailRequests.isCurrent(requestGeneration)) {
+                            || !session.detailRequests.isCurrent(requestGeneration)
+                            || !sameDisplayedInventory(player, session, expectedInventory)) {
                         return;
                     }
                     if (throwable != null) {
                         reportExactDetailFailure(player, throwable);
-                        returnToExactSource(player, session);
-                        return;
+                        return; // The exact event's source page is still visible.
                     }
-                    session.exactEvent = prepared;
-                    renderExactEvent(player, session);
+                    // Stage the event; only the successful detail inventory open commits it.
+                    if (show(player, session, Screen.EXACT_DETAIL,
+                            () -> FragGuardGuiRenderer.exactEventDetail(
+                                    prepared.row(), prepared.beforeEntity(),
+                                    prepared.afterEntity(), prepared.blockEntityChanged()),
+                            "exact event #" + row.id())) {
+                        session.exactEvent = prepared;
+                    }
                 }));
     }
 
@@ -605,10 +611,11 @@ final class FragGuardGui implements Listener {
             returnToExactSource(player, session);
             return;
         }
-        session.screen = Screen.EXACT_DETAIL;
         PreparedExactEvent event = session.exactEvent;
-        open(player, session, FragGuardGuiRenderer.exactEventDetail(
-                event.row(), event.beforeEntity(), event.afterEntity(), event.blockEntityChanged()));
+        show(player, session, Screen.EXACT_DETAIL,
+                () -> FragGuardGuiRenderer.exactEventDetail(
+                        event.row(), event.beforeEntity(), event.afterEntity(), event.blockEntityChanged()),
+                "exact event #" + event.row().id());
     }
 
     private void clickExactDetail(Player player, Session session, int slot) {
@@ -644,12 +651,11 @@ final class FragGuardGui implements Listener {
     }
 
     private void openRollbackSetup(Player player, Session session) {
-        session.screen = Screen.ROLLBACK_SETUP;
-        open(player, session, FragGuardGuiRenderer.rollbackSetup(
+        show(player, session, Screen.ROLLBACK_SETUP, () -> FragGuardGuiRenderer.rollbackSetup(
                 session.rollbackRadius,
                 times().get(session.rollbackTimeIndex).label(),
                 session.rollbackForce,
-                activeRollbackToken(player) != null));
+                activeRollbackToken(player) != null), "rollback setup");
     }
 
     private void clickRollbackSetup(Player player, Session session, int slot, boolean rightClick) {
@@ -708,18 +714,18 @@ final class FragGuardGui implements Listener {
     private void loadUndoJobs(Player player, Session session) {
         long requestGeneration = session.undoRequests.begin();
         UUID playerId = player.getUniqueId();
-        player.closeInventory();
+        Inventory expectedInventory = session.inventory;
         player.sendMessage(color("&7Loading undoable FragGuard rollback jobs..."));
         guiRollbackStore.loadUndoableJobsAsync()
                 .whenComplete((jobs, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
-                            || !session.undoRequests.isCurrent(requestGeneration)) {
+                            || !session.undoRequests.isCurrent(requestGeneration)
+                            || !sameDisplayedInventory(player, session, expectedInventory)) {
                         return;
                     }
                     if (throwable != null) {
                         plugin.getLogger().log(Level.WARNING, "FragGuard GUI undo job lookup failed", root(throwable));
                         player.sendMessage(color("&cCould not load rollback jobs for undo. Check console for details."));
-                        openMain(player);
                         return;
                     }
                     session.undoJobs = List.copyOf(jobs);
@@ -730,12 +736,14 @@ final class FragGuardGui implements Listener {
     }
 
     private void renderUndoJobs(Player player, Session session) {
-        session.screen = Screen.UNDO_LIST;
-        FragGuardGuiRenderer.RenderedUndoJobs rendered =
-                FragGuardGuiRenderer.undoJobs(session.undoJobs, session.undoPage);
-        session.undoPage = rendered.page();
-        session.visibleUndoJobs = rendered.visibleJobs();
-        open(player, session, rendered.inventory());
+        FragGuardGuiRenderer.RenderedUndoJobs[] staged = new FragGuardGuiRenderer.RenderedUndoJobs[1];
+        if (show(player, session, Screen.UNDO_LIST, () -> {
+            staged[0] = FragGuardGuiRenderer.undoJobs(session.undoJobs, session.undoPage);
+            return staged[0].inventory();
+        }, "undo jobs page " + (session.undoPage + 1))) {
+            session.undoPage = staged[0].page();
+            session.visibleUndoJobs = staged[0].visibleJobs();
+        }
     }
 
     private void clickUndoList(Player player, Session session, int slot) {
@@ -765,8 +773,9 @@ final class FragGuardGui implements Listener {
             renderUndoJobs(player, session);
             return;
         }
-        session.screen = Screen.UNDO_CONFIRM;
-        open(player, session, FragGuardGuiRenderer.undoConfirmation(session.selectedUndoJob));
+        show(player, session, Screen.UNDO_CONFIRM,
+                () -> FragGuardGuiRenderer.undoConfirmation(session.selectedUndoJob),
+                "undo confirmation");
     }
 
     private void clickUndoConfirm(Player player, Session session, int slot) {
@@ -781,9 +790,76 @@ final class FragGuardGui implements Listener {
         }
     }
 
-    private void open(Player player, Session session, Inventory inventory) {
-        session.inventory = inventory;
-        player.openInventory(inventory);
+    /** Render before changing the visible screen. A failed page never advances GUI state. */
+    private boolean show(Player player, Session session, Screen next,
+                         Supplier<Inventory> render, String context) {
+        Inventory previous = session.inventory;
+        Screen previousScreen = session.screen;
+        return GuiInventoryTransition.attempt(render, inventory -> {
+            player.openInventory(inventory);
+            session.inventory = inventory;
+            session.screen = next;
+        }, failure -> {
+            session.inventory = previous;
+            session.screen = previousScreen;
+            plugin.getLogger().log(Level.WARNING,
+                    "FragGuard GUI rendering failed [screen=" + next + ", " + context
+                            + ", currentPage=" + (session.page + 1)
+                            + ", activityPage=" + (session.rawPage + 1) + "]", failure);
+            player.sendMessage(color("&cCould not display that FragGuard page. "
+                    + "The previous page is retained; retry or go back. Check console for details."));
+            // Usually rendering failed before opening, so the old menu is still on screen.
+            // If openInventory itself failed after replacing it, reuse its already-built inventory.
+            if (previous != null) {
+                try {
+                    if (!player.getOpenInventory().getTopInventory().equals(previous)) {
+                        player.openInventory(previous);
+                    }
+                    return;
+                } catch (RuntimeException recoveryFailure) {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Could not restore the last FragGuard inventory", recoveryFailure);
+                }
+            }
+            openRecoveryMenu(player, session);
+        });
+    }
+
+    private boolean sameDisplayedInventory(Player player, Session session, Inventory expected) {
+        return expected != null && session.inventory == expected
+                && player.getOpenInventory().getTopInventory().equals(expected);
+    }
+
+    /** Last-resort menu: constructed from fixed safe items; never re-renders the failing page. */
+    private void openRecoveryMenu(Player player, Session session) {
+        try {
+            Inventory recovery = Bukkit.createInventory(null, 9, Component.text("FragGuard - Recovery"));
+            recovery.setItem(3, new ItemStack(Material.PAPER));
+            recovery.setItem(5, new ItemStack(Material.ARROW));
+            recovery.setItem(8, new ItemStack(Material.BARRIER));
+            player.openInventory(recovery);
+            session.inventory = recovery;
+            session.screen = Screen.RECOVERY;
+        } catch (RuntimeException recoveryFailure) {
+            plugin.getLogger().log(Level.SEVERE,
+                    "Could not open the FragGuard recovery menu; use /fg to reopen it",
+                    recoveryFailure);
+            player.sendMessage(color("&cUse /fg to reopen FragGuard."));
+        }
+    }
+
+    private void clickRecovery(Player player, Session session, int slot) {
+        if (slot == 3) {
+            if (session.baseQuery != null && session.page < session.resultPageStarts.size()) {
+                loadResultsPage(player, session, session.page, false);
+            } else {
+                openSetup(player, session);
+            }
+        } else if (slot == 5) {
+            openMain(player);
+        } else if (slot == 8) {
+            player.closeInventory();
+        }
     }
 
     private void cycleRadius(Session session, int delta) {
@@ -865,7 +941,8 @@ final class FragGuardGui implements Listener {
         EXACT_DETAIL,
         ROLLBACK_SETUP,
         UNDO_LIST,
-        UNDO_CONFIRM
+        UNDO_CONFIRM,
+        RECOVERY
     }
 
     private record TimePreset(String label, long millis, String commandToken) {
