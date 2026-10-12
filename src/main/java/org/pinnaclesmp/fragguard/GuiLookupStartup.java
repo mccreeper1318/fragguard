@@ -1,6 +1,8 @@
 package org.pinnaclesmp.fragguard;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 
 /** Orders the GUI's snapshot/count after accepted log writes without a legacy history scan. */
 final class GuiLookupStartup {
@@ -9,9 +11,20 @@ final class GuiLookupStartup {
 
     static CompletableFuture<GuiLookupOverview> prepare(
             Database database, GuiLookupStore guiLookupStore, GuiLookupQuery query) {
-        // The database worker flushes accepted writes at its queued-operation barrier.
-        // Only the GUI store performs the initial count and catalog queries.
-        return database.awaitWritesAsync()
-                .thenCompose(ignored -> guiLookupStore.prepareLookupAsync(query));
+        return prepare(database, guiLookupStore, query, Logger.getLogger("FragGuard"));
+    }
+
+    static CompletableFuture<GuiLookupOverview> prepare(
+            Database database, GuiLookupStore guiLookupStore,
+            GuiLookupQuery query, Logger logger) {
+        long started = System.nanoTime();
+        // The worker flushes all writes accepted before this operation.
+        // Snapshot/count are run once through the GUI read-only connection;
+        // expensive filter catalogs can be loaded on demand afterward.
+        return database.awaitWritesAsync().thenCompose(ignored -> {
+            logger.info("FragGuard GUI write barrier completed in "
+                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) + " ms");
+            return guiLookupStore.prepareOverviewAsync(query);
+        });
     }
 }
