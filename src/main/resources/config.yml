@@ -53,6 +53,9 @@ max-lookup-radius: 150
 # Raw result pages remain small and block-entity BLOBs are still loaded only for one opened exact event.
 # Zero or negative values are invalid; FragGuard warns at startup and uses the default of 1000.
 gui-lookup-fetch-size: 1000
+# Debug only: print SQLite EXPLAIN QUERY PLAN for GUI counts, filter scans, and pages.
+# Disabled by default; enable temporarily while investigating unusually slow areas.
+gui-log-query-plans: false
 # Consecutive events with the same actor/action/material can be condensed when they are locally close.
 gui-activity-max-gap-millis: 2500
 gui-activity-max-distance: 6
