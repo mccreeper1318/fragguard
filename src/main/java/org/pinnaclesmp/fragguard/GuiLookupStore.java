@@ -107,7 +107,7 @@ final class GuiLookupStore {
      * connection setup, worker queueing and repeated grouped-page queries can
      * leave a GUI waiting without a deadline or server-side diagnostic.
      */
-    private <T> CompletableFuture<T> boundedQueryAsync(String phase, Supplier<T> task) {
+    <T> CompletableFuture<T> boundedQueryAsync(String phase, Supplier<T> task) {
         QueryCancellation cancellation = new QueryCancellation();
         long started = System.nanoTime();
         CompletableFuture<T> future = CompletableFuture.supplyAsync(() -> {
