@@ -58,6 +58,15 @@ class GuiPagedInventoryRegressionTest {
                     .serialize(invocation.getArgument(0, Component.class)));
             return null;
         }).when(meta).displayName(any(Component.class));
+        doAnswer(invocation -> {
+            List<Component> lore = invocation.getArgument(0);
+            if (lore != null) {
+                for (Component component : lore) {
+                    shownNames.add(PlainTextComponentSerializer.plainText().serialize(component));
+                }
+            }
+            return null;
+        }).when(meta).lore(anyList());
 
         try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
              MockedStatic<GuiMaterialIcon> icons = mockStatic(GuiMaterialIcon.class);
