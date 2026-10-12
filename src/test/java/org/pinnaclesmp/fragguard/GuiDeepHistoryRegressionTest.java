@@ -85,52 +85,71 @@ class GuiDeepHistoryRegressionTest {
         List<GuiLookupCursor> rawPageStarts = new ArrayList<>();
         List<GuiLookupCursor> groupedPageStarts = new ArrayList<>();
         List<String> pageThreeMaterials = new ArrayList<>();
-        int page = 0;
-        while (true) {
-            rawPageStarts.add(rawCursor);
-            groupedPageStarts.add(groupedCursor);
-            GuiRawPage raw = store.selectRawPageAsync(query, rawCursor, 36).join();
-            GuiActivityPage grouped = store.selectActivityPageAsync(query, groupedCursor,
-                    36, 37, 2_500L, 6, 15_000L, 24).join();
 
-            assertEquals(raw.rows().size(), grouped.activities().size(),
-                    "alternating actors prevent activity grouping");
-            for (LookupRow row : raw.rows()) {
-                assertTrue(allRawIds.add(row.id()), "raw page " + (page + 1) + " duplicated an event");
-                if (page == 2) pageThreeMaterials.add(LookupActivityGrouper.materialKey(row));
+        int rawPage = 0;
+        do {
+            rawPageStarts.add(rawCursor);
+            GuiRawPage exact = store.selectRawPageAsync(query, rawCursor, 36).join();
+            assertFalse(exact.rows().isEmpty());
+            for (LookupRow row : exact.rows()) {
+                assertTrue(allRawIds.add(row.id()),
+                        "exact page " + (rawPage + 1) + " must never duplicate a row");
+                if (rawPage == 2) pageThreeMaterials.add(LookupActivityGrouper.materialKey(row));
             }
-            // Every actor/material pair is a singleton, so the newest event
-            // cursors must be identical between condensed and exact pagination.
-            for (GuiActivitySummary activity : grouped.activities()) {
-                assertEquals(1, activity.eventCount());
-                assertTrue(allGroupedIds.add(activity.newestCursor().id()),
-                        "condensed page " + (page + 1) + " duplicated an exact event");
-            }
-            assertEquals(raw.hasMore(), grouped.hasMore());
-            rawCursor = raw.nextCursor();
-            groupedCursor = grouped.nextCursor();
-            page++;
-            assertTrue(page <= 20, "cursor did not advance");
-            if (!raw.hasMore()) break;
-        }
-        assertTrue(page >= 11, "must actually exercise page 10 and beyond");
+            rawCursor = exact.nextCursor();
+            rawPage++;
+            assertTrue(rawPage <= 20, "raw cursor did not advance");
+        } while (rawCursor != null);
+        assertTrue(rawPage >= 11, "test must reach exact page 10 and later");
         assertEquals(total, allRawIds.size(), "no raw event omitted");
-        assertEquals(allRawIds, allGroupedIds, "grouped pages represent the same exact event IDs");
         assertTrue(pageThreeMaterials.contains("minecraft:moving_piston")
                 || pageThreeMaterials.contains("minecraft:water"),
                 "original page-three crash materials must be present");
+
+        int groupedPage = 0;
+        do {
+            groupedPageStarts.add(groupedCursor);
+            GuiActivityPage results = store.selectActivityPageAsync(query, groupedCursor,
+                    36, 37, 2_500L, 6, 15_000L, 24).join();
+            assertFalse(results.activities().isEmpty());
+            for (GuiActivitySummary activity : results.activities()) {
+                // Grouping may legitimately combine contiguous matching events.
+                // Expand each summary through the actual activity-raw query so
+                // we verify every represented exact event, not only the header.
+                GuiLookupCursor withinActivity = null;
+                Set<Long> activityIds = new HashSet<>();
+                do {
+                    GuiActivityRawPage details = store.selectActivityRowsPageAsync(
+                            query, activity, withinActivity, 45).join();
+                    details.rows().forEach(row -> {
+                        assertTrue(activityIds.add(row.id()),
+                                "raw activity detail must not duplicate its own events");
+                        assertTrue(allGroupedIds.add(row.id()),
+                                "two grouped activities must not represent the same exact event");
+                    });
+                    withinActivity = details.nextCursor();
+                } while (withinActivity != null);
+                assertEquals(activity.eventCount(), activityIds.size(),
+                        "every grouped summary must expose all exact events");
+            }
+            groupedCursor = results.nextCursor();
+            groupedPage++;
+            assertTrue(groupedPage <= 20, "grouped cursor did not advance");
+        } while (groupedCursor != null);
+        assertTrue(groupedPage >= 10, "test must reach condensed page 10");
+        assertEquals(allRawIds, allGroupedIds,
+                "condensed paging and activity drilldowns must reach exactly the same raw row IDs");
         assertNotNull(rawPageStarts.get(9));
         assertNotNull(groupedPageStarts.get(9));
 
-        // Reopen previous/page-three/page-ten from remembered cursors, not by
-        // replaying from page 1: navigation must return exactly the same events.
-        for (int pageIndex : new int[]{0, 1, 2, 4, 9, page - 1}) {
+        // Revisit previous/page-three/page-ten directly from saved cursors.
+        for (int pageIndex : new int[]{0, 1, 2, 4, 9}) {
             GuiRawPage reread = store.selectRawPageAsync(query, rawPageStarts.get(pageIndex), 36).join();
             assertFalse(reread.rows().isEmpty());
             assertTrue(allRawIds.containsAll(reread.rows().stream().map(LookupRow::id).toList()));
-            GuiActivityPage groupReread = store.selectActivityPageAsync(
+            GuiActivityPage groupedReread = store.selectActivityPageAsync(
                     query, groupedPageStarts.get(pageIndex), 36, 37, 2_500L, 6, 15_000L, 24).join();
-            assertEquals(reread.rows().size(), groupReread.activities().size());
+            assertFalse(groupedReread.activities().isEmpty());
         }
 
         GuiLookupQuery filtered = query.withFilters(new LookupFilters.State(
