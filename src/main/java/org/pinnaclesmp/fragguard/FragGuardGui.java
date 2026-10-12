@@ -1003,6 +1003,99 @@ final class FragGuardGui implements Listener {
         private int undoPage;
         private GuiRollbackJob selectedUndoJob;
 
+        private LookupView captureLookupView() {
+            return new LookupView(this);
+        }
+
+        private void restoreLookupView(LookupView view) {
+            view.restore(this);
+        }
+
+        /** Snapshot state that a failed page/navigation request must never replace. */
+        private static final class LookupView {
+            private final GuiLookupQuery baseQuery;
+            private final long totalRows;
+            private final long filteredTotalRows;
+            private final long maxGapMillis;
+            private final int maxDistance;
+            private final long maxDurationMillis;
+            private final int maxSpan;
+            private final boolean grouped;
+            private final int page;
+            private final int rawPage;
+            private final LookupFilters.Catalog filterCatalog;
+            private final LookupFilters.State filters;
+            private final LookupFilters.Category filterCategory;
+            private final int filterPage;
+            private final List<LookupFilters.Option> visibleFilterOptions;
+            private final List<GuiLookupCursor> resultPageStarts;
+            private final boolean resultHasNext;
+            private final List<GuiActivitySummary> visibleActivities;
+            private final List<LookupRow> visibleRows;
+            private final GuiActivitySummary detail;
+            private final List<GuiLookupCursor> activityRawPageStarts;
+            private final boolean activityRawHasNext;
+            private final PreparedExactEvent exactEvent;
+            private final Screen exactReturnScreen;
+
+            private LookupView(Session session) {
+                baseQuery = session.baseQuery;
+                totalRows = session.totalRows;
+                filteredTotalRows = session.filteredTotalRows;
+                maxGapMillis = session.maxGapMillis;
+                maxDistance = session.maxDistance;
+                maxDurationMillis = session.maxDurationMillis;
+                maxSpan = session.maxSpan;
+                grouped = session.grouped;
+                page = session.page;
+                rawPage = session.rawPage;
+                filterCatalog = session.filterCatalog;
+                filters = session.filters;
+                filterCategory = session.filterCategory;
+                filterPage = session.filterPage;
+                visibleFilterOptions = session.visibleFilterOptions;
+                // The first cursor is intentionally null; List.copyOf rejects null elements.
+                resultPageStarts = new ArrayList<>(session.resultPageStarts);
+                resultHasNext = session.resultHasNext;
+                visibleActivities = session.visibleActivities;
+                visibleRows = session.visibleRows;
+                detail = session.detail;
+                activityRawPageStarts = new ArrayList<>(session.activityRawPageStarts);
+                activityRawHasNext = session.activityRawHasNext;
+                exactEvent = session.exactEvent;
+                exactReturnScreen = session.exactReturnScreen;
+            }
+
+            private void restore(Session session) {
+                session.baseQuery = baseQuery;
+                session.totalRows = totalRows;
+                session.filteredTotalRows = filteredTotalRows;
+                session.maxGapMillis = maxGapMillis;
+                session.maxDistance = maxDistance;
+                session.maxDurationMillis = maxDurationMillis;
+                session.maxSpan = maxSpan;
+                session.grouped = grouped;
+                session.page = page;
+                session.rawPage = rawPage;
+                session.filterCatalog = filterCatalog;
+                session.filters = filters;
+                session.filterCategory = filterCategory;
+                session.filterPage = filterPage;
+                session.visibleFilterOptions = visibleFilterOptions;
+                session.resultPageStarts.clear();
+                session.resultPageStarts.addAll(resultPageStarts);
+                session.resultHasNext = resultHasNext;
+                session.visibleActivities = visibleActivities;
+                session.visibleRows = visibleRows;
+                session.detail = detail;
+                session.activityRawPageStarts.clear();
+                session.activityRawPageStarts.addAll(activityRawPageStarts);
+                session.activityRawHasNext = activityRawHasNext;
+                session.exactEvent = exactEvent;
+                session.exactReturnScreen = exactReturnScreen;
+            }
+        }
+
         private void initializeLookup(
                 GuiLookupQuery query,
                 GuiLookupOverview overview,
