@@ -39,7 +39,8 @@ final class FragGuardGui implements Listener {
         this.plugin = plugin;
         this.database = database;
         int queryTimeoutSeconds = plugin.getConfig().getInt("database-query-timeout-seconds", 15);
-        this.guiLookupStore = new GuiLookupStore(plugin.getDataFolder(), queryTimeoutSeconds, plugin.getLogger());
+        this.guiLookupStore = new GuiLookupStore(plugin.getDataFolder(), queryTimeoutSeconds,
+                plugin.getLogger(), plugin.getConfig().getBoolean("gui-log-query-plans", false));
         this.guiRollbackStore = new GuiRollbackStore(plugin.getDataFolder(), queryTimeoutSeconds);
     }
 
