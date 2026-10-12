@@ -14,7 +14,7 @@ class GuiInventoryTransitionTest {
     void firstPageRenderingFailureLeavesLookupSetupAvailableForRetry() {
         AtomicReference<String> shown = new AtomicReference<>("Lookup setup");
         AtomicInteger failureReports = new AtomicInteger();
-        boolean opened = GuiInventoryTransition.attempt(
+        boolean opened = GuiInventoryTransition.<String>attempt(
                 () -> { throw new IllegalArgumentException("Invalid display metadata"); },
                 shown::set, ignored -> failureReports.incrementAndGet());
 
@@ -29,7 +29,7 @@ class GuiInventoryTransitionTest {
         AtomicReference<String> shown = new AtomicReference<>("Page 2");
         AtomicInteger errors = new AtomicInteger();
 
-        boolean opened = GuiInventoryTransition.attempt(
+        boolean opened = GuiInventoryTransition.<String>attempt(
                 () -> { throw new IllegalStateException("Bad entry on page 3"); },
                 inventory -> {
                     shown.set(inventory);
@@ -41,7 +41,7 @@ class GuiInventoryTransitionTest {
         assertEquals("Page 2", shown.get());
         assertEquals(1, errors.get());
 
-        assertTrue(GuiInventoryTransition.attempt(
+        assertTrue(GuiInventoryTransition.<String>attempt(
                 () -> "Page 3", inventory -> {
                     shown.set(inventory);
                     page.set(3);
@@ -57,7 +57,7 @@ class GuiInventoryTransitionTest {
         AtomicInteger errors = new AtomicInteger();
         AtomicReference<String> shown = new AtomicReference<>("Page 1");
 
-        assertFalse(GuiInventoryTransition.attempt(
+        assertFalse(GuiInventoryTransition.<String>attempt(
                 () -> "Page 2",
                 inventory -> { throw new IllegalArgumentException("Cannot open inventory"); },
                 ignored -> errors.incrementAndGet()));
@@ -65,7 +65,7 @@ class GuiInventoryTransitionTest {
         assertEquals("Page 1", shown.get());
         assertEquals(1, errors.get());
 
-        assertTrue(GuiInventoryTransition.attempt(
+        assertTrue(GuiInventoryTransition.<String>attempt(
                 () -> "Page 2", inventory -> {
                     shown.set(inventory);
                     committedPage.set(2);
@@ -80,7 +80,7 @@ class GuiInventoryTransitionTest {
             AtomicReference<String> displayed = new AtomicReference<>("Prior " + view + " page");
             AtomicInteger count = new AtomicInteger();
 
-            boolean opened = GuiInventoryTransition.attempt(
+            boolean opened = GuiInventoryTransition.<String>attempt(
                     () -> { throw new IllegalStateException(view + " renderer failed"); },
                     displayed::set, failure -> count.incrementAndGet());
 
