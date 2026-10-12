@@ -53,17 +53,17 @@ class GuiLookupStartupTest {
                 12L, LookupFilters.Catalog.empty(), 77L);
 
         when(worker.awaitWritesAsync()).thenReturn(barrier);
-        when(store.prepareLookupAsync(query)).thenReturn(CompletableFuture.completedFuture(expected));
+        when(store.prepareOverviewAsync(query)).thenReturn(CompletableFuture.completedFuture(expected));
 
         CompletableFuture<GuiLookupOverview> result = GuiLookupStartup.prepare(worker, store, query);
         assertFalse(result.isDone(), "the GUI must not take its snapshot ahead of accepted writes");
-        verify(store, never()).prepareLookupAsync(query);
+        verify(store, never()).prepareOverviewAsync(query);
 
         barrier.complete(null);
         assertEquals(expected, result.join());
         verify(worker).awaitWritesAsync();
         verifyNoMoreInteractions(worker); // In particular: no lookupSinceAsync/legacy COUNT.
-        verify(store).prepareLookupAsync(query);
+        verify(store).prepareOverviewAsync(query);
         verifyNoMoreInteractions(store); // Exactly one GUI overview/count request.
     }
 
@@ -79,7 +79,7 @@ class GuiLookupStartupTest {
         barrier.completeExceptionally(new IllegalStateException("Database operation queue is full"));
 
         assertThrows(CompletionException.class, result::join);
-        verify(store, never()).prepareLookupAsync(query);
+        verify(store, never()).prepareOverviewAsync(query);
         verify(worker).awaitWritesAsync();
         verifyNoMoreInteractions(worker);
     }
@@ -108,11 +108,14 @@ class GuiLookupStartupTest {
 
         assertEquals(total, overview.totalRows(),
                 "all gameplay writes accepted before the GUI read barrier must appear in the overview");
-        assertEquals(2, overview.catalog().players().size());
-        assertEquals(total, overview.catalog().actions().stream().mapToLong(LookupFilters.Option::count).sum());
-        assertEquals(total, overview.catalog().materials().stream().mapToLong(LookupFilters.Option::count).sum());
-
+        assertTrue(overview.catalog().players().isEmpty(),
+                "the initial result page must not scan expensive filter catalogs");
         GuiLookupQuery bounded = query.withMaxRowId(overview.maxRowId());
+        LookupFilters.Catalog catalog = store.loadCatalogAsync(bounded).join();
+        assertEquals(2, catalog.players().size());
+        assertEquals(total, catalog.actions().stream().mapToLong(LookupFilters.Option::count).sum());
+        assertEquals(total, catalog.materials().stream().mapToLong(LookupFilters.Option::count).sum());
+
         GuiRawPage first = store.selectRawPageAsync(bounded, null, 36).join();
         GuiRawPage second = store.selectRawPageAsync(bounded, first.nextCursor(), 36).join();
         assertEquals(36, first.rows().size());

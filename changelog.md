@@ -22,6 +22,7 @@
 
 ### Fixed
 
+- Fixed #111: Optimized dense history counts and page navigation by using targeted chunk-index seeks for both X/Z dimensions against the existing composite spatial-time index. Deferred expensive player/action/material filter catalogs until Filters is opened, added per-stage query timing and optional SQLite plans, enforced an asynchronous read deadline with statement cancellation, and warned on nonzero-count/empty-page mismatches.
 - Fixed #110: Removed the redundant legacy history count/zero-row query from GUI lookup startup by waiting on a lightweight database-worker write barrier before the bounded GUI snapshot and its single overview count; accepted write ordering and complete history pagination are preserved.
 - Fixed #109: GUI history pages now render before replacing the current inventory, retain the previous page and paging state after SQL/rendering failures, block repeated clicks while an asynchronous navigation is pending, and provide contextual console diagnostics plus safe retry/recovery navigation.
 - Fixed #108: GUI history inventories now show a safe fallback icon for non-item Minecraft block states (including water cauldrons, moving pistons, and water), preventing large condensed/raw lookups and material filters from crashing without changing any recorded history.
