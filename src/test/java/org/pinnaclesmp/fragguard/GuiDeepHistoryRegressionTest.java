@@ -137,15 +137,11 @@ class GuiDeepHistoryRegressionTest {
                 ACTOR_B.toString(), ChangeAction.BREAK, "minecraft:stone"));
         long matching = store.countRowsAsync(filtered).join();
         assertTrue(matching > 0 && matching < total / 2);
-        assertEquals(matching, store.loadCatalogAsync(query).join().players().stream()
+        assertEquals(total / 2 - 3L, matching,
+                "actor B has three deliberately non-stone material changes");
+        assertEquals(total / 2, store.loadCatalogAsync(query).join().players().stream()
                 .filter(o -> o.key().equals(ACTOR_B.toString()))
-                .mapToLong(LookupFilters.Option::count).sum() - 0L
-                - store.countRowsAsync(query.withFilters(
-                    new LookupFilters.State(ACTOR_B.toString(), ChangeAction.BREAK, "minecraft:water"))).join()
-                - store.countRowsAsync(query.withFilters(
-                    new LookupFilters.State(ACTOR_B.toString(), ChangeAction.BREAK, "minecraft:stone"))).join()
-                + matching,
-                "filtered count remains consistent with original per-player count");
+                .mapToLong(LookupFilters.Option::count).sum());
         GuiRawPage filteredPage = store.selectRawPageAsync(filtered, null, 36).join();
         assertTrue(filteredPage.rows().stream().allMatch(row ->
                 ACTOR_B.toString().equals(row.actorIdentity())
