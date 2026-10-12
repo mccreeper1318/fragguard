@@ -364,8 +364,8 @@ final class FragGuardGui implements Listener {
         }
     }
 
-    private void openFilters(Player player, Session session) {
-        show(player, session, Screen.FILTERS, () -> FragGuardGuiRenderer.lookupFilters(
+    private boolean openFilters(Player player, Session session) {
+        return show(player, session, Screen.FILTERS, () -> FragGuardGuiRenderer.lookupFilters(
                 session.filterCatalog.selectedLabel(session.filters, LookupFilters.Category.PLAYER),
                 session.filterCatalog.selectedLabel(session.filters, LookupFilters.Category.ACTION),
                 session.filterCatalog.selectedLabel(session.filters, LookupFilters.Category.MATERIAL),
@@ -378,6 +378,7 @@ final class FragGuardGui implements Listener {
             case 12 -> openFilterOptions(player, session, LookupFilters.Category.ACTION, 0);
             case 14 -> openFilterOptions(player, session, LookupFilters.Category.MATERIAL, 0);
             case 16 -> {
+                Session.LookupView previous = session.captureLookupView();
                 if (session.filters.active()) {
                     session.filters = LookupFilters.State.empty();
                     session.filteredTotalRows = session.totalRows;
@@ -385,7 +386,9 @@ final class FragGuardGui implements Listener {
                     session.detail = null;
                     session.exactEvent = null;
                 }
-                openFilters(player, session);
+                if (!openFilters(player, session)) {
+                    session.restoreLookupView(previous);
+                }
             }
             case 18 -> loadResultsPage(player, session, 0, false);
             case 26 -> player.closeInventory();
@@ -437,7 +440,9 @@ final class FragGuardGui implements Listener {
         }
         if (!session.filters.active()) {
             session.filteredTotalRows = session.totalRows;
-            openFilters(player, session);
+            if (!openFilters(player, session)) {
+                session.restoreLookupView(previous);
+            }
             return;
         }
 
@@ -459,7 +464,9 @@ final class FragGuardGui implements Listener {
                         return;
                     }
                     session.filteredTotalRows = count;
-                    openFilters(player, session);
+                    if (!openFilters(player, session)) {
+                        session.restoreLookupView(previous);
+                    }
                 }));
     }
 
