@@ -52,9 +52,10 @@ class GuiPagedInventoryRegressionTest {
 
         Inventory inventory = mock(Inventory.class);
         ItemMeta meta = mock(ItemMeta.class);
-        List<String> shownNames = new ArrayList<>();
+        List<String> displayedNames = new ArrayList<>();
+        List<String> displayedLore = new ArrayList<>();
         doAnswer(invocation -> {
-            shownNames.add(PlainTextComponentSerializer.plainText()
+            displayedNames.add(PlainTextComponentSerializer.plainText()
                     .serialize(invocation.getArgument(0, Component.class)));
             return null;
         }).when(meta).displayName(any(Component.class));
@@ -62,7 +63,7 @@ class GuiPagedInventoryRegressionTest {
             List<Component> lore = invocation.getArgument(0);
             if (lore != null) {
                 for (Component component : lore) {
-                    shownNames.add(PlainTextComponentSerializer.plainText().serialize(component));
+                    displayedLore.add(PlainTextComponentSerializer.plainText().serialize(component));
                 }
             }
             return null;
@@ -97,14 +98,19 @@ class GuiPagedInventoryRegressionTest {
                     "No filters applied", false, true, true));
             assertSame(inventory, FragGuardPagedLookupRenderer.activityRaw(
                     raw, 2, 109, true, true));
-            // All original block names and before/after states are preserved in
-            // display components even though icons fall back to PAPER.
-            assertTrue(shownNames.stream().anyMatch(n -> n.contains("Water Cauldron")));
-            assertTrue(shownNames.stream().anyMatch(n -> n.contains("Moving Piston")));
-            assertTrue(shownNames.stream().anyMatch(n -> n.contains("Redstone Wire")));
-            assertTrue(shownNames.stream().anyMatch(n -> n.contains("stale_unknown_block")
+            // Icon fallbacks must retain the original history material in item
+            // names, and exact before/after block states in separate item lore.
+            assertTrue(displayedNames.stream().anyMatch(n -> n.contains("Water Cauldron")));
+            assertTrue(displayedNames.stream().anyMatch(n -> n.contains("Moving Piston")));
+            assertTrue(displayedNames.stream().anyMatch(n -> n.contains("Redstone Wire")));
+            assertTrue(displayedNames.stream().anyMatch(n -> n.contains("stale_unknown_block")
                     || n.contains("Stale Unknown Block")));
-            assertTrue(shownNames.stream().anyMatch(n -> n.contains("test_state=7")));
+            assertTrue(displayedLore.stream().anyMatch(n -> n.contains("Before:")
+                    && n.contains("test_state=7")),
+                    "exact block-state properties must remain visible in event lore");
+            assertTrue(displayedLore.stream().anyMatch(n -> n.contains("After:")
+                    && n.contains("air")),
+                    "exact after-state must remain visible in event lore");
             verify(inventory, atLeast(3)).setItem(eq(9), any(ItemStack.class));
             assertTrue(stacks.constructed().size() > 100,
                     "both 36-item results pages and drilldown must build actual inventory slots");
