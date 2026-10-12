@@ -39,7 +39,7 @@ final class FragGuardGui implements Listener {
         this.plugin = plugin;
         this.database = database;
         int queryTimeoutSeconds = plugin.getConfig().getInt("database-query-timeout-seconds", 15);
-        this.guiLookupStore = new GuiLookupStore(plugin.getDataFolder(), queryTimeoutSeconds);
+        this.guiLookupStore = new GuiLookupStore(plugin.getDataFolder(), queryTimeoutSeconds, plugin.getLogger());
         this.guiRollbackStore = new GuiRollbackStore(plugin.getDataFolder(), queryTimeoutSeconds);
     }
 
@@ -201,7 +201,7 @@ final class FragGuardGui implements Listener {
 
         // Flush accepted gameplay writes on the database worker before the GUI store
         // captures its bounded snapshot. No legacy COUNT or row-selection query is needed.
-        GuiLookupStartup.prepare(database, guiLookupStore, query)
+        GuiLookupStartup.prepare(database, guiLookupStore, query, plugin.getLogger())
                 .whenComplete((overview, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
                             || !session.lookupRequests.isCurrent(requestGeneration)
@@ -278,6 +278,17 @@ final class FragGuardGui implements Listener {
             GuiLookupCursor next = prepared.rawPage() != null
                     ? prepared.rawPage().nextCursor()
                     : prepared.activityPage().nextCursor();
+            if (targetPage == 0 && prepared.totalRows() > 0
+                    && newRows.isEmpty() && newActivities.isEmpty()) {
+                plugin.getLogger().warning("FragGuard GUI returned an empty first page although "
+                        + prepared.totalRows() + " events were counted"
+                        + " [grouped=" + grouped + ", radius=" + query.radius()
+                        + ", world=" + query.worldName()
+                        + ", snapshotRow=" + query.maxRowId() + "];"
+                        + " check for concurrent cleanup or query/pagination mismatch.");
+                player.sendMessage(color("&eLookup counted matching history but page 1 is empty."
+                        + " Try the Raw view, or report this discrepancy."));
+            }
 
             boolean opened = show(player, session, Screen.RESULTS, () -> FragGuardPagedLookupRenderer.results(
                     newRows, newActivities, grouped, targetPage,
@@ -344,7 +355,7 @@ final class FragGuardGui implements Listener {
             return;
         }
         switch (slot) {
-            case 2 -> openFilters(player, session);
+            case 2 -> loadFiltersIfNeeded(player, session);
             case 4 -> {
                 Session.LookupView previous = session.captureLookupView();
                 session.grouped = !session.grouped;
@@ -376,6 +387,43 @@ final class FragGuardGui implements Listener {
             }
             default -> { }
         }
+    }
+
+    /**
+     * Filter catalogs are expensive multi-aggregate SQLite reads, so they are
+     * never needed to display an unfiltered first page. Load lazily only once
+     * for the fixed row-id snapshot and keep the current results page on failure.
+     */
+    private void loadFiltersIfNeeded(Player player, Session session) {
+        if (session.filterCatalogLoaded) {
+            openFilters(player, session);
+            return;
+        }
+        if (session.baseQuery == null || !session.pendingTransition.begin()) {
+            return;
+        }
+        long generation = session.lookupRequests.begin();
+        UUID playerId = player.getUniqueId();
+        Inventory expectedInventory = session.inventory;
+        GuiLookupQuery query = session.baseQuery;
+        player.sendMessage(color("&7Loading FragGuard filter options..."));
+        guiLookupStore.loadCatalogAsync(query)
+                .whenComplete((catalog, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(playerId) != session
+                            || !session.lookupRequests.isCurrent(generation)
+                            || !sameDisplayedInventory(player, session, expectedInventory)) {
+                        return;
+                    }
+                    session.pendingTransition.complete();
+                    if (throwable != null) {
+                        reportLookupFailure(player, throwable);
+                        return;
+                    }
+                    // Store only a fully populated catalog from this snapshot.
+                    session.filterCatalog = catalog;
+                    session.filterCatalogLoaded = true;
+                    openFilters(player, session);
+                }));
     }
 
     private boolean openFilters(Player player, Session session) {
@@ -1021,6 +1069,7 @@ final class FragGuardGui implements Listener {
         private long maxDurationMillis;
         private int maxSpan;
         private LookupFilters.Catalog filterCatalog = LookupFilters.Catalog.empty();
+        private boolean filterCatalogLoaded;
         private LookupFilters.State filters = LookupFilters.State.empty();
         private LookupFilters.Category filterCategory;
         private int filterPage;
@@ -1062,6 +1111,7 @@ final class FragGuardGui implements Listener {
             private final int page;
             private final int rawPage;
             private final LookupFilters.Catalog filterCatalog;
+            private final boolean filterCatalogLoaded;
             private final LookupFilters.State filters;
             private final LookupFilters.Category filterCategory;
             private final int filterPage;
@@ -1088,6 +1138,7 @@ final class FragGuardGui implements Listener {
                 page = session.page;
                 rawPage = session.rawPage;
                 filterCatalog = session.filterCatalog;
+                filterCatalogLoaded = session.filterCatalogLoaded;
                 filters = session.filters;
                 filterCategory = session.filterCategory;
                 filterPage = session.filterPage;
@@ -1116,6 +1167,7 @@ final class FragGuardGui implements Listener {
                 session.page = page;
                 session.rawPage = rawPage;
                 session.filterCatalog = filterCatalog;
+                session.filterCatalogLoaded = filterCatalogLoaded;
                 session.filters = filters;
                 session.filterCategory = filterCategory;
                 session.filterPage = filterPage;
@@ -1150,6 +1202,7 @@ final class FragGuardGui implements Listener {
             maxDurationMillis = activityMaxDurationMillis;
             maxSpan = activityMaxSpan;
             filterCatalog = overview.catalog();
+            filterCatalogLoaded = false;
             filters = LookupFilters.State.empty();
             filterCategory = null;
             filterPage = 0;
@@ -1219,6 +1272,7 @@ final class FragGuardGui implements Listener {
             maxDurationMillis = 0L;
             maxSpan = 0;
             filterCatalog = LookupFilters.Catalog.empty();
+            filterCatalogLoaded = false;
             filters = LookupFilters.State.empty();
             filterCategory = null;
             filterPage = 0;
