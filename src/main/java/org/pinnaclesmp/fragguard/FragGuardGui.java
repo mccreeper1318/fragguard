@@ -199,11 +199,9 @@ final class FragGuardGui implements Listener {
 
         player.sendMessage(color("&7Loading FragGuard lookup..."));
 
-        // Keep the main Database read barrier so every accepted gameplay write submitted before this
-        // lookup is visible before the read-only GUI connection takes its fixed snapshot boundary.
-        // LIMIT 0 prevents the legacy path from materializing history rows or block-entity payloads.
-        database.lookupSinceAsync(world, centerX, centerZ, radius, 1, 0, cutoff)
-                .thenCompose(ignored -> guiLookupStore.prepareLookupAsync(query))
+        // Flush accepted gameplay writes on the database worker before the GUI store
+        // captures its bounded snapshot. No legacy COUNT or row-selection query is needed.
+        GuiLookupStartup.prepare(database, guiLookupStore, query)
                 .whenComplete((overview, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
                             || !session.lookupRequests.isCurrent(requestGeneration)
