@@ -14,6 +14,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.util.Arrays;
 import java.util.List;
@@ -286,6 +287,25 @@ class DatabaseTest {
     }
 
     @Test
+    void treatsTimedQueryTimeoutAndSqliteInterruptAsExpectedCancellation() {
+        assertTrue(Database.isExpectedTimedQueryCancellation(true, true,
+                new SQLException("cancelled by timeout")),
+                "the future timeout path must not be classified as a storage failure");
+        assertTrue(Database.isExpectedTimedQueryCancellation(true, false,
+                new SQLTimeoutException("query timed out")),
+                "a JDBC timeout from the driver is an expected timed-query outcome");
+        assertTrue(Database.isExpectedTimedQueryCancellation(true, false,
+                new SQLException("interrupted", null, 9)),
+                "SQLite SQLITE_INTERRUPT is the normal result of cancelling a timed query");
+        assertFalse(Database.isExpectedTimedQueryCancellation(true, false,
+                new SQLException("disk I/O error", null, 10)),
+                "genuine SQLite storage failures must still degrade health");
+        assertFalse(Database.isExpectedTimedQueryCancellation(false, true,
+                new SQLException("interrupted", null, 9)),
+                "non-timed database operations must not suppress SQLite failures");
+    }
+
+    @Test
     void boundsSavedRollbackJobsIncludingSnapshotsCapturedAfterTheirPreview() throws Exception {
         database = startDatabase();
         long timestamp = System.currentTimeMillis();
@@ -469,7 +489,95 @@ class DatabaseTest {
         assertEquals("minecraft:stone", page.rows().get(0).beforeData());
         assertEquals("minecraft:grass_block", page.rows().get(0).afterData());
         assertEquals(1, database.health().coalescedWrites(),
-                "SQLite cross-flush upserts must contribute to /fg status coalesce metrics");
+                "cross-flush row-id coalescing must contribute to /fg status coalesce metrics");
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet index = statement.executeQuery("""
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
+                     """)) {
+            assertFalse(index.next(),
+                    "cross-flush coalescing must work without a persistent history index");
+        }
+    }
+
+    @Test
+    void preservesDifferentActorsAndInterveningSameTickChangesInMemory() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");
+
+        database.insertAsync(new BlockChange(timestamp, 910L, ACTOR_UUID.toString(), "Builder", "world",
+                10, 64, 10, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));
+        database.insertAsync(new BlockChange(timestamp + 1L, 910L, otherActor.toString(), "OtherBuilder", "world",
+                10, 64, 10, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));
+        database.insertAsync(new BlockChange(timestamp + 2L, 910L, ACTOR_UUID.toString(), "Builder", "world",
+                10, 64, 10, ChangeAction.BREAK, "minecraft:grass_block", "minecraft:gold_block"));
+
+        LookupPage page = database.lookupAsync("world", 10, 10, 1, 1, 15, 30).join();
+
+        assertEquals(3, page.totalRows(),
+                "a compatible actor must not coalesce across an intervening actor in the same tick");
+        assertEquals(0, database.health().coalescedWrites());
+    }
+
+    @Test
+    void preservesDifferentActorsAcrossSeparateDatabaseFlushes() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");
+
+        database.insertAsync(new BlockChange(timestamp, 911L, ACTOR_UUID.toString(), "Builder", "world",
+                11, 64, 11, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));
+        database.lookupAsync("world", 11, 11, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 1L, 911L, otherActor.toString(), "OtherBuilder", "world",
+                11, 64, 11, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));
+        LookupPage page = database.lookupAsync("world", 11, 11, 1, 1, 15, 30).join();
+
+        assertEquals(2, page.totalRows());
+        assertEquals(0, database.health().coalescedWrites(),
+                "cross-flush writes from different actors must stay distinct");
+    }
+
+    @Test
+    void preservesInterveningActorAcrossSeparateFlushesWithRowIdTracking() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+        UUID otherActor = UUID.fromString("97cebc5c-570f-40af-9719-a0dc24670c52");
+
+        database.insertAsync(new BlockChange(timestamp, 913L, ACTOR_UUID.toString(), "Builder", "world",
+                13, 64, 13, ChangeAction.BREAK, "minecraft:stone", "minecraft:dirt"));
+        database.lookupAsync("world", 13, 13, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 1L, 913L, otherActor.toString(), "OtherBuilder", "world",
+                13, 64, 13, ChangeAction.BREAK, "minecraft:dirt", "minecraft:grass_block"));
+        database.lookupAsync("world", 13, 13, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 2L, 913L, ACTOR_UUID.toString(), "Builder", "world",
+                13, 64, 13, ChangeAction.BREAK, "minecraft:grass_block", "minecraft:gold_block"));
+        LookupPage page = database.lookupAsync("world", 13, 13, 1, 1, 15, 30).join();
+
+        assertEquals(3, page.totalRows(),
+                "row-id tracking must follow the latest persisted row and never skip an intervening actor");
+        assertEquals(0, database.health().coalescedWrites());
+    }
+
+    @Test
+    void preservesDifferentActionsAcrossSeparateDatabaseFlushes() throws Exception {
+        database = startDatabase();
+        long timestamp = System.currentTimeMillis();
+
+        database.insertAsync(new BlockChange(timestamp, 912L, ACTOR_UUID.toString(), "Builder", "world",
+                12, 64, 12, ChangeAction.BREAK, "minecraft:stone", "minecraft:air"));
+        database.lookupAsync("world", 12, 12, 1, 1, 15, 30).join();
+
+        database.insertAsync(new BlockChange(timestamp + 1L, 912L, ACTOR_UUID.toString(), "Builder", "world",
+                12, 64, 12, ChangeAction.PLACE, "minecraft:air", "minecraft:stone"));
+        LookupPage page = database.lookupAsync("world", 12, 12, 1, 1, 15, 30).join();
+
+        assertEquals(2, page.totalRows());
+        assertEquals(0, database.health().coalescedWrites(),
+                "cross-flush writes with different actions must stay distinct");
     }
 
     @Test
@@ -695,6 +803,67 @@ class DatabaseTest {
             assertTrue(row.next());
             assertEquals("REMOVED_FUTURE_ACTION", row.getString("action"),
                     "unknown action identifiers must remain recoverable in the underlying history");
+        }
+    }
+
+    @Test
+    void migratesVersionThreeByRemovingObsoletePersistentCoalescingIndex() throws Exception {
+        database = startDatabase();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX idx_fg_tick_coalesce
+                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
+                    """);
+            statement.execute("PRAGMA user_version=3");
+        }
+
+        database = startDatabase();
+        assertFalse(Files.exists(temporaryDirectory.resolve("backups")),
+                "index-only v3->v4 migration must not duplicate the full history database");
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(4, version.getInt(1));
+            }
+            try (ResultSet indexes = statement.executeQuery("""
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
+                    """)) {
+                assertFalse(indexes.next(),
+                        "schema v4 must not retain or rebuild the persistent same-tick coalescing index");
+            }
+        }
+    }
+
+    @Test
+    void retriesVersionThreeMigrationWhenOldCoalescingIndexWasAlreadyDropped() throws Exception {
+        database = startDatabase();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");
+            statement.execute("PRAGMA user_version=3");
+        }
+
+        database = startDatabase();
+        assertFalse(Files.exists(temporaryDirectory.resolve("backups")),
+                "retrying an interrupted index-only migration must not create a full database backup");
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(4, version.getInt(1));
+            }
+            try (ResultSet indexes = statement.executeQuery("""
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
+                    """)) {
+                assertFalse(indexes.next(),
+                        "the exact interrupted production state must upgrade without recreating the large index");
+            }
         }
     }
 
@@ -1054,7 +1223,7 @@ class DatabaseTest {
 
     private Path onlyMigrationBackup() throws Exception {
         try (var backups = Files.list(temporaryDirectory.resolve("backups"))) {
-            List<Path> files = backups.toList();
+            List<Path> files = backups.filter(path -> path.getFileName().toString().endsWith(".bak")).toList();
             assertEquals(1, files.size());
             String filename = files.get(0).getFileName().toString();
             assertTrue(filename.startsWith("fragguard.db.pre-migration-v"));

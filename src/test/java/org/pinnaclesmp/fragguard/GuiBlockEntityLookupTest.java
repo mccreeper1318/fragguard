@@ -1,0 +1,108 @@
+package org.pinnaclesmp.fragguard;
+
+import org.bukkit.Server;
+import org.bukkit.World;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Logger;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+class GuiBlockEntityLookupTest {
+    private static final UUID WORLD_UUID = UUID.fromString("563fce36-6445-43e9-9e79-3bb6d0780b13");
+    private static final UUID ACTOR_UUID = UUID.fromString("714ea63f-075e-4694-b2c4-ae06a79748aa");
+
+    @TempDir
+    Path temporaryDirectory;
+
+    private final AtomicInteger currentTick = new AtomicInteger(100);
+    private Database database;
+
+    @AfterEach
+    void shutDownDatabase() {
+        if (database != null) {
+            database.shutdown();
+        }
+    }
+
+    @Test
+    void lightweightGuiRowsDoNotCarryLargeSnapshotsUntilExactDetailIsRequested() throws Exception {
+        database = startDatabase();
+        long now = System.currentTimeMillis();
+        byte[] beforeEntity = new byte[2 * 1024 * 1024];
+        byte[] afterEntity = new byte[2 * 1024 * 1024];
+        beforeEntity[0] = 1;
+        beforeEntity[beforeEntity.length - 1] = 2;
+        afterEntity[0] = 3;
+        afterEntity[afterEntity.length - 1] = 4;
+        database.insertRequiredAsync(List.of(new BlockChange(
+                now,
+                ACTOR_UUID.toString(),
+                "Builder",
+                "world",
+                1,
+                64,
+                1,
+                ChangeAction.BREAK,
+                "minecraft:chest",
+                "minecraft:chest",
+                beforeEntity,
+                afterEntity))).join();
+
+        GuiLookupStore guiStore = new GuiLookupStore(temporaryDirectory.toFile(), 5);
+        List<LookupRow> rows = guiStore.selectRowsAsync(
+                WORLD_UUID.toString(), "world", 1, 1, 5,
+                now - 1_000L, now + 1_000L, 50).join();
+
+        assertTrue(rows.size() == 1);
+        LookupRow row = rows.getFirst();
+        assertTrue(row.id() > 0L, "lightweight GUI rows need a stable ID for later detail loading");
+        assertEquals(ACTOR_UUID.toString(), row.actorIdentity(),
+                "lightweight GUI rows must carry the stored actor identity separately from display text");
+        assertTrue(row.blockEntityDataPresent(),
+                "the lightweight row must advertise that block-entity details are available");
+        assertFalse(row.blockEntityPayloadLoaded(),
+                "the initial GUI lookup must not retain the multi-megabyte snapshot payloads");
+
+        LookupEventPayload payload = guiStore.loadEventPayloadAsync(row.id()).join();
+        assertArrayEquals(beforeEntity, payload.beforeEntityData());
+        assertArrayEquals(afterEntity, payload.afterEntityData());
+        assertTrue(payload.changed());
+    }
+
+    private Database startDatabase() throws Exception {
+        JavaPlugin plugin = mock(JavaPlugin.class);
+        Server server = mock(Server.class);
+        World world = mock(World.class);
+        YamlConfiguration configuration = new YamlConfiguration();
+        configuration.set("database-write-queue-capacity", 64);
+        configuration.set("database-write-batch-size", 16);
+        configuration.set("database-query-timeout-seconds", 5);
+        when(plugin.getDataFolder()).thenReturn(temporaryDirectory.toFile());
+        when(plugin.getConfig()).thenReturn(configuration);
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getLogger()).thenReturn(Logger.getLogger("FragGuardGuiBlockEntityLookupTest"));
+        when(server.getCurrentTick()).thenAnswer(invocation -> currentTick.get());
+        when(server.getWorld("world")).thenReturn(world);
+        when(server.getWorlds()).thenReturn(List.of(world));
+        when(world.getUID()).thenReturn(WORLD_UUID);
+        when(world.getName()).thenReturn("world");
+
+        Database instance = new Database(plugin);
+        instance.init();
+        return instance;
+    }
+}

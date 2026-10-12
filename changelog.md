@@ -1,5 +1,44 @@
 # FG Changelog
 
+## 26.3-1.2.0
+
+### Added
+
+- Added the first Minecraft-native FragGuard GUI: typing `/fg` now opens an operator menu while all existing subcommands continue to work normally.
+- Added GUI lookup setup with radius and time presets, condensed activity results, clickable result paging, activity detail screens, and exact raw-event drill-downs.
+- Added structured Player, Action, and Material lookup filters generated from the selected lookup window, with no free-text filter parsing and no changes to stored history.
+- Added presentation-only activity grouping that condenses nearby same-actor/same-action/same-material changes without deleting or rewriting any stored history rows.
+- Added bounded database-backed GUI paging and streamed activity summaries so large history windows remain browseable without retaining the complete exact result set in one GUI session.
+- Added configurable activity grouping thresholds and regression tests covering scaffolding-style chains, actor/action boundaries, time/distance boundaries, and preservation of every source event.
+- Added GUI rollback controls with radius/time presets, conflict-protected or force mode selection, rollback preview launch, active-preview confirmation, and a paged browser with confirmation screens for undoable rollback jobs.
+
+### Changed
+
+- Added #112 deep GUI regression coverage for page 3 and 10+, all 36-slot raw/condensed and 45-slot activity-raw boundaries, non-item block rendering, database timeout and renderer recovery, fixed snapshots, filters, and stale callbacks. Documented the Paper 26.3 in-game sign-off checklist in `docs/gui-regression-matrix-26.3-1.2.0.md`.
+- Reviewed Paper 26.3 beta source compatibility and migrated GUI/message presentation from deprecated legacy Bukkit string/color APIs to Adventure components and serializers; event logging, block-entity snapshots, and rollback/undo APIs required no compatibility shims.
+- Updated the Gradle wrapper from `9.7.1` to `9.8.0`, gradle/actions/setup-gradle from `6.3.0` to `6.4.0` SLF4J NOP from `2.0.19` to `2.0.20`, and Mockito from `5.23.0` to `5.24.0`, with regenerated dependency locks.
+- Updated the development target to Paper API `26.3.build.159-beta` from `26.3.build.136-beta`, with `api-version: '26.3'`; the FragGuard feature version remains `26.3-1.2.0`.
+- Updated the development Paper API from `26.3.build.159-beta` to **`26.3.build.177-stable`** for compile and test dependencies; retained Java 25, the `26.3` plugin API descriptor and the `26.3-1.2.0` FragGuard version.
+- `/fg` with no arguments now opens the GUI; `/fg lookup`, `/fg rollback`, `/fg undo`, `/fg status`, and `/fg help` remain available through the existing command path.
+- Bumped actions/setup-java from 6.0.0 to 6.0.1
+
+### Fixed
+
+- Fixed #111: Optimized dense history counts and page navigation by using targeted chunk-index seeks for both X/Z dimensions against the existing composite spatial-time index. Deferred expensive player/action/material filter catalogs until Filters is opened, added per-stage query timing and optional SQLite plans, enforced an asynchronous read deadline with statement cancellation, and warned on nonzero-count/empty-page mismatches.
+- Fixed #110: Removed the redundant legacy history count/zero-row query from GUI lookup startup by waiting on a lightweight database-worker write barrier before the bounded GUI snapshot and its single overview count; accepted write ordering and complete history pagination are preserved.
+- Fixed #109: GUI history pages now render before replacing the current inventory, retain the previous page and paging state after SQL/rendering failures, block repeated clicks while an asynchronous navigation is pending, and provide contextual console diagnostics plus safe retry/recovery navigation.
+- Fixed #108: GUI history inventories now show a safe fallback icon for non-item Minecraft block states (including water cauldrons, moving pistons, and water), preventing large condensed/raw lookups and material filters from crashing without changing any recorded history.
+- Fixed #81 by logging Paper 26.3 Shelf inventory swaps even when block data is unchanged, including connected powered shelves, and added Shelf-specific lookup/raw-detail, conflict-protection, rollback, and undo coverage while retaining the generic `TileStateInventoryHolder` snapshot format.
+- Fixed #80 cross-version rollback conflicts by comparing compatible format-v1 block-entity snapshots after in-memory normalization through the current Paper item serializer; Paper 26.2 history, container contents, rollback snapshots, and undo data remain stored byte-for-byte and require no schema rewrite.
+- Fixed #72 by giving rollback previews an explicit lifecycle: previews now expire on a guarded scheduled cleanup, are cleared on operator disconnect and plugin shutdown, are skipped when an async query finishes for an offline player, and expired tokens are filtered from tab completion.
+- Fixed #70 by failing closed when legacy rollback history lacks a block-entity snapshot for a live supported block entity, while preserving normal comparison for ordinary blocks and force-mode override behavior.
+- Fixed #69 by binding asynchronous rollback previews to the world captured when the query starts, so world changes during the query cannot mislabel preview, confirmation, overlap, or rollback-job metadata.
+- Fixed same-tick coalescing merging different actors and actions by only combining consecutive, state-contiguous changes with matching attribution and action.
+- Fixed timed-out queries falsely marking storage unhealthy by separating expected timeout and SQLite interrupt results from genuine database failures.
+- Fixed redstone-primed TNT removal bypassing block history by logging `TNTPrimeEvent` transitions with specific cause attribution and suppressing duplicate generic history.
+- Fixed dragon egg teleports being partially logged by recording the source and destination together under a dedicated teleport action.
+- Fixed completed rollback jobs and snapshots accumulating indefinitely by expiring terminal jobs after the configured retention while preserving active and recoverable failed jobs.
+
 ## 26.2-1.1.2
 
 ### Fixed

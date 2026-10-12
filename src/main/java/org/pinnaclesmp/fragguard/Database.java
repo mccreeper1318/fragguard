@@ -4,15 +4,19 @@ import org.bukkit.World;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLTimeoutException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -26,10 +30,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 3;
+    static final int SCHEMA_VERSION = 4;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
-    private static final int COALESCE_CONFLICT_QUERY_BATCH_SIZE = 100;
+    private static final int MAX_PERSISTED_COALESCE_CANDIDATES = 4_096;
+    private static final long PERSISTED_COALESCE_TICK_RETENTION = 2L;
     private static final String AREA_FILTER = """
             rollback_pending = 0
             AND world_uuid IN (?, ?)
@@ -50,11 +55,14 @@ final class Database {
     private final ArrayBlockingQueue<PendingBlockChange> writeQueue;
     private final ArrayBlockingQueue<DatabaseOperation<?>> operationQueue;
     private final Map<CoalesceKey, PendingBlockChange> coalescedChanges = new HashMap<>();
+    private final LinkedHashMap<CoalesceKey, PersistedCoalesceCandidate> persistedCoalesceCandidates =
+            new LinkedHashMap<>();
     private final AtomicLong acceptedWriteSequence = new AtomicLong();
     private final AtomicLong completedWrites = new AtomicLong();
     private final AtomicLong droppedWrites = new AtomicLong();
     private final AtomicLong coalescedWrites = new AtomicLong();
     private final int writeCapacity;
+    private final int persistedCoalesceCapacity;
     private final int operationCapacity;
     private final int batchSize;
     private final int pressureFlushThreshold;
@@ -78,6 +86,7 @@ final class Database {
         this.databaseFile = new File(plugin.getDataFolder(), "fragguard.db");
         this.jdbcUrl = "jdbc:sqlite:" + databaseFile.getAbsolutePath();
         this.writeCapacity = Math.max(64, plugin.getConfig().getInt("database-write-queue-capacity", 20_000));
+        this.persistedCoalesceCapacity = Math.max(64, Math.min(writeCapacity, MAX_PERSISTED_COALESCE_CANDIDATES));
         this.operationCapacity = Math.max(8, plugin.getConfig().getInt("database-operation-queue-capacity", 256));
         this.batchSize = Math.min(writeCapacity,
                 Math.max(1, plugin.getConfig().getInt("database-write-batch-size", 500)));
@@ -237,7 +246,7 @@ final class Database {
             }
 
             PendingBlockChange existing = coalescedChanges.get(key);
-            if (existing != null) {
+            if (existing != null && canCoalesce(existing.change, change)) {
                 existing.change = merge(existing.change, change, serverTick);
                 coalescedWrites.incrementAndGet();
                 return;
@@ -426,15 +435,79 @@ final class Database {
                 droppedWrites.get(), coalescedWrites.get(), healthy, lastError);
     }
 
-    CompletableFuture<Integer> cleanupOldRecordsAsync(int retentionDays) {
-        return submit(databaseConnection -> {
-            long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
+    CompletableFuture<DatabaseCleanupResult> cleanupOldRecordsAsync(
+            int retentionDays,
+            int rollbackJobRetentionDays
+    ) {
+        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            long now = System.currentTimeMillis();
+            long blockCutoff = now - TimeUnit.DAYS.toMillis(Math.max(1, retentionDays));
+            long rollbackJobCutoff = now - TimeUnit.DAYS.toMillis(Math.max(1, rollbackJobRetentionDays));
+
+            int deletedBlockRecords;
             try (PreparedStatement statement = databaseConnection.prepareStatement(
                     "DELETE FROM block_changes WHERE happened_at < ? AND rollback_pending = 0")) {
-                statement.setLong(1, cutoff);
-                return statement.executeUpdate();
+                statement.setLong(1, blockCutoff);
+                deletedBlockRecords = statement.executeUpdate();
             }
-        }, false);
+
+            String terminalJobCondition = """
+                    updated_at < ?
+                    AND (
+                        status IN ('COMPLETED', 'UNDONE')
+                        OR (
+                            status = 'FAILED'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM rollback_job_changes
+                                WHERE job_id = rollback_jobs.id
+                                  AND before_data IS NOT NULL
+                                  AND conflicted = 0
+                                  AND undone = 0
+                            )
+                        )
+                    )
+                    """;
+
+            try (PreparedStatement statement = databaseConnection.prepareStatement("""
+                    DELETE FROM block_changes
+                    WHERE rollback_pending = 1
+                      AND id IN (
+                          SELECT pending_audit_id
+                          FROM rollback_job_changes
+                          WHERE pending_audit_id IS NOT NULL
+                            AND job_id IN (
+                                SELECT id
+                                FROM rollback_jobs
+                                WHERE %s
+                            )
+                      )
+                    """.formatted(terminalJobCondition))) {
+                statement.setLong(1, rollbackJobCutoff);
+                statement.executeUpdate();
+            }
+
+            int deletedRollbackJobs;
+            try (PreparedStatement statement = databaseConnection.prepareStatement(
+                    "DELETE FROM rollback_jobs WHERE " + terminalJobCondition)) {
+                statement.setLong(1, rollbackJobCutoff);
+                deletedRollbackJobs = statement.executeUpdate();
+            }
+
+            return new DatabaseCleanupResult(deletedBlockRecords, deletedRollbackJobs);
+        }), false);
+    }
+
+    /**
+     * Completes after all accepted block writes ahead of this operation are durable.
+     *
+     * <p>The database worker flushes {@code operation.writeBarrier} before executing
+     * this no-op. Unlike {@code lookupSinceAsync(..., pageSize=0)}, this performs
+     * no legacy COUNT, page query, or block-entity data loading. The GUI can then
+     * capture its bounded snapshot and count through GuiLookupStore exactly once.</p>
+     */
+    CompletableFuture<Void> awaitWritesAsync() {
+        return submit(databaseConnection -> null, true);
     }
 
     CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
@@ -447,6 +520,20 @@ final class Database {
             int safePage = Math.max(1, Math.min(page, totalPages));
             List<LookupRow> rows = selectLookup(databaseConnection, worldUuid, worldName, centerX, centerZ,
                     radius, cutoff, safePage, pageSize);
+            return new LookupPage(rows, safePage, pageSize, total);
+        }, true);
+    }
+
+    CompletableFuture<LookupPage> lookupSinceAsync(String worldName, int centerX, int centerZ, int radius,
+                                                   int page, int pageSize, long cutoffTimestamp) {
+        String worldUuid = resolveWorldUuid(worldName);
+        return submit(databaseConnection -> {
+            int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius,
+                    cutoffTimestamp);
+            int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
+            int safePage = Math.max(1, Math.min(page, totalPages));
+            List<LookupRow> rows = selectLookup(databaseConnection, worldUuid, worldName, centerX, centerZ,
+                    radius, cutoffTimestamp, safePage, pageSize);
             return new LookupPage(rows, safePage, pageSize, total);
         }, true);
     }
@@ -827,6 +914,7 @@ final class Database {
                 pending.future.completeExceptionally(exception);
             }
         } finally {
+            persistedCoalesceCandidates.clear();
             running = false;
             connection = null;
             workerStopped = true;
@@ -869,8 +957,13 @@ final class Database {
                     + ". Upgrade FragGuard instead of opening this database with an older plugin.");
         }
 
-        if (schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection)) {
-            createMigrationBackup(databaseConnection, schemaVersion);
+        boolean existingSchema = schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection);
+        File migrationBackup = null;
+        if (existingSchema && MigrationStoragePolicy.requiresFullBackup(schemaVersion)) {
+            migrationBackup = createMigrationBackup(databaseConnection, schemaVersion);
+        } else if (existingSchema && schemaVersion == 3) {
+            plugin.getLogger().info("FragGuard schema v3->v4 only removes the obsolete persistent coalescing "
+                    + "index; skipping a full database copy.");
         }
 
         try (Statement statement = databaseConnection.createStatement()) {
@@ -879,21 +972,26 @@ final class Database {
             statement.execute("PRAGMA foreign_keys=ON");
         }
 
+        int startingVersion = schemaVersion;
         while (schemaVersion < SCHEMA_VERSION) {
             int previousVersion = schemaVersion;
-            inTransaction(databaseConnection, () -> {
-                switch (previousVersion) {
-                    case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
-                    case 1 -> migrateBlockEntitySchema(databaseConnection);
-                    case 2 -> migrateRollbackSafetySchema(databaseConnection);
-                    default -> throw new SQLException("No FragGuard database migration exists for schema version "
-                            + previousVersion + ".");
-                }
-                try (Statement statement = databaseConnection.createStatement()) {
-                    statement.execute("PRAGMA user_version=" + (previousVersion + 1));
-                }
-                return null;
-            });
+            if (previousVersion == 3) {
+                migrateAttributionCoalescingSchema(databaseConnection);
+            } else {
+                inTransaction(databaseConnection, () -> {
+                    switch (previousVersion) {
+                        case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
+                        case 1 -> migrateBlockEntitySchema(databaseConnection);
+                        case 2 -> migrateRollbackSafetySchema(databaseConnection);
+                        default -> throw new SQLException("No FragGuard database migration exists for schema version "
+                                + previousVersion + ".");
+                    }
+                    try (Statement statement = databaseConnection.createStatement()) {
+                        statement.execute("PRAGMA user_version=" + (previousVersion + 1));
+                    }
+                    return null;
+                });
+            }
             schemaVersion++;
             plugin.getLogger().info("Migrated FragGuard's SQLite schema from version " + previousVersion
                     + " to version " + schemaVersion + ".");
@@ -903,6 +1001,9 @@ final class Database {
             refreshRollbackWorldNames(databaseConnection, loadedWorlds);
             return null;
         });
+        if (startingVersion < SCHEMA_VERSION && migrationBackup != null) {
+            pruneVerifiedMigrationBackups();
+        }
     }
 
     private int readSchemaVersion(Connection databaseConnection) throws SQLException {
@@ -927,12 +1028,16 @@ final class Database {
         }
     }
 
-    private void createMigrationBackup(Connection databaseConnection, int previousVersion) throws SQLException {
+    private File createMigrationBackup(Connection databaseConnection, int previousVersion) throws SQLException {
         File backupDirectory = new File(plugin.getDataFolder(), "backups");
         if (!backupDirectory.isDirectory() && !backupDirectory.mkdirs()) {
             throw new SQLException("Cannot safely migrate FragGuard's database because the backup directory "
                     + backupDirectory.getAbsolutePath() + " could not be created.");
         }
+
+        long estimatedWork = MigrationStoragePolicy.estimateFullMigrationWorkingBytes(databaseFile.length());
+        preflightMigrationSpace(backupDirectory, estimatedWork,
+                "full pre-migration backup and schema rewrite from v" + previousVersion + " to v" + SCHEMA_VERSION);
 
         String prefix = databaseFile.getName() + ".pre-migration-v" + previousVersion
                 + "-to-v" + SCHEMA_VERSION + "-" + System.currentTimeMillis();
@@ -941,28 +1046,132 @@ final class Database {
             backupFile = new File(backupDirectory, prefix + "-" + attempt + ".bak");
         }
 
-        try (PreparedStatement statement = databaseConnection.prepareStatement("VACUUM INTO ?")) {
-            statement.setString(1, backupFile.getAbsolutePath());
-            statement.execute();
+        try {
+            try (PreparedStatement statement = databaseConnection.prepareStatement("VACUUM INTO ?")) {
+                statement.setString(1, backupFile.getAbsolutePath());
+                statement.execute();
+            }
+            verifySqliteFile(backupFile, "pre-migration backup");
         } catch (SQLException exception) {
+            String cleanup = cleanupFailedMigrationBackup(backupFile);
             throw new SQLException("Cannot safely migrate FragGuard's database because the SQLite backup at "
-                    + backupFile.getAbsolutePath() + " could not be created.", exception);
+                    + backupFile.getAbsolutePath() + " could not be created and verified." + cleanup, exception);
         }
 
-        try (Connection backupConnection = DriverManager.getConnection(
-                "jdbc:sqlite:" + backupFile.getAbsolutePath());
+        markVerifiedMigrationBackup(backupFile);
+        plugin.getLogger().info("Created and verified FragGuard's pre-migration database backup: "
+                + backupFile.getAbsolutePath());
+        return backupFile;
+    }
+
+    private void verifySqliteFile(File sqliteFile, String description) throws SQLException {
+        try (Connection backupConnection = DriverManager.getConnection("jdbc:sqlite:" + sqliteFile.getAbsolutePath());
              Statement statement = backupConnection.createStatement();
              ResultSet check = statement.executeQuery("PRAGMA quick_check")) {
             if (!check.next() || !"ok".equalsIgnoreCase(check.getString(1))) {
-                throw new SQLException("The pre-migration SQLite backup did not pass its integrity check.");
+                throw new SQLException("The " + description + " did not pass PRAGMA quick_check.");
             }
-        } catch (SQLException exception) {
-            throw new SQLException("Cannot safely migrate FragGuard's database because the backup at "
-                    + backupFile.getAbsolutePath() + " could not be verified.", exception);
         }
+    }
 
-        plugin.getLogger().info("Created and verified FragGuard's pre-migration database backup: "
-                + backupFile.getAbsolutePath());
+    private void verifyOpenDatabase(Connection databaseConnection, String description) throws SQLException {
+        try (Statement statement = databaseConnection.createStatement();
+             ResultSet check = statement.executeQuery("PRAGMA quick_check")) {
+            if (!check.next() || !"ok".equalsIgnoreCase(check.getString(1))) {
+                throw new SQLException("FragGuard's database did not pass PRAGMA quick_check " + description + ".");
+            }
+        }
+    }
+
+    private void preflightMigrationSpace(File destination, long estimatedWorkingBytes, String step)
+            throws SQLException {
+        if (!plugin.getConfig().getBoolean("database-migration-space-preflight-enabled", true)) {
+            plugin.getLogger().warning("FragGuard migration disk-space preflight is disabled for: " + step
+                    + ". SQLite storage failures will still abort the migration safely.");
+            return;
+        }
+        long safetyMiB = Math.max(0L,
+                plugin.getConfig().getLong("database-migration-space-safety-mib", 256L));
+        long required = MigrationStoragePolicy.requiredFreeBytes(estimatedWorkingBytes, safetyMiB);
+        long usable = destination.getUsableSpace();
+        if (usable <= 0L) {
+            throw new SQLException("Cannot safely begin " + step + " because FragGuard could not determine usable "
+                    + "space at " + destination.getAbsolutePath() + ". Set database-migration-space-preflight-enabled "
+                    + "to false only if you intentionally want to override this safety check.");
+        }
+        if (usable < required) {
+            throw new SQLException("Cannot safely begin " + step + ": database="
+                    + MigrationStoragePolicy.formatBytes(databaseFile.length()) + ", filesystem-reported available="
+                    + MigrationStoragePolicy.formatBytes(usable) + ", estimated minimum free="
+                    + MigrationStoragePolicy.formatBytes(required) + ", path=" + destination.getAbsolutePath()
+                    + ". Archive old verified migration backups or increase storage before retrying. "
+                    + "You may explicitly disable database-migration-space-preflight-enabled only if the host reports "
+                    + "filesystem free space inaccurately.");
+        }
+        plugin.getLogger().info("FragGuard migration storage preflight passed for " + step
+                + ": filesystem-reported available=" + MigrationStoragePolicy.formatBytes(usable)
+                + ", estimated minimum free=" + MigrationStoragePolicy.formatBytes(required)
+                + ". Managed-host account quotas can be lower than the filesystem value.");
+    }
+
+    private String cleanupFailedMigrationBackup(File backupFile) {
+        File marker = verifiedMarker(backupFile);
+        if (marker.exists() && !marker.delete()) {
+            plugin.getLogger().warning("Could not remove migration-backup verification marker: "
+                    + marker.getAbsolutePath());
+        }
+        if (!backupFile.exists() || backupFile.delete()) {
+            return " The failed partial backup was removed.";
+        }
+        return " The failed partial backup remains at " + backupFile.getAbsolutePath()
+                + " and must be removed manually before retrying.";
+    }
+
+    private void markVerifiedMigrationBackup(File backupFile) {
+        File marker = verifiedMarker(backupFile);
+        try {
+            if (!marker.createNewFile() && !marker.isFile()) {
+                plugin.getLogger().warning("Could not create migration-backup verification marker: "
+                        + marker.getAbsolutePath());
+            }
+        } catch (IOException exception) {
+            plugin.getLogger().log(Level.WARNING,
+                    "Could not create migration-backup verification marker " + marker.getAbsolutePath()
+                            + "; this backup will never be auto-pruned.", exception);
+        }
+    }
+
+    private File verifiedMarker(File backupFile) {
+        return new File(backupFile.getParentFile(), backupFile.getName() + ".verified");
+    }
+
+    private void pruneVerifiedMigrationBackups() {
+        File backupDirectory = new File(plugin.getDataFolder(), "backups");
+        int keep = Math.max(1,
+                plugin.getConfig().getInt("database-migration-backup-retention-count", 1));
+        File[] markers = backupDirectory.listFiles(file -> file.isFile()
+                && file.getName().endsWith(".bak.verified"));
+        if (markers == null || markers.length <= keep) {
+            return;
+        }
+        Arrays.sort(markers, Comparator.comparingLong(File::lastModified).reversed());
+        for (int index = keep; index < markers.length; index++) {
+            File marker = markers[index];
+            String backupName = marker.getName().substring(0,
+                    marker.getName().length() - ".verified".length());
+            File backup = new File(backupDirectory, backupName);
+            if (backup.exists() && !backup.delete()) {
+                plugin.getLogger().warning("Could not prune verified migration backup: " + backup.getAbsolutePath());
+                continue;
+            }
+            if (!marker.delete()) {
+                plugin.getLogger().warning("Pruned migration backup but could not remove verification marker: "
+                        + marker.getAbsolutePath());
+            } else {
+                plugin.getLogger().info("Pruned old verified FragGuard migration backup: "
+                        + backup.getAbsolutePath());
+            }
+        }
     }
 
     private void migrateUnversionedSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
@@ -1006,10 +1215,6 @@ final class Database {
             statement.executeUpdate("""
                     CREATE INDEX IF NOT EXISTS idx_fg_spatial_time
                     ON block_changes(world_uuid, chunk_x, chunk_z, happened_at)
-                    """);
-            statement.executeUpdate("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_fg_tick_coalesce
-                    ON block_changes(world_uuid, x, y, z, coalesce_session, server_tick)
                     """);
             statement.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS rollback_jobs (
@@ -1104,6 +1309,21 @@ final class Database {
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_id", "INTEGER");
         addColumnIfMissing(databaseConnection, "rollback_job_changes", "pending_audit_undo",
                 "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    private void migrateAttributionCoalescingSchema(Connection databaseConnection) throws SQLException {
+        startupStage = "removing obsolete coalescing index for schema v3 to v4";
+        verifyOpenDatabase(databaseConnection, "before the index-removal v3->v4 migration");
+        inTransaction(databaseConnection, () -> {
+            try (Statement statement = databaseConnection.createStatement()) {
+                statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_tick_coalesce");
+            }
+            verifyOpenDatabase(databaseConnection, "after removing the obsolete schema-v3 coalescing index");
+            try (Statement statement = databaseConnection.createStatement()) {
+                statement.execute("PRAGMA user_version=4");
+            }
+            return null;
+        });
     }
 
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
@@ -1203,6 +1423,7 @@ final class Database {
             future.orTimeout(queryTimeoutSeconds, TimeUnit.SECONDS);
             future.whenComplete((result, throwable) -> {
                 if ((future.isCancelled() || throwable instanceof TimeoutException) && activeQuery == future) {
+                    operation.cancellationRequested = true;
                     cancelActiveStatement();
                 }
             });
@@ -1259,20 +1480,31 @@ final class Database {
         }
 
         try {
+            Map<CoalesceKey, PersistedCoalesceCandidate> candidateChanges = new HashMap<>();
             long persistedCoalesces = inTransaction(connection, () -> {
-                long existingRows = countPersistedCoalesceConflicts(connection, batch);
-                try (PreparedStatement statement = connection.prepareStatement("""
+                long coalesces = 0L;
+                try (PreparedStatement update = connection.prepareStatement("""
+                        UPDATE block_changes
+                        SET after_data = ?, after_entity_data = ?
+                        WHERE id = ?
+                          AND actor_uuid = ?
+                          AND actor_name = ?
+                          AND action = ?
+                          AND after_data = ?
+                          AND ((after_entity_data IS NULL AND ? IS NULL) OR after_entity_data = ?)
+                        """);
+                     PreparedStatement insert = connection.prepareStatement("""
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                          before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick,
                          before_entity_data, after_entity_data)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(world_uuid, x, y, z, coalesce_session, server_tick) DO UPDATE SET
-                            actor_uuid = excluded.actor_uuid,
-                            actor_name = excluded.actor_name,
-                            action = excluded.action,
-                            after_data = excluded.after_data,
-                            after_entity_data = excluded.after_entity_data
+                        """, Statement.RETURN_GENERATED_KEYS);
+                     PreparedStatement deleteNoOp = connection.prepareStatement("""
+                        DELETE FROM block_changes
+                        WHERE id = ?
+                          AND before_data = after_data
+                          AND before_entity_data IS after_entity_data
                         """)) {
                     for (PendingBlockChange pending : batch) {
                         BlockChange change = pending.change;
@@ -1280,48 +1512,63 @@ final class Database {
                                 change.afterData(), change.afterEntityData())) {
                             continue;
                         }
-                        statement.setLong(1, change.happenedAt());
-                        statement.setString(2, change.actorUuid());
-                        statement.setString(3, change.actorName());
-                        statement.setString(4, change.worldName());
-                        statement.setInt(5, change.x());
-                        statement.setInt(6, change.y());
-                        statement.setInt(7, change.z());
-                        statement.setString(8, change.action().storageId());
-                        statement.setString(9, change.beforeData());
-                        statement.setString(10, change.afterData());
-                        statement.setString(11, pending.worldUuid);
-                        statement.setInt(12, change.x() >> 4);
-                        statement.setInt(13, change.z() >> 4);
-                        statement.setString(14, coalesceSession);
-                        statement.setLong(15, pending.key.tick());
-                        statement.setBytes(16, change.beforeEntityData());
-                        statement.setBytes(17, change.afterEntityData());
-                        statement.addBatch();
-                    }
-                    statement.executeBatch();
-                }
 
-                try (PreparedStatement statement = connection.prepareStatement("""
-                        DELETE FROM block_changes
-                        WHERE world_uuid = ? AND x = ? AND y = ? AND z = ?
-                          AND coalesce_session = ? AND server_tick = ?
-                          AND before_data = after_data
-                          AND before_entity_data IS after_entity_data
-                        """)) {
-                    for (PendingBlockChange pending : batch) {
-                        statement.setString(1, pending.worldUuid);
-                        statement.setInt(2, pending.key.x());
-                        statement.setInt(3, pending.key.y());
-                        statement.setInt(4, pending.key.z());
-                        statement.setString(5, coalesceSession);
-                        statement.setLong(6, pending.key.tick());
-                        statement.addBatch();
+                        PersistedCoalesceCandidate candidate = candidateChanges.containsKey(pending.key)
+                                ? candidateChanges.get(pending.key)
+                                : persistedCoalesceCandidates.get(pending.key);
+                        if (candidate != null && canCoalesce(candidate, change)) {
+                            update.setString(1, change.afterData());
+                            update.setBytes(2, change.afterEntityData());
+                            update.setLong(3, candidate.rowId());
+                            update.setString(4, candidate.actorUuid());
+                            update.setString(5, candidate.actorName());
+                            update.setString(6, candidate.action().storageId());
+                            update.setString(7, candidate.afterData());
+                            update.setBytes(8, candidate.afterEntityData());
+                            update.setBytes(9, candidate.afterEntityData());
+                            if (update.executeUpdate() == 1) {
+                                coalesces++;
+                                deleteNoOp.setLong(1, candidate.rowId());
+                                if (deleteNoOp.executeUpdate() == 1) {
+                                    candidateChanges.put(pending.key, null);
+                                } else {
+                                    candidateChanges.put(pending.key,
+                                            persistedCandidate(candidate.rowId(), change));
+                                }
+                                continue;
+                            }
+                        }
+
+                        insert.setLong(1, change.happenedAt());
+                        insert.setString(2, change.actorUuid());
+                        insert.setString(3, change.actorName());
+                        insert.setString(4, change.worldName());
+                        insert.setInt(5, change.x());
+                        insert.setInt(6, change.y());
+                        insert.setInt(7, change.z());
+                        insert.setString(8, change.action().storageId());
+                        insert.setString(9, change.beforeData());
+                        insert.setString(10, change.afterData());
+                        insert.setString(11, pending.worldUuid);
+                        insert.setInt(12, change.x() >> 4);
+                        insert.setInt(13, change.z() >> 4);
+                        insert.setString(14, coalesceSession);
+                        insert.setLong(15, pending.key.tick());
+                        insert.setBytes(16, change.beforeEntityData());
+                        insert.setBytes(17, change.afterEntityData());
+                        insert.executeUpdate();
+                        try (ResultSet keys = insert.getGeneratedKeys()) {
+                            if (!keys.next()) {
+                                throw new SQLException("SQLite did not return a block-change row ID for coalescing.");
+                            }
+                            candidateChanges.put(pending.key,
+                                    persistedCandidate(keys.getLong(1), change));
+                        }
                     }
-                    statement.executeBatch();
                 }
-                return existingRows;
+                return coalesces;
             });
+            applyPersistedCoalesceCandidateChanges(candidateChanges);
             synchronized (coalescedChanges) {
                 completedWrites.addAndGet(batch.size());
                 activeWriteBatchSize = 0;
@@ -1346,57 +1593,6 @@ final class Database {
         }
     }
 
-    private long countPersistedCoalesceConflicts(Connection databaseConnection,
-                                                  List<PendingBlockChange> batch) throws SQLException {
-        List<PendingBlockChange> candidates = batch.stream()
-                .filter(pending -> !pending.change.beforeData().equals(pending.change.afterData()))
-                .toList();
-        long conflicts = 0L;
-        for (int offset = 0; offset < candidates.size(); offset += COALESCE_CONFLICT_QUERY_BATCH_SIZE) {
-            int end = Math.min(candidates.size(), offset + COALESCE_CONFLICT_QUERY_BATCH_SIZE);
-            StringBuilder values = new StringBuilder();
-            for (int index = offset; index < end; index++) {
-                if (!values.isEmpty()) {
-                    values.append(", ");
-                }
-                values.append("(?, ?, ?, ?, ?, ?)");
-            }
-
-            String sql = """
-                    WITH incoming(world_uuid, x, y, z, coalesce_session, server_tick) AS (
-                        VALUES %s
-                    )
-                    SELECT COUNT(*)
-                    FROM incoming
-                    JOIN block_changes existing
-                      ON existing.world_uuid = incoming.world_uuid
-                     AND existing.x = incoming.x
-                     AND existing.y = incoming.y
-                     AND existing.z = incoming.z
-                     AND existing.coalesce_session = incoming.coalesce_session
-                     AND existing.server_tick = incoming.server_tick
-                    """.formatted(values);
-            try (PreparedStatement statement = databaseConnection.prepareStatement(sql)) {
-                int parameter = 1;
-                for (int index = offset; index < end; index++) {
-                    PendingBlockChange pending = candidates.get(index);
-                    statement.setString(parameter++, pending.worldUuid);
-                    statement.setInt(parameter++, pending.key.x());
-                    statement.setInt(parameter++, pending.key.y());
-                    statement.setInt(parameter++, pending.key.z());
-                    statement.setString(parameter++, coalesceSession);
-                    statement.setLong(parameter++, pending.key.tick());
-                }
-                try (ResultSet rows = statement.executeQuery()) {
-                    if (rows.next()) {
-                        conflicts += rows.getLong(1);
-                    }
-                }
-            }
-        }
-        return conflicts;
-    }
-
     private <T> void executeOperation(DatabaseOperation<T> operation) {
         if (operation.future.isDone()) {
             return;
@@ -1408,7 +1604,9 @@ final class Database {
             healthy = true;
             lastError = "";
         } catch (Throwable exception) {
-            if (exception instanceof SQLException) {
+            if (exception instanceof SQLException sqlException
+                    && !isExpectedTimedQueryCancellation(operation.timedQuery,
+                    operation.cancellationRequested, sqlException)) {
                 healthy = false;
                 lastError = exception.getMessage();
                 warnStorage("FragGuard database operation failed; check SQLite storage health.", exception);
@@ -1435,7 +1633,8 @@ final class Database {
                                          int centerX, int centerZ, int radius, long cutoffTimestamp,
                                          int page, int pageSize) throws SQLException {
         String sql = """
-                SELECT happened_at, actor_name, world, x, y, z, action, before_data, after_data
+                SELECT happened_at, actor_name, world, x, y, z, action, before_data, after_data,
+                       before_entity_data, after_entity_data
                 FROM block_changes
                 WHERE %s
                 ORDER BY happened_at DESC, id DESC
@@ -1452,7 +1651,8 @@ final class Database {
                     rows.add(new LookupRow(resultSet.getLong("happened_at"), resultSet.getString("actor_name"),
                             resultSet.getString("world"), resultSet.getInt("x"), resultSet.getInt("y"),
                             resultSet.getInt("z"), ChangeAction.fromStorageId(resultSet.getString("action")),
-                            resultSet.getString("before_data"), resultSet.getString("after_data")));
+                            resultSet.getString("before_data"), resultSet.getString("after_data"),
+                            resultSet.getBytes("before_entity_data"), resultSet.getBytes("after_entity_data")));
                 }
             }
             return rows;
@@ -1766,6 +1966,87 @@ final class Database {
         }
     }
 
+    static boolean isExpectedTimedQueryCancellation(boolean timedQuery, boolean cancellationRequested,
+                                                    SQLException exception) {
+        if (!timedQuery) {
+            return false;
+        }
+        if (cancellationRequested || exception instanceof SQLTimeoutException) {
+            return true;
+        }
+
+        for (SQLException current = exception; current != null; current = current.getNextException()) {
+            if (current instanceof SQLTimeoutException || current.getErrorCode() == 9) {
+                return true;
+            }
+        }
+        for (Throwable cause = exception.getCause(); cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLTimeoutException) {
+                return true;
+            }
+            if (cause instanceof SQLException sqlCause && sqlCause.getErrorCode() == 9) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean canCoalesce(BlockChange previous, BlockChange latest) {
+        return Objects.equals(previous.actorUuid(), latest.actorUuid())
+                && Objects.equals(previous.actorName(), latest.actorName())
+                && previous.action() == latest.action()
+                && sameState(previous.afterData(), previous.afterEntityData(),
+                        latest.beforeData(), latest.beforeEntityData());
+    }
+
+    private static boolean canCoalesce(PersistedCoalesceCandidate previous, BlockChange latest) {
+        return Objects.equals(previous.actorUuid(), latest.actorUuid())
+                && Objects.equals(previous.actorName(), latest.actorName())
+                && previous.action() == latest.action()
+                && sameState(previous.afterData(), previous.afterEntityData(),
+                        latest.beforeData(), latest.beforeEntityData());
+    }
+
+    private static PersistedCoalesceCandidate persistedCandidate(long rowId, BlockChange change) {
+        byte[] entityData = change.afterEntityData() == null
+                ? null
+                : Arrays.copyOf(change.afterEntityData(), change.afterEntityData().length);
+        return new PersistedCoalesceCandidate(rowId, change.actorUuid(), change.actorName(), change.action(),
+                change.afterData(), entityData);
+    }
+
+    private void applyPersistedCoalesceCandidateChanges(
+            Map<CoalesceKey, PersistedCoalesceCandidate> candidateChanges
+    ) {
+        for (Map.Entry<CoalesceKey, PersistedCoalesceCandidate> entry : candidateChanges.entrySet()) {
+            persistedCoalesceCandidates.remove(entry.getKey());
+            if (entry.getValue() != null) {
+                persistedCoalesceCandidates.put(entry.getKey(), entry.getValue());
+            }
+        }
+        if (persistedCoalesceCandidates.isEmpty()) {
+            return;
+        }
+
+        long newestTick = persistedCoalesceCandidates.keySet().stream()
+                .mapToLong(CoalesceKey::tick)
+                .max()
+                .orElse(Long.MIN_VALUE);
+        long cutoff = newestTick <= Long.MIN_VALUE + PERSISTED_COALESCE_TICK_RETENTION
+                ? Long.MIN_VALUE
+                : newestTick - PERSISTED_COALESCE_TICK_RETENTION;
+        persistedCoalesceCandidates.entrySet().removeIf(entry -> entry.getKey().tick() < cutoff);
+
+        while (persistedCoalesceCandidates.size() > persistedCoalesceCapacity) {
+            var iterator = persistedCoalesceCandidates.entrySet().iterator();
+            if (!iterator.hasNext()) {
+                break;
+            }
+            iterator.next();
+            iterator.remove();
+        }
+    }
+
     private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {
         return new BlockChange(previous.happenedAt(), serverTick, latest.actorUuid(), latest.actorName(), previous.worldName(),
                 previous.x(), previous.y(), previous.z(), latest.action(), previous.beforeData(), latest.afterData(),
@@ -1852,6 +2133,16 @@ final class Database {
     private record CoalesceKey(String worldUuid, int x, int y, int z, long tick) {
     }
 
+    private record PersistedCoalesceCandidate(
+            long rowId,
+            String actorUuid,
+            String actorName,
+            ChangeAction action,
+            String afterData,
+            byte[] afterEntityData
+    ) {
+    }
+
     private record RequiredBlockChange(String worldUuid, BlockChange change) {
     }
 
@@ -1880,6 +2171,7 @@ final class Database {
         private final SqlOperation<T> work;
         private final CompletableFuture<T> future;
         private final boolean timedQuery;
+        private volatile boolean cancellationRequested;
 
         private DatabaseOperation(long writeBarrier, SqlOperation<T> work,
                                   CompletableFuture<T> future, boolean timedQuery) {

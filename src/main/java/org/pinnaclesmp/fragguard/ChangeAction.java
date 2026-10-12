@@ -7,6 +7,7 @@ enum ChangeAction {
     PLACE("block.place", "PLACE"),
     BREAK("block.break", "BREAK"),
     EXPLOSION("block.explosion", "EXPLOSION"),
+    TNT_PRIME("block.tnt_prime", "TNT_PRIME"),
     FIRE_SPREAD("fire.spread", "FIRE_SPREAD"),
     FIRE_BURN("fire.burn", "FIRE_BURN"),
     FIRE_IGNITE("fire.ignite", "FIRE_IGNITE"),
@@ -14,6 +15,7 @@ enum ChangeAction {
     LIQUID_REMOVE("liquid.remove", "LIQUID_REMOVE"),
     LIQUID_FLOW("liquid.flow", "LIQUID_FLOW"),
     LIQUID_BREAK("liquid.break", "LIQUID_BREAK"),
+    DRAGON_EGG_TELEPORT("block.dragon_egg_teleport", "DRAGON_EGG_TELEPORT"),
     SPONGE_ABSORB("liquid.sponge_absorb", "SPONGE_ABSORB"),
     DISPENSER_LIQUID_PLACE("liquid.dispenser_place", "DISPENSER_LIQUID_PLACE"),
     DISPENSER_LIQUID_REMOVE("liquid.dispenser_remove", "DISPENSER_LIQUID_REMOVE"),
@@ -69,6 +71,7 @@ enum ChangeAction {
             case PLACE -> "placed";
             case BREAK -> "destroyed";
             case EXPLOSION -> "exploded";
+            case TNT_PRIME -> "primed";
             case FIRE_SPREAD -> "spread";
             case FIRE_BURN -> "burned";
             case FIRE_IGNITE -> "ignited";
@@ -76,6 +79,7 @@ enum ChangeAction {
             case LIQUID_REMOVE -> "removed liquid from";
             case LIQUID_FLOW -> "flowed into";
             case LIQUID_BREAK -> "destroyed";
+            case DRAGON_EGG_TELEPORT -> "teleported";
             case SPONGE_ABSORB -> "absorbed water from";
             case DISPENSER_LIQUID_PLACE -> "dispensed liquid into";
             case DISPENSER_LIQUID_REMOVE -> "removed liquid from";
