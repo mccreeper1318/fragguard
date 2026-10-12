@@ -22,6 +22,7 @@
 
 ### Fixed
 
+- Fixed #110: Removed the redundant legacy history count/zero-row query from GUI lookup startup by waiting on a lightweight database-worker write barrier before the bounded GUI snapshot and its single overview count; accepted write ordering and complete history pagination are preserved.
 - Fixed #109: GUI history pages now render before replacing the current inventory, retain the previous page and paging state after SQL/rendering failures, block repeated clicks while an asynchronous navigation is pending, and provide contextual console diagnostics plus safe retry/recovery navigation.
 - Fixed #108: GUI history inventories now show a safe fallback icon for non-item Minecraft block states (including water cauldrons, moving pistons, and water), preventing large condensed/raw lookups and material filters from crashing without changing any recorded history.
 - Fixed #81 by logging Paper 26.3 Shelf inventory swaps even when block data is unchanged, including connected powered shelves, and added Shelf-specific lookup/raw-detail, conflict-protection, rollback, and undo coverage while retaining the generic `TileStateInventoryHolder` snapshot format.
