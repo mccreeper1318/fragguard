@@ -109,8 +109,8 @@ class GuiLookupStartupTest {
         assertEquals(total, overview.totalRows(),
                 "all gameplay writes accepted before the GUI read barrier must appear in the overview");
         assertEquals(2, overview.catalog().players().size());
-        assertEquals(total, overview.catalog().actions().values().stream().mapToLong(Long::longValue).sum());
-        assertEquals(total, overview.catalog().materials().values().stream().mapToLong(Long::longValue).sum());
+        assertEquals(total, overview.catalog().actions().stream().mapToLong(LookupFilters.Option::count).sum());
+        assertEquals(total, overview.catalog().materials().stream().mapToLong(LookupFilters.Option::count).sum());
 
         GuiLookupQuery bounded = query.withMaxRowId(overview.maxRowId());
         GuiRawPage first = store.selectRawPageAsync(bounded, null, 36).join();
