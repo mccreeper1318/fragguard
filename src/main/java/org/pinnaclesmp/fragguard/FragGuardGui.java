@@ -73,6 +73,11 @@ final class FragGuardGui implements Listener {
         if (slot < 0 || slot >= session.inventory.getSize()) {
             return;
         }
+        // The existing inventory stays visible during async loads, but its controls
+        // must not initiate another transition from a partially staged lookup state.
+        if (session.pendingTransition.isPending()) {
+            return;
+        }
         switch (session.screen) {
             case MAIN -> clickMain(player, session, slot);
             case SETUP -> clickSetup(player, session, slot, event.isRightClick());
@@ -111,6 +116,7 @@ final class FragGuardGui implements Listener {
             session.lookupRequests.invalidate();
             session.detailRequests.invalidate();
             session.undoRequests.invalidate();
+            session.pendingTransition.complete();
         }
     }
 
@@ -162,7 +168,11 @@ final class FragGuardGui implements Listener {
     }
 
     private void runLookup(Player player, Session session) {
+        if (!session.pendingTransition.begin()) {
+            return;
+        }
         long requestGeneration = session.lookupRequests.begin();
+        Inventory expectedInventory = session.inventory;
         session.detailRequests.invalidate();
         UUID playerId = player.getUniqueId();
         TimePreset preset = times().get(session.timeIndex);
@@ -196,9 +206,11 @@ final class FragGuardGui implements Listener {
                 .thenCompose(ignored -> guiLookupStore.prepareLookupAsync(query))
                 .whenComplete((overview, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline() || sessions.get(playerId) != session
-                            || !session.lookupRequests.isCurrent(requestGeneration)) {
+                            || !session.lookupRequests.isCurrent(requestGeneration)
+                            || !sameDisplayedInventory(player, session, expectedInventory)) {
                         return;
                     }
+                    session.pendingTransition.complete();
                     if (throwable != null) {
                         reportLookupFailure(player, throwable);
                         return; // Keep the lookup setup inventory open for retry.
@@ -217,6 +229,9 @@ final class FragGuardGui implements Listener {
     private void loadResultsPage(Player player, Session session, int targetPage, boolean recount,
                                  Session.LookupView previousView) {
         if (session.baseQuery == null || targetPage < 0 || targetPage >= session.resultPageStarts.size()) {
+            return;
+        }
+        if (!session.pendingTransition.begin()) {
             return;
         }
 
@@ -251,6 +266,7 @@ final class FragGuardGui implements Listener {
                     || !sameDisplayedInventory(player, session, expectedInventory)) {
                 return;
             }
+            session.pendingTransition.complete();
             if (throwable != null) {
                 session.restoreLookupView(previousView);
                 reportLookupFailure(player, throwable);
@@ -445,6 +461,9 @@ final class FragGuardGui implements Listener {
             }
             return;
         }
+        if (!session.pendingTransition.begin()) {
+            return;
+        }
 
         long requestGeneration = session.lookupRequests.begin();
         UUID playerId = player.getUniqueId();
@@ -458,6 +477,7 @@ final class FragGuardGui implements Listener {
                             || !sameDisplayedInventory(player, session, expectedInventory)) {
                         return;
                     }
+                    session.pendingTransition.complete();
                     if (throwable != null) {
                         session.restoreLookupView(previous);
                         reportLookupFailure(player, throwable);
@@ -500,6 +520,9 @@ final class FragGuardGui implements Listener {
             renderResults(player, session);
             return;
         }
+        if (!session.pendingTransition.begin()) {
+            return;
+        }
 
         long requestGeneration = session.lookupRequests.begin();
         UUID playerId = player.getUniqueId();
@@ -517,6 +540,7 @@ final class FragGuardGui implements Listener {
                             || !sameDisplayedInventory(player, session, expectedInventory)) {
                         return;
                     }
+                    session.pendingTransition.complete();
                     if (throwable != null) {
                         session.restoreLookupView(previousView);
                         reportLookupFailure(player, throwable);
@@ -581,6 +605,9 @@ final class FragGuardGui implements Listener {
             return;
         }
 
+        if (!session.pendingTransition.begin()) {
+            return;
+        }
         long requestGeneration = session.detailRequests.begin();
         UUID playerId = player.getUniqueId();
         Inventory expectedInventory = session.inventory;
@@ -598,6 +625,7 @@ final class FragGuardGui implements Listener {
                             || !sameDisplayedInventory(player, session, expectedInventory)) {
                         return;
                     }
+                    session.pendingTransition.complete();
                     if (throwable != null) {
                         reportExactDetailFailure(player, throwable);
                         return; // The exact event's source page is still visible.
@@ -719,6 +747,9 @@ final class FragGuardGui implements Listener {
     }
 
     private void loadUndoJobs(Player player, Session session) {
+        if (!session.pendingTransition.begin()) {
+            return;
+        }
         long requestGeneration = session.undoRequests.begin();
         UUID playerId = player.getUniqueId();
         Inventory expectedInventory = session.inventory;
@@ -730,6 +761,7 @@ final class FragGuardGui implements Listener {
                             || !sameDisplayedInventory(player, session, expectedInventory)) {
                         return;
                     }
+                    session.pendingTransition.complete();
                     if (throwable != null) {
                         plugin.getLogger().log(Level.WARNING, "FragGuard GUI undo job lookup failed", root(throwable));
                         player.sendMessage(color("&cCould not load rollback jobs for undo. Check console for details."));
@@ -974,6 +1006,7 @@ final class FragGuardGui implements Listener {
         private final LookupRequestGeneration lookupRequests = new LookupRequestGeneration();
         private final LookupRequestGeneration detailRequests = new LookupRequestGeneration();
         private final LookupRequestGeneration undoRequests = new LookupRequestGeneration();
+        private final GuiPendingTransition pendingTransition = new GuiPendingTransition();
         private Screen screen;
         private Screen exactReturnScreen = Screen.RESULTS;
         private Inventory inventory;
@@ -1171,6 +1204,7 @@ final class FragGuardGui implements Listener {
         }
 
         private void reset(int retentionDays, int maxRadius, int maxRollbackRadius) {
+            pendingTransition.complete();
             lookupRequests.invalidate();
             detailRequests.invalidate();
             undoRequests.invalidate();
