@@ -153,8 +153,9 @@ class GuiPagedInventoryRegressionTest {
             assertTrue(item.name.contains(LookupActivityGrouper.displayMaterial(key)),
                     "original historical block label missing at slot " + slot + ": " + item.name);
             if (exactRaw) {
+                int eventIndex = index;
                 assertTrue(item.lore.stream().anyMatch(s -> s.contains("Before:")
-                                && s.contains("test_state=7") && s.contains("ordinal=" + index + "]")),
+                                && s.contains("test_state=7") && s.contains("ordinal=" + eventIndex + "]")),
                         "before-state history missing/mismatched at slot " + slot);
                 assertTrue(item.lore.stream().anyMatch(s -> s.contains("After:")
                                 && s.contains("air")),
