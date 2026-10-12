@@ -16,6 +16,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Read-only, bounded lookup path used by the inventory GUI.
@@ -76,22 +79,71 @@ final class GuiLookupStore {
 
     private final File databaseFile;
     private final int queryTimeoutSeconds;
+    private final Logger logger;
 
     GuiLookupStore(File dataFolder, int queryTimeoutSeconds) {
+        this(dataFolder, queryTimeoutSeconds, Logger.getLogger("FragGuard"));
+    }
+
+    GuiLookupStore(File dataFolder, int queryTimeoutSeconds, Logger logger) {
         this.databaseFile = new File(dataFolder, "fragguard.db");
         this.queryTimeoutSeconds = Math.max(1, queryTimeoutSeconds);
+        this.logger = logger;
+    }
+
+    private void logTiming(String phase, long started, GuiLookupQuery query) {
+        logger.info("FragGuard GUI query " + phase + " completed in "
+                + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                + " ms [radius=" + query.radius()
+                + ", windowHours=" + TimeUnit.MILLISECONDS.toHours(
+                        Math.max(0L, query.snapshotTimestamp() - query.cutoffTimestamp()))
+                + ", filtered=" + query.filters().active() + "]");
+    }
+
+    private void logFailure(String phase, long started, GuiLookupQuery query, SQLException error) {
+        logger.log(Level.WARNING, "FragGuard GUI query " + phase + " failed after "
+                + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                + " ms [radius=" + query.radius() + "]", error);
     }
 
     CompletableFuture<GuiLookupOverview> prepareLookupAsync(GuiLookupQuery query) {
+        // Retain the full eager overview for existing callers/tests that require a catalog.
+        return prepareOverviewAsync(query).thenCompose(overview ->
+                loadCatalogAsync(query.withMaxRowId(overview.maxRowId()))
+                        .thenApply(catalog -> new GuiLookupOverview(
+                                overview.totalRows(), catalog, overview.maxRowId())));
+    }
+
+    /** Count exactly once; do not block the first page on three full-area GROUP BY scans. */
+    CompletableFuture<GuiLookupOverview> prepareOverviewAsync(GuiLookupQuery query) {
         return CompletableFuture.supplyAsync(() -> {
+            long started = System.nanoTime();
             try (Connection connection = openReadConnection()) {
                 long maxRowId = loadMaxRowId(connection);
+                logTiming("snapshot-id", started, query);
                 GuiLookupQuery bounded = query.withMaxRowId(maxRowId);
+                long countStarted = System.nanoTime();
                 long totalRows = countRows(connection, bounded);
-                LookupFilters.Catalog catalog = loadCatalog(
-                        connection, bounded.withFilters(LookupFilters.State.empty()));
-                return new GuiLookupOverview(totalRows, catalog, maxRowId);
+                logTiming("initial-count rows=" + totalRows, countStarted, bounded);
+                return new GuiLookupOverview(totalRows, LookupFilters.Catalog.empty(), maxRowId);
             } catch (SQLException exception) {
+                logFailure("initial-overview", started, query, exception);
+                throw new CompletionException(exception);
+            }
+        });
+    }
+
+    /** Filter catalogs are loaded only when an operator opens the filter UI. */
+    CompletableFuture<LookupFilters.Catalog> loadCatalogAsync(GuiLookupQuery query) {
+        return CompletableFuture.supplyAsync(() -> {
+            long started = System.nanoTime();
+            try (Connection connection = openReadConnection()) {
+                LookupFilters.Catalog catalog = loadCatalog(
+                        connection, query.withFilters(LookupFilters.State.empty()));
+                logTiming("filter-catalog", started, query);
+                return catalog;
+            } catch (SQLException exception) {
+                logFailure("filter-catalog", started, query, exception);
                 throw new CompletionException(exception);
             }
         });
@@ -99,9 +151,13 @@ final class GuiLookupStore {
 
     CompletableFuture<Long> countRowsAsync(GuiLookupQuery query) {
         return CompletableFuture.supplyAsync(() -> {
+            long started = System.nanoTime();
             try (Connection connection = openReadConnection()) {
-                return countRows(connection, query);
+                long count = countRows(connection, query);
+                logTiming("filtered-count rows=" + count, started, query);
+                return count;
             } catch (SQLException exception) {
+                logFailure("filtered-count", started, query, exception);
                 throw new CompletionException(exception);
             }
         });
@@ -139,8 +195,11 @@ final class GuiLookupStore {
             int maxSpan
     ) {
         return CompletableFuture.supplyAsync(() -> {
+            long started = System.nanoTime();
             int pageSize = Math.max(1, activityPageSize);
             int chunkSize = Math.max(1, fetchSize);
+            int fetchedRows = 0;
+            int batches = 0;
             try (Connection connection = openReadConnection()) {
                 List<GuiActivitySummary> finished = new ArrayList<>(pageSize);
                 ActivityAccumulator current = null;
@@ -148,7 +207,9 @@ final class GuiLookupStore {
 
                 while (true) {
                     List<LookupRow> fetched = selectRows(connection, query, cursor, chunkSize + 1);
+                    batches++;
                     int processCount = Math.min(chunkSize, fetched.size());
+                    fetchedRows += processCount;
                     for (int index = 0; index < processCount; index++) {
                         LookupRow row = fetched.get(index);
                         if (current == null) {
@@ -162,6 +223,8 @@ final class GuiLookupStore {
 
                         finished.add(current.freeze());
                         if (finished.size() >= pageSize) {
+                            logTiming("condensed-page batches=" + batches + " scanned=" + fetchedRows
+                                    + " activities=" + finished.size(), started, query);
                             return new GuiActivityPage(List.copyOf(finished), GuiLookupCursor.of(row));
                         }
                         current = new ActivityAccumulator(row);
@@ -171,11 +234,15 @@ final class GuiLookupStore {
                         if (current != null) {
                             finished.add(current.freeze());
                         }
+                        logTiming("condensed-page batches=" + batches + " scanned=" + fetchedRows
+                                + " activities=" + finished.size(), started, query);
                         return new GuiActivityPage(List.copyOf(finished), null);
                     }
                     cursor = GuiLookupCursor.of(fetched.get(processCount));
                 }
             } catch (SQLException exception) {
+                logFailure("condensed-page batches=" + batches + " scanned=" + fetchedRows,
+                        started, query, exception);
                 throw new CompletionException(exception);
             }
         });
@@ -320,6 +387,7 @@ final class GuiLookupStore {
                 WHERE %s
                 GROUP BY actor_identity
                 """.formatted(ACTOR_IDENTITY, AREA_FILTER);
+        long playerStarted = System.nanoTime();
         try (PreparedStatement statement = connection.prepareStatement(playerSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
@@ -331,12 +399,15 @@ final class GuiLookupStore {
             }
         }
 
+        logTiming("catalog-players groups=" + players.size(), playerStarted, unfiltered);
+
         String actionSql = """
                 SELECT action, COUNT(*) AS event_count
                 FROM block_changes
                 WHERE %s
                 GROUP BY action
                 """.formatted(AREA_FILTER);
+        long actionStarted = System.nanoTime();
         try (PreparedStatement statement = connection.prepareStatement(actionSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
@@ -348,12 +419,15 @@ final class GuiLookupStore {
             }
         }
 
+        logTiming("catalog-actions groups=" + actions.size(), actionStarted, unfiltered);
+
         String materialSql = """
                 SELECT %s AS material_key, COUNT(*) AS event_count
                 FROM block_changes
                 WHERE %s
                 GROUP BY material_key
                 """.formatted(MATERIAL_KEY, AREA_FILTER);
+        long materialStarted = System.nanoTime();
         try (PreparedStatement statement = connection.prepareStatement(materialSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
@@ -363,6 +437,8 @@ final class GuiLookupStore {
                 }
             }
         }
+
+        logTiming("catalog-materials groups=" + materials.size(), materialStarted, unfiltered);
 
         Comparator<LookupFilters.Option> byLabel = Comparator
                 .comparing(LookupFilters.Option::label, String.CASE_INSENSITIVE_ORDER)
