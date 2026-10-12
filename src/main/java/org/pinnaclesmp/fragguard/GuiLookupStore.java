@@ -17,6 +17,10 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -80,6 +84,7 @@ final class GuiLookupStore {
     private final File databaseFile;
     private final int queryTimeoutSeconds;
     private final Logger logger;
+    private final ThreadLocal<QueryCancellation> activeRequest = new ThreadLocal<>();
 
     GuiLookupStore(File dataFolder, int queryTimeoutSeconds) {
         this(dataFolder, queryTimeoutSeconds, Logger.getLogger("FragGuard"));
@@ -89,6 +94,86 @@ final class GuiLookupStore {
         this.databaseFile = new File(dataFolder, "fragguard.db");
         this.queryTimeoutSeconds = Math.max(1, queryTimeoutSeconds);
         this.logger = logger;
+    }
+
+    /**
+     * SQLite's JDBC statement timeout does not cover every stage of a read:
+     * connection setup, worker queueing and repeated grouped-page queries can
+     * leave a GUI waiting without a deadline or server-side diagnostic.
+     */
+    private <T> CompletableFuture<T> boundedQueryAsync(String phase, Supplier<T> task) {
+        QueryCancellation cancellation = new QueryCancellation();
+        long started = System.nanoTime();
+        CompletableFuture<T> future = CompletableFuture.supplyAsync(() -> {
+            activeRequest.set(cancellation);
+            try {
+                if (cancellation.cancelled.get()) {
+                    throw new CompletionException(new TimeoutException(
+                            "GUI " + phase + " expired before execution"));
+                }
+                return task.get();
+            } finally {
+                activeRequest.remove();
+            }
+        });
+        future.orTimeout(queryTimeoutSeconds, TimeUnit.SECONDS);
+        return future.whenComplete((ignored, failure) -> {
+            if (failure != null && unwrap(failure) instanceof TimeoutException) {
+                cancellation.cancel();
+                logger.warning("FragGuard GUI query " + phase + " exceeded "
+                        + queryTimeoutSeconds + " seconds (elapsed "
+                        + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                        + " ms); cancelling the read-only SQL statement");
+            }
+        });
+    }
+
+    private static Throwable unwrap(Throwable failure) {
+        while (failure.getCause() != null && failure.getCause() != failure) {
+            failure = failure.getCause();
+        }
+        return failure;
+    }
+
+    private PreparedStatement readStatement(Connection connection, String sql) throws SQLException {
+        PreparedStatement statement = readStatement(connection,sql);
+        QueryCancellation cancellation = activeRequest.get();
+        if (cancellation != null) {
+            cancellation.track(statement);
+        }
+        return statement;
+    }
+
+    private void ensureQueryActive() {
+        QueryCancellation cancellation = activeRequest.get();
+        if (cancellation != null && cancellation.cancelled.get()) {
+            throw new CompletionException(new TimeoutException("FragGuard GUI SQL read cancelled"));
+        }
+    }
+
+    private static final class QueryCancellation {
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+        private final AtomicReference<PreparedStatement> statement = new AtomicReference<>();
+
+        void track(PreparedStatement current) throws SQLException {
+            statement.set(current);
+            if (cancelled.get()) {
+                current.cancel();
+                throw new SQLException("FragGuard GUI SQL read cancelled");
+            }
+        }
+
+        void cancel() {
+            cancelled.set(true);
+            PreparedStatement current = statement.get();
+            if (current != null) {
+                try {
+                    current.cancel();
+                } catch (SQLException ignored) {
+                    // The UI already received TimeoutException; cancellation is best effort.
+                }
+            }
+        }
     }
 
     private void logTiming(String phase, long started, GuiLookupQuery query) {
@@ -116,7 +201,7 @@ final class GuiLookupStore {
 
     /** Count exactly once; do not block the first page on three full-area GROUP BY scans. */
     CompletableFuture<GuiLookupOverview> prepareOverviewAsync(GuiLookupQuery query) {
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("prepareOverviewAsync", () -> {
             long started = System.nanoTime();
             try (Connection connection = openReadConnection()) {
                 long maxRowId = loadMaxRowId(connection);
@@ -135,7 +220,7 @@ final class GuiLookupStore {
 
     /** Filter catalogs are loaded only when an operator opens the filter UI. */
     CompletableFuture<LookupFilters.Catalog> loadCatalogAsync(GuiLookupQuery query) {
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("loadCatalogAsync", () -> {
             long started = System.nanoTime();
             try (Connection connection = openReadConnection()) {
                 LookupFilters.Catalog catalog = loadCatalog(
@@ -150,7 +235,7 @@ final class GuiLookupStore {
     }
 
     CompletableFuture<Long> countRowsAsync(GuiLookupQuery query) {
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("countRowsAsync", () -> {
             long started = System.nanoTime();
             try (Connection connection = openReadConnection()) {
                 long count = countRows(connection, query);
@@ -168,7 +253,7 @@ final class GuiLookupStore {
             GuiLookupCursor startInclusive,
             int pageSize
     ) {
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("selectRawPageAsync", () -> {
             try (Connection connection = openReadConnection()) {
                 List<LookupRow> fetched = selectRows(connection, query, startInclusive,
                         Math.max(1, pageSize) + 1);
@@ -194,7 +279,7 @@ final class GuiLookupStore {
             long maxDurationMillis,
             int maxSpan
     ) {
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("selectActivityPageAsync", () -> {
             long started = System.nanoTime();
             int pageSize = Math.max(1, activityPageSize);
             int chunkSize = Math.max(1, fetchSize);
@@ -206,6 +291,7 @@ final class GuiLookupStore {
                 GuiLookupCursor cursor = startInclusive;
 
                 while (true) {
+                    ensureQueryActive();
                     List<LookupRow> fetched = selectRows(connection, query, cursor, chunkSize + 1);
                     batches++;
                     int processCount = Math.min(chunkSize, fetched.size());
@@ -254,7 +340,7 @@ final class GuiLookupStore {
             GuiLookupCursor startInclusive,
             int pageSize
     ) {
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("selectActivityRowsPageAsync", () -> {
             int boundedPageSize = Math.max(1, pageSize);
             StringBuilder sql = new StringBuilder("""
                     SELECT %s
@@ -276,7 +362,7 @@ final class GuiLookupStore {
             sql.append("\nORDER BY happened_at DESC, id DESC\nLIMIT ?");
 
             try (Connection connection = openReadConnection();
-                 PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+                 PreparedStatement statement = readStatement(connection,sql.toString())) {
                 statement.setQueryTimeout(queryTimeoutSeconds);
                 int index = bindArea(statement, query);
                 index = bindFilters(statement, index, query.filters());
@@ -317,7 +403,7 @@ final class GuiLookupStore {
         GuiLookupQuery query = new GuiLookupQuery(
                 worldUuid, worldName, centerX, centerZ, radius,
                 cutoffTimestamp, snapshotTimestamp, LookupFilters.State.empty());
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("selectRowsAsync", () -> {
             try (Connection connection = openReadConnection()) {
                 return List.copyOf(selectRows(connection, query, null, Math.max(1, rowLimit)));
             } catch (SQLException exception) {
@@ -327,9 +413,9 @@ final class GuiLookupStore {
     }
 
     CompletableFuture<LookupEventPayload> loadEventPayloadAsync(long rowId) {
-        return CompletableFuture.supplyAsync(() -> {
+        return boundedQueryAsync("loadEventPayloadAsync", () -> {
             try (Connection connection = openReadConnection();
-                 PreparedStatement statement = connection.prepareStatement("""
+                 PreparedStatement statement = readStatement(connection,"""
                          SELECT before_entity_data, after_entity_data
                          FROM block_changes
                          WHERE id = ? AND rollback_pending = 0
@@ -352,7 +438,7 @@ final class GuiLookupStore {
     }
 
     private long loadMaxRowId(Connection connection) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
+        try (PreparedStatement statement = readStatement(connection,
                 "SELECT COALESCE(MAX(id), 0) FROM block_changes")) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             try (ResultSet rows = statement.executeQuery()) {
@@ -364,7 +450,7 @@ final class GuiLookupStore {
     private long countRows(Connection connection, GuiLookupQuery query) throws SQLException {
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM block_changes WHERE ").append(AREA_FILTER);
         appendFilterSql(sql, query.filters());
-        try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+        try (PreparedStatement statement = readStatement(connection,sql.toString())) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             int index = bindArea(statement, query);
             bindFilters(statement, index, query.filters());
@@ -388,7 +474,7 @@ final class GuiLookupStore {
                 GROUP BY actor_identity
                 """.formatted(ACTOR_IDENTITY, AREA_FILTER);
         long playerStarted = System.nanoTime();
-        try (PreparedStatement statement = connection.prepareStatement(playerSql)) {
+        try (PreparedStatement statement = readStatement(connection,playerSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
             try (ResultSet rows = statement.executeQuery()) {
@@ -408,7 +494,7 @@ final class GuiLookupStore {
                 GROUP BY action
                 """.formatted(AREA_FILTER);
         long actionStarted = System.nanoTime();
-        try (PreparedStatement statement = connection.prepareStatement(actionSql)) {
+        try (PreparedStatement statement = readStatement(connection,actionSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
             try (ResultSet rows = statement.executeQuery()) {
@@ -428,7 +514,7 @@ final class GuiLookupStore {
                 GROUP BY material_key
                 """.formatted(MATERIAL_KEY, AREA_FILTER);
         long materialStarted = System.nanoTime();
-        try (PreparedStatement statement = connection.prepareStatement(materialSql)) {
+        try (PreparedStatement statement = readStatement(connection,materialSql)) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             bindArea(statement, unfiltered);
             try (ResultSet rows = statement.executeQuery()) {
@@ -482,7 +568,7 @@ final class GuiLookupStore {
         }
         sql.append("\nORDER BY happened_at DESC, id DESC\nLIMIT ?");
 
-        try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+        try (PreparedStatement statement = readStatement(connection,sql.toString())) {
             statement.setQueryTimeout(queryTimeoutSeconds);
             int index = bindArea(statement, query);
             index = bindFilters(statement, index, query.filters());
@@ -498,6 +584,7 @@ final class GuiLookupStore {
         List<LookupRow> rows = new ArrayList<>();
         try (ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
+                ensureQueryActive();
                 rows.add(new LookupRow(
                         resultSet.getLong("id"),
                         resultSet.getLong("happened_at"),
