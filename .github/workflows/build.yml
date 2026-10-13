@@ -61,7 +61,7 @@ jobs:
           fi
 
       - name: Build and test plugin
-        run: ./gradlew --no-daemon clean build
+        run: ./gradlew --no-daemon --warning-mode all clean test build
 
       - name: Verify and stage plugin
         id: plugin
