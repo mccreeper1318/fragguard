@@ -215,6 +215,9 @@ jobs:
             exit 1
           fi
 
+          # Ensure both JDBC and SLF4J providers survive service-file transformation.
+          python3 scripts/verify_shaded_services.py "$EXPECTED_JAR"
+
           RELEASE_DIR="build/release"
           mkdir -p "$RELEASE_DIR"
           cp "$EXPECTED_JAR" "$RELEASE_DIR/$EXPECTED_NAME"
