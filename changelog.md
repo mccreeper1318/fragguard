@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed Gradle 10 resource-processing warning (#86).
+- Fixed Shadow JAR service merging (#87).
 
 ## 26.3-1.2.0
 
