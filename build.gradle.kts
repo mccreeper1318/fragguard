@@ -51,7 +51,12 @@ tasks {
 
     shadowJar {
         archiveClassifier.set("")
+        // Leave unrelated duplicates excluded, but pass all service descriptors to the merger.
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
         mergeServiceFiles()
+        filesMatching("META-INF/services/**") {
+            duplicatesStrategy = DuplicatesStrategy.INCLUDE
+        }
     }
 
     build {
