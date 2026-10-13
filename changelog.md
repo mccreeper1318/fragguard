@@ -2,6 +2,10 @@
 
 ## 26.3-1.2.1
 
+### Changed
+
+- Updated README build instructions for 26.3-1.2.1.
+
 ### Fixed
 
 - Fixed Gradle 10 resource-processing warning (#86).
