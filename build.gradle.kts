@@ -6,7 +6,10 @@ plugins {
 }
 
 group = "org.pinnaclesmp"
-version = "26.3-1.2.0"
+version = "26.3-1.2.1"
+
+// Capture the version during configuration; resource copying must not access Task.project.
+val pluginVersion = version.toString()
 
 java {
     // Paper 26.x uses the newer Paper API versioning and currently documents Java 25 for 26.x builds.
@@ -40,8 +43,9 @@ tasks {
 
     processResources {
         filteringCharset = "UTF-8"
+        inputs.property("pluginVersion", pluginVersion)
         filesMatching("plugin.yml") {
-            expand("version" to project.version)
+            expand("version" to pluginVersion)
         }
     }
 
