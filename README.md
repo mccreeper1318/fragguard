@@ -252,6 +252,23 @@ future stricter policy today, launch with both
 Gradle tests run with both options on Java 25, checking that SQLite initializes
 and supports normal reads and writes with native-access denial enabled.
 
+## Rollback area boundary preview
+
+After a successful rollback preview from `/fg rollback` or the rollback GUI,
+FragGuard displays a **player-only** circular particle boundary in the previewed
+world. Cyan marks the radius, yellow guides show its full vertical extent,
+and green marks the original rollback center. The preview is a cylinder:
+the radius is measured on X/Z and applies throughout the world's build height.
+It is a visual guide to the actual block-coordinate radius, not a change to
+rollback selection or history.
+
+Only the operator who created the preview receives these particles. They make
+no block or entity changes and require no client mod. The boundary refreshes
+while the confirmation token is valid, and ceases on expiration, confirmation,
+replacement, player logout, or plugin shutdown. It is not shown in other worlds.
+Additional display configuration and explicit cancellation arrive in later
+26.3-1.2.1 issues.
+
 ## Build
 
 Requires Java 25. The Gradle 9.8.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
