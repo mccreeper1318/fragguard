@@ -9,6 +9,10 @@
 - Updated Gradle wrapper to 9.8.1 (#123).
 - Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
 
+### Added
+
+- Added a player-only circular rollback boundary preview (#97).
+
 ### Fixed
 
 - Fixed Gradle 10 resource-processing warning (#86).
