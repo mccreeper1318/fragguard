@@ -39,6 +39,9 @@ tasks {
 
     test {
         useJUnitPlatform()
+        // sqlite-jdbc uses JNI. Explicit access allows tests to pass even when
+        // future Java releases deny unapproved native access by default.
+        jvmArgs("--enable-native-access=ALL-UNNAMED", "--illegal-native-access=deny")
     }
 
     processResources {
