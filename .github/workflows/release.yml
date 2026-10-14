@@ -215,8 +215,49 @@ jobs:
             exit 1
           fi
 
-          # Ensure both JDBC and SLF4J providers survive service-file transformation.
-          python3 scripts/verify_shaded_services.py "$EXPECTED_JAR"
+          # Keep verification available when rebuilding older tags whose source
+          # does not include the verifier script. Historical artifacts predate #87.
+          python3 - "$EXPECTED_JAR" "$VERSION" <<'PY'
+          import re
+          import sys
+          from collections import Counter
+          from zipfile import ZipFile
+
+          jar_path, version = sys.argv[1:]
+          version_match = re.match(
+              r"^(\d+)\.(\d+)-(\d+)\.(\d+)\.(\d+)(?:-|$)", version
+          )
+          if version_match is None:
+              raise SystemExit(f"Invalid release version for service verification: {version}")
+
+          if tuple(map(int, version_match.groups())) < (26, 3, 1, 2, 1):
+              print(f"Skipping new service-descriptor checks for legacy release {version}")
+              sys.exit(0)
+
+          services = {
+              "META-INF/services/java.sql.Driver": "org.sqlite.JDBC",
+              "META-INF/services/org.slf4j.spi.SLF4JServiceProvider": "org.slf4j.nop.NOPServiceProvider",
+          }
+          with ZipFile(jar_path) as archive:
+              entries = Counter(archive.namelist())
+              for descriptor, provider in services.items():
+                  if entries[descriptor] != 1:
+                      raise SystemExit(
+                          f"Expected one {descriptor}; found {entries[descriptor]}"
+                      )
+                  providers = {
+                      line.split("#", 1)[0].strip()
+                      for line in archive.read(descriptor).decode("utf-8").splitlines()
+                  }
+                  if provider not in providers:
+                      raise SystemExit(f"{descriptor} is missing provider {provider}")
+                  provider_class = provider.replace(".", "/") + ".class"
+                  if entries[provider_class] != 1:
+                      raise SystemExit(
+                          f"Expected one provider class {provider_class}; found {entries[provider_class]}"
+                      )
+                  print(f"Verified {descriptor}: {provider}")
+          PY
 
           RELEASE_DIR="build/release"
           mkdir -p "$RELEASE_DIR"
