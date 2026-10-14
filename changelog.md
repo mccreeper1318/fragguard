@@ -5,6 +5,8 @@
 ### Changed
 
 - Updated README build instructions for 26.3-1.2.1.
+- Updated artifact GitHub Actions to upload 7.0.2 and download 8.0.2 (#122).
+- Updated Gradle wrapper to 9.8.1 (#123).
 
 ### Fixed
 
