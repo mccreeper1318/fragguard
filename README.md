@@ -223,9 +223,38 @@ The old `gui-lookup-max-rows` hard refusal is no longer used. Existing server co
 
 Changing grouping thresholds changes only presentation. Exact raw history remains stored and reachable.
 
+## SQLite native access on Java 24+
+
+FragGuard uses Xerial SQLite JDBC's JNI-based native SQLite library. Java 24 and later
+warn when code on the class path loads a native library without explicit permission.
+Java 25 still permits the call with a warning by default, but a future Java version
+may deny it. Upgrading SQLite JDBC does not remove this requirement.
+
+For Paper servers running Java 24+, include **`--enable-native-access=ALL-UNNAMED`**
+as a **Java launcher option before `-jar`**:
+
+```bash
+java --enable-native-access=ALL-UNNAMED -jar paper.jar nogui
+```
+
+Use your server's actual Paper JAR filename and keep your existing memory and
+other startup options. If a hosting panel cannot edit Java launcher arguments,
+the equivalent `JDK_JAVA_OPTIONS` environment variable can be used where supported.
+This option authorizes unnamed-module native access for the **whole JVM**, not only
+FragGuard. It cannot be enabled by placing a manifest entry inside the plugin JAR:
+Paper starts the JVM, and FragGuard is loaded afterward as a plugin.
+
+On Java 24/25, leaving the option out causes a warning rather than an immediate
+SQLite failure under the default JVM policy. The precise future Java release
+that will deny access by default has **not** been announced. To verify the
+future stricter policy today, launch with both
+`--illegal-native-access=deny` and `--enable-native-access=ALL-UNNAMED`.
+Gradle tests run with both options on Java 25, checking that SQLite initializes
+and supports normal reads and writes with native-access denial enabled.
+
 ## Build
 
-Requires Java 25. The Gradle 9.8.0 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
+Requires Java 25. The Gradle 9.8.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
 The current development version is `26.3-1.2.1`. Development targets Paper API `26.3.build.177-stable`, with `api-version: '26.3'`.
 
