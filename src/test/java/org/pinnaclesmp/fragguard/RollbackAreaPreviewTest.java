@@ -52,7 +52,10 @@ class RollbackAreaPreviewTest {
 
         ArgumentCaptor<Location> locations = ArgumentCaptor.forClass(Location.class);
         verify(f.operator, atLeastOnce()).spawnParticle(eq(Particle.DUST),
-                locations.capture(), eq(1), any(Particle.DustOptions.class));
+                locations.capture(), eq(1), eq(0.0), eq(0.0), eq(0.0), eq(0.0),
+                any(Particle.DustOptions.class), eq(true));
+        verify(f.operator, never()).spawnParticle(eq(Particle.DUST),
+                any(Location.class), eq(1), any(Particle.DustOptions.class));
         List<Location> points = locations.getAllValues();
         assertTrue(points.stream().anyMatch(loc ->
                 loc.getX() == 16.5 && loc.getZ() == -21.5 && loc.getY() == -63.5));
@@ -68,7 +71,8 @@ class RollbackAreaPreviewTest {
 
         Player bystander = mock(Player.class);
         verify(bystander, never()).spawnParticle(eq(Particle.DUST),
-                any(Location.class), eq(1), any(Particle.DustOptions.class));
+                any(Location.class), eq(1), eq(0.0), eq(0.0), eq(0.0),
+                eq(0.0), any(Particle.DustOptions.class), eq(true));
     }
 
     @Test
@@ -81,7 +85,32 @@ class RollbackAreaPreviewTest {
         f.render().run();
 
         verify(f.operator, never()).spawnParticle(eq(Particle.DUST),
-                any(Location.class), eq(1), any(Particle.DustOptions.class));
+                any(Location.class), eq(1), eq(0.0), eq(0.0), eq(0.0),
+                eq(0.0), any(Particle.DustOptions.class), eq(true));
+    }
+
+    @Test
+    void largeRadiusPerimetersUseExtendedRangeNotNormalParticleRange() {
+        for (int radius : List.of(50, 75, 100)) {
+            Fixture f = fixture();
+            f.preview.show(f.operator, "token", "world", 16, -22, radius, Long.MAX_VALUE);
+            f.render().run();
+
+            ArgumentCaptor<Location> locations = ArgumentCaptor.forClass(Location.class);
+            verify(f.operator, atLeastOnce()).spawnParticle(eq(Particle.DUST),
+                    locations.capture(), eq(1), eq(0.0), eq(0.0), eq(0.0),
+                    eq(0.0), any(Particle.DustOptions.class), eq(true));
+
+            assertTrue(locations.getAllValues().stream().anyMatch(loc ->
+                    Math.abs(Math.hypot(loc.getX() - 16.5, loc.getZ() + 21.5) - radius) < 1e-8
+                            && Math.hypot(loc.getX() - 16.5, loc.getZ() + 21.5) > 32),
+                    "large radius should have forced perimeter particles beyond normal range");
+            verify(f.operator, never()).spawnParticle(eq(Particle.DUST),
+                    any(Location.class), eq(1), any(Particle.DustOptions.class));
+            verify(f.operator, never()).spawnParticle(eq(Particle.DUST),
+                    any(Location.class), eq(1), eq(0.0), eq(0.0), eq(0.0),
+                    eq(0.0), any(Particle.DustOptions.class), eq(false));
+        }
     }
 
     @Test
