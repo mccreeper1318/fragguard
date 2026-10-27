@@ -127,7 +127,11 @@ final class RollbackAreaPreview {
 
     private static void particle(Player operator, World world,
                                  double x, double y, double z, Particle.DustOptions options) {
-        operator.spawnParticle(Particle.DUST, new Location(world, x, y, z), 1, options);
+        // The default particle overload has a short client range. Force the
+        // extended range so operators can see larger rollback radii from the center.
+        // Player.spawnParticle still targets only this operator, never the whole world.
+        operator.spawnParticle(Particle.DUST, new Location(world, x, y, z),
+                1, 0.0, 0.0, 0.0, 0.0, options, true);
     }
 
     private static final class Session {
