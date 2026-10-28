@@ -264,10 +264,18 @@ rollback selection or history.
 
 Only the operator who created the preview receives these particles. They make
 no block or entity changes and require no client mod. The boundary refreshes
-while the confirmation token is valid, and ceases on expiration, confirmation,
-replacement, player logout, or plugin shutdown. It is not shown in other worlds.
-Additional display configuration and explicit cancellation arrive in later
-26.3-1.2.1 issues.
+while the confirmation token is valid. The outline stops emitting on expiration,
+confirmation, replacement, cancellation, player logout, or plugin shutdown.
+Previously emitted particles fade naturally. It is not shown in other worlds;
+returning to the previewed world restores the display only while the token
+remains valid.
+
+Use `/fg rollback cancel` (or **Cancel Active Preview** in the rollback GUI)
+to invalidate your pending preview without starting a rollback job. Cancelling
+also invalidates any outstanding asynchronous rollback-preview search so a
+late query result cannot recreate a cancelled preview. Cancelling when nothing
+is active is harmless. Additional visualization configuration is planned for
+later 26.3-1.2.1 work.
 
 ## Build
 
