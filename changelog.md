@@ -12,6 +12,7 @@
 ### Added
 
 - Added a player-only circular rollback boundary preview (#97).
+- Added rollback preview cancellation and cleanup in commands and GUI (#98).
 
 ### Fixed
 
