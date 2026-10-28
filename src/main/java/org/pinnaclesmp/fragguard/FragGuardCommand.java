@@ -51,6 +51,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     private final FragGuardPlugin plugin;
     private final Database database;
     private final Map<String, RollbackPreview> previews = new HashMap<>();
+    // Tracks queries until their main-thread completion, so cancellation/quit/reload
+    // cannot resurrect a preview from an older asynchronous search.
+    private final Map<UUID, UUID> pendingRollbackQueries = new HashMap<>();
     private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
@@ -66,10 +69,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        removePreviewsFor(event.getPlayer().getUniqueId());
+        UUID actor = event.getPlayer().getUniqueId();
+        pendingRollbackQueries.remove(actor);
+        removePreviewsFor(actor);
     }
 
     void clearRollbackPreviews() {
+        pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
     }
@@ -97,6 +103,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             case "rollback", "rb" -> {
                 if (args.length >= 2 && args[1].equalsIgnoreCase("confirm")) {
                     handleRollbackConfirmation(player, args);
+                } else if (args.length >= 2 && args[1].equalsIgnoreCase("cancel")) {
+                    handleRollbackCancel(player, args);
                 } else {
                     handleRollback(player, Arrays.copyOfRange(args, 1, args.length));
                 }
@@ -239,11 +247,27 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&7Finding changes to rollback in radius &f" + radius + "&7 back to &f"
                 + DATE_FORMAT.format(Instant.ofEpochMilli(targetTimestamp)) + "&7..."));
         int maxBlocks = Math.max(1, plugin.getConfig().getInt("rollback-max-blocks-per-command", 50_000));
-        CompletableFuture<List<RollbackTarget>> query = database.rollbackTargetsAsync(
-                worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
-                maxBlocks, maximumRollbackSnapshotBytes());
+        UUID actor = player.getUniqueId();
+        UUID queryId = UUID.randomUUID();
+        pendingRollbackQueries.put(actor, queryId);
+        CompletableFuture<List<RollbackTarget>> query;
+        try {
+            query = database.rollbackTargetsAsync(
+                    worldName, centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
+                    maxBlocks, maximumRollbackSnapshotBytes());
+        } catch (RuntimeException exception) {
+            pendingRollbackQueries.remove(actor, queryId);
+            throw exception;
+        }
         reportQueryProgress(player, query);
         query.whenComplete((targets, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!queryId.equals(pendingRollbackQueries.get(actor))) {
+                return; // The operator cancelled, disconnected, or started a newer search.
+            }
+            pendingRollbackQueries.remove(actor);
+            if (!player.isOnline()) {
+                return;
+            }
             if (throwable != null) {
                 reportRollbackQueryFailure(player, throwable);
                 return;
@@ -323,6 +347,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 + "&7Only you can see these markers."));
         player.sendMessage(color("&eNo blocks have been changed. Confirm within " + expirationSeconds
                 + " seconds: &f/fg rollback confirm " + token));
+        player.sendMessage(color("&7To dismiss this preview: &f/fg rollback cancel"));
     }
 
     private void schedulePreviewExpiration(RollbackPreview preview, long now) {
@@ -366,6 +391,22 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         });
     }
 
+    private void handleRollbackCancel(Player player, String[] args) {
+        if (args.length != 2) {
+            player.sendMessage(color("&cUsage: &f/fg rollback cancel"));
+            return;
+        }
+        UUID actor = player.getUniqueId();
+        boolean pending = pendingRollbackQueries.remove(actor) != null;
+        boolean active = previews.values().stream().anyMatch(preview -> preview.actorUuid.equals(actor));
+        removePreviewsFor(actor);
+        if (pending || active) {
+            player.sendMessage(color("&aRollback preview cancelled. &7No rollback job was started."));
+        } else {
+            player.sendMessage(color("&7You have no active rollback preview to cancel."));
+        }
+    }
+
     private void handleRollbackConfirmation(Player player, String[] args) {
         if (args.length != 3) {
             player.sendMessage(color("&cUsage: &f/fg rollback confirm <token>"));
@@ -392,6 +433,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             return;
         }
 
+        // Confirmation invalidates any in-flight replacement search as well.
+        pendingRollbackQueries.remove(preview.actorUuid);
         if (previews.get(preview.token) == preview) {
             previews.remove(preview.token);
             areaPreview.stop(preview.actorUuid, preview.token);
@@ -1415,6 +1458,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg rollback r:30 t:2d 7h 15m &7- Preview an area rollback."));
         player.sendMessage(color("&f/fg rollback r:30 t:2d force &7- Preview a rollback that may overwrite newer changes."));
         player.sendMessage(color("&f/fg rollback confirm <token> &7- Run a previewed rollback."));
+        player.sendMessage(color("&f/fg rollback cancel &7- Dismiss your rollback preview."));
         player.sendMessage(color("&f/fg undo <job-id> &7- Reverse blocks actually changed by a saved rollback job."));
         player.sendMessage(color("&f/fg status &7- Show database queue and storage health."));
         player.sendMessage(color("&7Only server operators can use these commands."));
@@ -1445,7 +1489,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         .toList());
             }
             return partial(args[args.length - 1],
-                    List.of("confirm", "r:15", "r:30", "r:50", "t:1h", "t:1d", "2d", "7h", "15m", "force"));
+                    List.of("confirm", "cancel", "r:15", "r:30", "r:50", "t:1h", "t:1d", "2d", "7h", "15m", "force"));
         }
         return Collections.emptyList();
     }
