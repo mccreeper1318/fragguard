@@ -51,6 +51,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     private final FragGuardPlugin plugin;
     private final Database database;
     private final Map<String, RollbackPreview> previews = new HashMap<>();
+    private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
     private final Map<Long, RollbackChunkPlan.ChunkKey> loadedJobChunks = new HashMap<>();
@@ -60,6 +61,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     FragGuardCommand(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
         this.database = database;
+        this.areaPreview = new RollbackAreaPreview(plugin);
     }
 
     @EventHandler
@@ -68,6 +70,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     }
 
     void clearRollbackPreviews() {
+        areaPreview.clear();
         previews.clear();
     }
 
@@ -303,6 +306,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 force, List.copyOf(targets), now + expirationSeconds * 1_000L);
         previews.put(token, preview);
         schedulePreviewExpiration(preview, now);
+        areaPreview.show(player, preview.token, preview.worldName,
+                preview.centerX, preview.centerZ, preview.radius, preview.expiresAt);
 
         player.sendMessage(color("&8&m------&r &eFragGuard Rollback Preview &8&m------"));
         player.sendMessage(color("&7Affected blocks: &f" + targets.size() + " &7| Chunks: &f" + affectedChunks
@@ -314,6 +319,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         } else {
             player.sendMessage(color("&aConflict protection: newer block changes will be skipped and reported."));
         }
+        player.sendMessage(color("&bCyan = rollback edge, yellow = vertical extent, green = center. "
+                + "&7Only you can see these markers."));
         player.sendMessage(color("&eNo blocks have been changed. Confirm within " + expirationSeconds
                 + " seconds: &f/fg rollback confirm " + token));
     }
@@ -334,14 +341,29 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             return;
         }
         previews.remove(preview.token);
+        areaPreview.stop(preview.actorUuid, preview.token);
     }
 
     private void removeExpiredPreviews(long now) {
-        previews.entrySet().removeIf(entry -> entry.getValue().expiresAt <= now);
+        previews.entrySet().removeIf(entry -> {
+            RollbackPreview preview = entry.getValue();
+            if (preview.expiresAt > now) {
+                return false;
+            }
+            areaPreview.stop(preview.actorUuid, preview.token);
+            return true;
+        });
     }
 
     private void removePreviewsFor(UUID actorUuid) {
-        previews.entrySet().removeIf(entry -> entry.getValue().actorUuid.equals(actorUuid));
+        previews.entrySet().removeIf(entry -> {
+            RollbackPreview preview = entry.getValue();
+            if (!preview.actorUuid.equals(actorUuid)) {
+                return false;
+            }
+            areaPreview.stop(actorUuid, preview.token);
+            return true;
+        });
     }
 
     private void handleRollbackConfirmation(Player player, String[] args) {
@@ -372,6 +394,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
 
         if (previews.get(preview.token) == preview) {
             previews.remove(preview.token);
+            areaPreview.stop(preview.actorUuid, preview.token);
         }
         player.sendMessage(color("&7Saving rollback job and undo information..."));
         database.createRollbackJobAsync(preview.actorUuid.toString(), preview.actorName, preview.worldName,
