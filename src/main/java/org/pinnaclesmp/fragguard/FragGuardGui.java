@@ -774,11 +774,8 @@ final class FragGuardGui implements Listener {
                 player.performCommand("fg rollback confirm " + token);
             }
             case 22 -> {
-                if (activeRollbackToken(player) == null) {
-                    player.sendMessage(color("&7You have no active rollback preview to cancel."));
-                    openRollbackSetup(player, session);
-                    return;
-                }
+                // An in-flight preview query has no token yet. The command safely
+                // cancels both unfinished searches and active previews.
                 player.closeInventory();
                 player.performCommand("fg rollback cancel");
             }
