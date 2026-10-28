@@ -185,8 +185,8 @@ final class FragGuardGuiRenderer {
         } else {
             inv.setItem(20, item(Material.GRAY_DYE, "&7No Active Preview",
                     "&7Run a rollback preview first."));
-            inv.setItem(22, item(Material.GRAY_DYE, "&7Nothing to Cancel",
-                    "&7No active rollback preview."));
+            inv.setItem(22, item(Material.RED_DYE, "&cCancel Preview / Search",
+                    "&7Stop an unfinished rollback search.", "&7Harmless if nothing is pending."));
         }
         inv.setItem(18, item(Material.ARROW, "&fBack"));
         inv.setItem(26, item(Material.BARRIER, "&cClose"));
