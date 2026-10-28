@@ -259,7 +259,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             pendingRollbackQueries.remove(actor, queryId);
             throw exception;
         }
-        reportQueryProgress(player, query);
+        reportQueryProgress(player, query, actor, queryId);
         query.whenComplete((targets, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
             if (!queryId.equals(pendingRollbackQueries.get(actor))) {
                 return; // The operator cancelled, disconnected, or started a newer search.
@@ -1352,13 +1352,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&c" + prefix + ". Check console for details."));
     }
 
-    private void reportQueryProgress(Player player, CompletableFuture<?> query) {
+    private void reportQueryProgress(Player player, CompletableFuture<?> query,
+                                     UUID actor, UUID queryId) {
         new BukkitRunnable() {
             private int elapsedSeconds;
 
             @Override
             public void run() {
-                if (query.isDone() || !player.isOnline()) {
+                if (query.isDone() || !player.isOnline()
+                        || !queryId.equals(pendingRollbackQueries.get(actor))) {
                     cancel();
                     return;
                 }
