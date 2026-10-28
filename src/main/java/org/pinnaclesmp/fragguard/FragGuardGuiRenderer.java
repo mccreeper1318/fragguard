@@ -180,9 +180,13 @@ final class FragGuardGuiRenderer {
         if (activePreview) {
             inv.setItem(20, item(Material.EMERALD_BLOCK, "&aConfirm Active Preview",
                     "&7Run your most recent unexpired", "&7rollback preview."));
+            inv.setItem(22, item(Material.RED_DYE, "&cCancel Active Preview",
+                    "&7Dismiss your pending rollback", "&7without changing any blocks."));
         } else {
             inv.setItem(20, item(Material.GRAY_DYE, "&7No Active Preview",
                     "&7Run a rollback preview first."));
+            inv.setItem(22, item(Material.GRAY_DYE, "&7Nothing to Cancel",
+                    "&7No active rollback preview."));
         }
         inv.setItem(18, item(Material.ARROW, "&fBack"));
         inv.setItem(26, item(Material.BARRIER, "&cClose"));
