@@ -773,6 +773,15 @@ final class FragGuardGui implements Listener {
                 player.closeInventory();
                 player.performCommand("fg rollback confirm " + token);
             }
+            case 22 -> {
+                if (activeRollbackToken(player) == null) {
+                    player.sendMessage(color("&7You have no active rollback preview to cancel."));
+                    openRollbackSetup(player, session);
+                    return;
+                }
+                player.closeInventory();
+                player.performCommand("fg rollback cancel");
+            }
             case 26 -> player.closeInventory();
             default -> { }
         }
