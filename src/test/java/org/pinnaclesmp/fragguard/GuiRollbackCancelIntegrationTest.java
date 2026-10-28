@@ -27,15 +27,24 @@ class GuiRollbackCancelIntegrationTest {
     Path directory;
 
     @Test
-    @SuppressWarnings({"unchecked", "rawtypes"})
     void cancelButtonRunsTheSameCancellationCommandAsChat() throws Exception {
+        testCancellation(List.of("token"));
+    }
+
+    @Test
+    void cancelButtonCanStopAnInFlightSearchBeforeTokenExists() throws Exception {
+        testCancellation(List.of());
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void testCancellation(List<String> tokens) throws Exception {
         FragGuardPlugin plugin = mock(FragGuardPlugin.class);
         when(plugin.getConfig()).thenReturn(new YamlConfiguration());
         when(plugin.getDataFolder()).thenReturn(directory.toFile());
         PluginCommand command = mock(PluginCommand.class);
         when(plugin.getCommand("fg")).thenReturn(command);
         when(command.tabComplete(any(Player.class), eq("fg"), any(String[].class)))
-                .thenReturn(List.of("token"));
+                .thenReturn(tokens);
 
         FragGuardGui gui = new FragGuardGui(plugin, mock(Database.class));
         Player player = mock(Player.class);
