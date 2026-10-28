@@ -55,7 +55,13 @@ final class RollbackAreaPreview {
             }
             renderFrame(operator, session);
         }, 0L, REFRESH_TICKS);
-        session.task = task;
+        // Defensive: if a scheduler/test invokes an initial frame before it
+        // returns, the frame may already have invalidated this session.
+        if (sessions.get(actor) == session) {
+            session.task = task;
+        } else if (task != null) {
+            task.cancel();
+        }
     }
 
     void stop(UUID actor) {
