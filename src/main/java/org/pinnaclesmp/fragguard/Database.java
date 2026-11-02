@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 5;
+    static final int SCHEMA_VERSION = 6;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int MAX_PERSISTED_COALESCE_CANDIDATES = 4_096;
@@ -972,7 +972,7 @@ final class Database {
         if (existingSchema && MigrationStoragePolicy.requiresFullBackup(schemaVersion)) {
             migrationBackup = createMigrationBackup(databaseConnection, schemaVersion);
         } else if (existingSchema && schemaVersion >= 3) {
-            plugin.getLogger().info("FragGuard schema v3+ migrations only update indexes; "
+            plugin.getLogger().info("FragGuard schema v3+ migrations only update metadata and indexes; "
                     + "skipping a full database copy.");
         }
 
@@ -994,6 +994,7 @@ final class Database {
                         case 1 -> migrateBlockEntitySchema(databaseConnection);
                         case 2 -> migrateRollbackSafetySchema(databaseConnection);
                         case 4 -> migrateHistoricalActorIndexes(databaseConnection);
+                        case 5 -> migrateCausalAttributionSchema(databaseConnection);
                         default -> throw new SQLException("No FragGuard database migration exists for schema version "
                                 + previousVersion + ".");
                     }
@@ -1353,6 +1354,31 @@ final class Database {
                     ON block_changes(actor_name COLLATE NOCASE, actor_uuid)
                     """);
         }
+    }
+
+    private void migrateCausalAttributionSchema(Connection databaseConnection) throws SQLException {
+        startupStage = "adding optional causal attribution to historical block records";
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_player_uuid", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_player_name", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_chain_id", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_cause_type", "TEXT");
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_causal_actor_time
+                    ON block_changes(causal_player_uuid, happened_at DESC, id DESC)
+                    WHERE causal_player_uuid IS NOT NULL
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_causal_actor_world_time
+                    ON block_changes(causal_player_uuid, world_uuid, happened_at DESC, id DESC)
+                    WHERE causal_player_uuid IS NOT NULL
+                    """);
+        }
+    }
+
+    /** Shared ownership condition for player lookup/rollback in #101/#102. */
+    static String playerOwnershipPredicate() {
+        return "(actor_uuid = ? OR causal_player_uuid = ?)";
     }
 
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
