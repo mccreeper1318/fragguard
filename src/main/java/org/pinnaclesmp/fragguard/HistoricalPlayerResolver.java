@@ -24,7 +24,13 @@ final class HistoricalPlayerResolver {
     private HistoricalPlayerResolver() {
     }
 
-    static HistoricalPlayerIdentity resolve(Connection connection, String argument) throws SQLException {
+    @FunctionalInterface
+    interface StatementFactory {
+        PreparedStatement prepare(Connection connection, String sql) throws SQLException;
+    }
+
+    static HistoricalPlayerIdentity resolve(Connection connection, String argument,
+                                            StatementFactory statements) throws SQLException {
         if (argument == null) {
             throw new IdentityException("Enter a username or player UUID (for example, u:Builder).");
         }
@@ -41,13 +47,13 @@ final class HistoricalPlayerResolver {
             if (!USERNAME.matcher(value).matches()) {
                 throw new IdentityException("Invalid player name or UUID: " + value);
             }
-            player = resolveHistoricalName(connection, value);
+            player = resolveHistoricalName(connection, value, statements);
         }
 
         // Resolve by UUID, never by the old supplied name: this returns the most
         // recent label even after a rename without changing historical ownership.
         String uuid = player.toString();
-        try (PreparedStatement statement = connection.prepareStatement("""
+        try (PreparedStatement statement = statements.prepare(connection, """
                 SELECT actor_name FROM block_changes
                 WHERE actor_uuid = ?
                 ORDER BY happened_at DESC, id DESC
@@ -67,11 +73,12 @@ final class HistoricalPlayerResolver {
         }
     }
 
-    private static UUID resolveHistoricalName(Connection connection, String name) throws SQLException {
+    private static UUID resolveHistoricalName(Connection connection, String name,
+                                             StatementFactory statements) throws SQLException {
         UUID candidate = null;
         // actor_name COLLATE NOCASE is indexed; DISTINCT only compares UUIDs
         // for rows matching the given name, not the entire history table.
-        try (PreparedStatement statement = connection.prepareStatement("""
+        try (PreparedStatement statement = statements.prepare(connection, """
                 SELECT DISTINCT actor_uuid FROM block_changes
                 WHERE actor_name = ? COLLATE NOCASE
                 """)) {
