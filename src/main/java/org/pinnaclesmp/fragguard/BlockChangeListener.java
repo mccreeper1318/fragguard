@@ -553,6 +553,14 @@ final class BlockChangeListener implements Listener {
         }
 
         Material material = clickedBlock.getType();
+        // Buttons and pressure plates have intentionally transient block states.
+        // They still initiate real mechanisms even though their temporary
+        // state changes do not belong in historical block logs.
+        if (isMechanism(material) && event.getPlayer() != null) {
+            Player activator = event.getPlayer();
+            causalChains.playerActivated(causalPosition(clickedBlock),
+                    activator.getUniqueId().toString(), activator.getName(), System.currentTimeMillis());
+        }
         if (material == Material.TNT && plugin.getConfig().getBoolean("log-explosions", true)) {
             return;
         }
@@ -568,10 +576,6 @@ final class BlockChangeListener implements Listener {
         }
 
         Player player = event.getPlayer();
-        if (isMechanism(material)) {
-            causalChains.playerActivated(causalPosition(clickedBlock),
-                    player.getUniqueId().toString(), player.getName(), System.currentTimeMillis());
-        }
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureInteractionBefore(beforeStates, clickedBlock, blockData, blockState);
         logAfterServerAppliesChange(
