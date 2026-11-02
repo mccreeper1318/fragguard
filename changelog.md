@@ -9,6 +9,7 @@
 - Updated Gradle wrapper to 9.8.1 (#123).
 - Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
 - Improved rollback boundary visibility, sampling, and configuration (#99).
+- Added UUID-based historical player resolution and actor query indexes (#100).
 
 ### Added
 
