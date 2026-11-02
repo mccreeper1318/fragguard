@@ -516,7 +516,8 @@ final class Database {
      */
     CompletableFuture<HistoricalPlayerResolver.HistoricalPlayerIdentity> resolveHistoricalPlayerAsync(
             String playerArgument) {
-        return submit(connection -> HistoricalPlayerResolver.resolve(connection, playerArgument), true);
+        return submit(connection -> HistoricalPlayerResolver.resolve(connection, playerArgument,
+                this::queryStatement), true);
     }
 
     CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
