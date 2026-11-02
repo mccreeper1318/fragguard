@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 4;
+    static final int SCHEMA_VERSION = 5;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int MAX_PERSISTED_COALESCE_CANDIDATES = 4_096;
@@ -510,6 +510,16 @@ final class Database {
         return submit(databaseConnection -> null, true);
     }
 
+    /**
+     * Shared UUID identity resolution for future server-wide player lookup and
+     * player-scoped rollback. Both consume the same historical mapping.
+     */
+    CompletableFuture<HistoricalPlayerResolver.HistoricalPlayerIdentity> resolveHistoricalPlayerAsync(
+            String playerArgument) {
+        return submit(connection -> HistoricalPlayerResolver.resolve(connection, playerArgument,
+                this::queryStatement), true);
+    }
+
     CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
                                               int page, int pageSize, int retentionDays) {
         String worldUuid = resolveWorldUuid(worldName);
@@ -961,9 +971,9 @@ final class Database {
         File migrationBackup = null;
         if (existingSchema && MigrationStoragePolicy.requiresFullBackup(schemaVersion)) {
             migrationBackup = createMigrationBackup(databaseConnection, schemaVersion);
-        } else if (existingSchema && schemaVersion == 3) {
-            plugin.getLogger().info("FragGuard schema v3->v4 only removes the obsolete persistent coalescing "
-                    + "index; skipping a full database copy.");
+        } else if (existingSchema && schemaVersion >= 3) {
+            plugin.getLogger().info("FragGuard schema v3+ migrations only update indexes; "
+                    + "skipping a full database copy.");
         }
 
         try (Statement statement = databaseConnection.createStatement()) {
@@ -983,6 +993,7 @@ final class Database {
                         case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
                         case 1 -> migrateBlockEntitySchema(databaseConnection);
                         case 2 -> migrateRollbackSafetySchema(databaseConnection);
+                        case 4 -> migrateHistoricalActorIndexes(databaseConnection);
                         default -> throw new SQLException("No FragGuard database migration exists for schema version "
                                 + previousVersion + ".");
                     }
@@ -1324,6 +1335,24 @@ final class Database {
             }
             return null;
         });
+    }
+
+    private void migrateHistoricalActorIndexes(Connection databaseConnection) throws SQLException {
+        startupStage = "creating historical actor and timestamp indexes for schema v4 to v5";
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_actor_time
+                    ON block_changes(actor_uuid, happened_at DESC, id DESC)
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_actor_world_time
+                    ON block_changes(actor_uuid, world_uuid, happened_at DESC, id DESC)
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_actor_name_uuid
+                    ON block_changes(actor_name COLLATE NOCASE, actor_uuid)
+                    """);
+        }
     }
 
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)

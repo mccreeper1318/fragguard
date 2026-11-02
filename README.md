@@ -223,6 +223,26 @@ The old `gui-lookup-max-rows` hard refusal is no longer used. Existing server co
 
 Changing grouping thresholds changes only presentation. Exact raw history remains stored and reachable.
 
+## Historical player identity and actor indexes
+
+FragGuard resolves players from **retained block history** rather than online player
+sessions. Its shared database resolver accepts `u:PlayerName`, `PlayerName`, a
+hyphenated UUID, or a 32-character UUID. Historical names resolve to the player's
+canonical UUID, and the latest recorded name is returned for display. Reused
+names belonging to more than one UUID are rejected instead of guessed; unknown
+players also produce a clear error. Environmental/system actors are not treated
+as players.
+
+Database schema **v5** adds indexes for actor UUID/time, actor UUID/world/time,
+and case-insensitive historical usernames. Upgrades from v4 add these indexes
+without rewriting historical rows, container snapshots or saved rollback jobs.
+Index creation may take time on large databases; a normal startup migration
+must complete before the server begins using FragGuard's database.
+
+This resolver is an internal foundation for future player-wide lookup, causal
+attribution and selective player rollback. The `u:` command filter and player
+rollback commands will be delivered in subsequent 26.3-1.2.1 issues.
+
 ## SQLite native access on Java 24+
 
 FragGuard uses Xerial SQLite JDBC's JNI-based native SQLite library. Java 24 and later
