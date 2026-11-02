@@ -559,7 +559,8 @@ final class BlockChangeListener implements Listener {
         // Buttons and pressure plates have intentionally transient block states.
         // They still initiate real mechanisms even though their temporary
         // state changes do not belong in historical block logs.
-        if (isMechanism(material) && event.getPlayer() != null) {
+        if (isDirectActivation(material, event.getAction())
+                && event.useInteractedBlock() != Event.Result.DENY && event.getPlayer() != null) {
             Player activator = event.getPlayer();
             causalChains.playerActivated(causalPosition(clickedBlock),
                     activator.getUniqueId().toString(), activator.getName(), System.currentTimeMillis());
@@ -1025,6 +1026,20 @@ final class BlockChangeListener implements Listener {
     private CausalChainTracker.Position causalPosition(Block block) {
         return new CausalChainTracker.Position(block.getWorld().getName(),
                 block.getX(), block.getY(), block.getZ());
+    }
+
+    private boolean isDirectActivation(Material material, Action action) {
+        if (material == null) {
+            return false;
+        }
+        String name = material.name();
+        if (action == Action.RIGHT_CLICK_BLOCK) {
+            return material == Material.LEVER || name.endsWith("_BUTTON");
+        }
+        if (action == Action.PHYSICAL) {
+            return name.endsWith("_PRESSURE_PLATE");
+        }
+        return false;
     }
 
     private boolean isMechanism(Material material) {
