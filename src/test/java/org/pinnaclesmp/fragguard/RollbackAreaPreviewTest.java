@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
@@ -222,7 +223,7 @@ class RollbackAreaPreviewTest {
         when(plugin.getServer()).thenReturn(server);
         when(server.getWorld("world")).thenReturn(world);
         when(server.getScheduler()).thenReturn(scheduler);
-        when(scheduler.runTaskTimer(eq(plugin), any(Runnable.class), eq(0L), any(Long.class)))
+        when(scheduler.runTaskTimer(eq(plugin), any(Runnable.class), eq(0L), anyLong()))
                 .thenReturn(task);
         when(world.getName()).thenReturn("world");
         when(world.getUID()).thenReturn(WORLD_ID);
