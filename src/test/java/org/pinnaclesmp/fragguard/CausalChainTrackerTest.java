@@ -118,6 +118,23 @@ class CausalChainTrackerTest {
     }
 
     @Test
+    void observedTntOutlivesFourSecondMachineIdleAndCanCauseSlowFuseChain() {
+        var t = new CausalChainTracker();
+        var player = new CausalAttribution(FIRST, "One", "long-fuse", "DIRECT_TNT");
+        t.prime(at(0, 64, 0), null, null, player, 1000);
+        UUID first = UUID.randomUUID();
+        assertNotNull(t.spawnedTnt(at(0, 64, 0), first, 1010));
+        assertNotNull(t.entityCause(first, 20_000),
+                "an observed TNT fuse can safely outlive the mechanism's 4s idle limit");
+        UUID next = UUID.randomUUID();
+        assertEquals("long-fuse", t.prime(at(1, 64, 0), null, first, null, 40_000).chainId());
+        assertEquals("long-fuse", t.spawnedTnt(at(1, 64, 0), next, 40_100).chainId());
+        assertEquals("long-fuse", t.entityCause(next, 65_000).chainId());
+        assertNull(t.entityCause(first, 62_000), "even observed TNT is not tracked indefinitely");
+        assertNull(t.entityCause(next, 101_000));
+    }
+
+    @Test
     void unrelatedLaterFireOrDistantMechanismHasNoOwnership() {
         var t = new CausalChainTracker();
         t.playerActivated(at(0,64,0), FIRST, "One", 1000);
