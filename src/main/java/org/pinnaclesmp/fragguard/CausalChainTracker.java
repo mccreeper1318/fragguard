@@ -22,6 +22,8 @@ final class CausalChainTracker {
     static final long IDLE_MILLIS = 4_000L;
     static final long MAX_AGE_MILLIS = 30_000L;
     static final long PRIME_MATCH_MILLIS = 500L;
+    // An observed TNT entity is a concrete cause even with a slower-than-20 TPS fuse.
+    static final long TNT_ENTITY_LIFETIME_MILLIS = 60_000L;
     static final int MAX_BLOCK_LINKS = 2_048;
     static final int MAX_ENTITY_LINKS = 512;
     static final int MAX_PRIME_LINKS = 256;
@@ -162,7 +164,9 @@ final class CausalChainTracker {
         if (causal == null && primingBlock != null) {
             causal = blocks.get(primingBlock);
         }
-        if (!active(causal, tntBlock, now)) {
+        if (causal == null || !(primingEntity != null && entities.get(primingEntity) == causal
+                ? entityActive(causal, now) && withinBounds(causal.origin, tntBlock)
+                : active(causal, tntBlock, now))) {
             return null;
         }
         CausalAttribution result = causal.touch(now, "TNT_PRIME").attribution;
@@ -189,7 +193,9 @@ final class CausalChainTracker {
             entities.clear();
             return null;
         }
-        link = link.touch(now, "TNT_ENTITY");
+        link = new Link(new CausalAttribution(link.attribution.playerUuid(),
+                link.attribution.playerName(), link.attribution.chainId(), "TNT_ENTITY"),
+                now, now, position);
         entities.put(entityId, link);
         return link.attribution;
     }
@@ -197,17 +203,20 @@ final class CausalChainTracker {
     CausalAttribution entityCause(UUID entityId, long now) {
         sweep(now);
         Link link = entities.get(entityId);
-        return active(link, null, now) ? link.attribution : null;
+        return entityActive(link, now) ? link.attribution : null;
     }
 
     /** Explicit source-to-TNT entity chain, even if no prime event was received. */
     CausalAttribution chainedEntity(UUID source, UUID child, Position position, long now) {
         sweep(now);
         Link link = entities.get(source);
-        if (!active(link, position, now) || entities.size() >= MAX_ENTITY_LINKS) {
+        if (!entityActive(link, now) || !withinBounds(link.origin, position)
+                || entities.size() >= MAX_ENTITY_LINKS) {
             return null;
         }
-        Link childLink = link.touch(now, "TNT_CHAIN");
+        Link childLink = new Link(new CausalAttribution(link.attribution.playerUuid(),
+                link.attribution.playerName(), link.attribution.chainId(), "TNT_CHAIN"),
+                now, now, position);
         entities.put(child, childLink);
         return childLink.attribution;
     }
@@ -272,6 +281,18 @@ final class CausalChainTracker {
                 && Math.abs((long) at.z - origin.z) <= MAX_DISPLACEMENT);
     }
 
+    private static boolean entityActive(Link link, long now) {
+        return link != null && now >= link.createdAt
+                && now - link.createdAt <= TNT_ENTITY_LIFETIME_MILLIS;
+    }
+
+    private static boolean withinBounds(Position origin, Position at) {
+        return origin.world.equals(at.world)
+                && Math.abs((long) at.x - origin.x) <= MAX_DISPLACEMENT
+                && Math.abs((long) at.y - origin.y) <= MAX_DISPLACEMENT
+                && Math.abs((long) at.z - origin.z) <= MAX_DISPLACEMENT;
+    }
+
     private void invalidateChain(String chainId) {
         blocks.values().removeIf(link -> link.attribution.chainId().equals(chainId));
         recentPrimes.values().removeIf(link -> link.attribution.chainId().equals(chainId));
@@ -282,6 +303,6 @@ final class CausalChainTracker {
         blocks.entrySet().removeIf(entry -> !active(entry.getValue(), entry.getKey(), now));
         recentPrimes.entrySet().removeIf(entry -> !active(entry.getValue(), entry.getKey(), now)
                 || now - entry.getValue().lastObserved > PRIME_MATCH_MILLIS);
-        entities.values().removeIf(link -> !active(link, null, now));
+        entities.values().removeIf(link -> !entityActive(link, now));
     }
 }
