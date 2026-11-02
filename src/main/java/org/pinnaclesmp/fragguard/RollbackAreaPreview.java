@@ -1,6 +1,5 @@
 package org.pinnaclesmp.fragguard;
 
-import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.World;
@@ -19,11 +18,6 @@ import java.util.UUID;
  * Does not spawn entities, place blocks, or write rollback history.
  */
 final class RollbackAreaPreview {
-    private static final long REFRESH_TICKS = 20L;
-    private static final Particle.DustOptions BORDER = new Particle.DustOptions(Color.AQUA, 1.2f);
-    private static final Particle.DustOptions HEIGHT = new Particle.DustOptions(Color.YELLOW, 1.0f);
-    private static final Particle.DustOptions CENTER = new Particle.DustOptions(Color.LIME, 1.8f);
-
     private final FragGuardPlugin plugin;
     private final Map<UUID, Session> sessions = new HashMap<>();
 
@@ -35,12 +29,15 @@ final class RollbackAreaPreview {
               int centerX, int centerZ, int radius, long expiresAt) {
         UUID actor = operator.getUniqueId();
         stop(actor);
+        RollbackPreviewVisualSettings settings = RollbackPreviewVisualSettings.from(plugin.getConfig());
+        if (!settings.enabled()) {
+            return;
+        }
         World sourceWorld = plugin.getServer().getWorld(worldName);
         UUID worldId = sourceWorld == null ? null : sourceWorld.getUID();
         Session session = new Session(token, worldName, worldId, centerX, centerZ,
-                radius, expiresAt,
-                RollbackBoundaryGeometry.perimeter(centerX, centerZ, radius,
-                        RollbackBoundaryGeometry.PERIMETER_SAMPLES));
+                expiresAt, settings,
+                RollbackBoundaryGeometry.perimeter(centerX, centerZ, radius, settings.samples(radius)));
         sessions.put(actor, session);
 
         // The timer renders only while this exact session is live. In particular,
@@ -54,7 +51,7 @@ final class RollbackAreaPreview {
                 return;
             }
             renderFrame(operator, session);
-        }, 0L, REFRESH_TICKS);
+        }, 0L, settings.updateTicks());
         // Defensive: if a scheduler/test invokes an initial frame before it
         // returns, the frame may already have invalidated this session.
         if (sessions.get(actor) == session) {
@@ -100,34 +97,39 @@ final class RollbackAreaPreview {
             return;
         }
 
-        double bottom = world.getMinHeight() + 0.5;
-        double top = world.getMaxHeight() - 0.5;
+        int minHeight = world.getMinHeight();
+        int maxHeight = world.getMaxHeight();
+        double bottom = minHeight + 0.5;
+        double top = maxHeight - 0.5;
         double eyeLevel = RollbackBoundaryGeometry.clampHeight(
-                location.getY() + 0.5, world.getMinHeight(), world.getMaxHeight());
+                location.getY() + 0.5, minHeight, maxHeight);
 
-        // Sparse full-height cylinders: lower and upper rings, a ring at the
-        // operator's height, and eight vertical guide columns.
+        // Geometry is constructed once when the preview starts. Each scheduled
+        // frame reuses the immutable perimeter, and only the operator's Y changes.
         for (RollbackBoundaryGeometry.Point point : session.perimeter) {
-            particle(operator, world, point.x(), bottom, point.z(), HEIGHT);
-            particle(operator, world, point.x(), top, point.z(), HEIGHT);
-            particle(operator, world, point.x(), eyeLevel, point.z(), BORDER);
-        }
-        for (int i = 0; i < RollbackBoundaryGeometry.VERTICAL_COLUMNS; i++) {
-            int index = i * session.perimeter.size() / RollbackBoundaryGeometry.VERTICAL_COLUMNS;
-            RollbackBoundaryGeometry.Point point = session.perimeter.get(index);
-            for (int step = 1; step <= RollbackBoundaryGeometry.VERTICAL_SAMPLES; step++) {
-                double y = bottom + (top - bottom)
-                        * step / (RollbackBoundaryGeometry.VERTICAL_SAMPLES + 1);
-                particle(operator, world, point.x(), y, point.z(), HEIGHT);
+            particle(operator, world, point.x(), bottom, point.z(), session.height);
+            particle(operator, world, point.x(), top, point.z(), session.height);
+            if (session.settings.operatorRing()) {
+                particle(operator, world, point.x(), eyeLevel, point.z(), session.border);
             }
         }
 
-        // Distinct origin guide, referenced to the original command's block
-        // center, not the player's location after asynchronous query completion.
+        // Eight sparse columns, never one particle per block or per height.
+        List<Double> levels = RollbackBoundaryGeometry.verticalLevels(minHeight, maxHeight,
+                session.settings.verticalSections(minHeight, maxHeight));
+        for (int i = 0; i < RollbackBoundaryGeometry.VERTICAL_COLUMNS; i++) {
+            int index = i * session.perimeter.size() / RollbackBoundaryGeometry.VERTICAL_COLUMNS;
+            RollbackBoundaryGeometry.Point point = session.perimeter.get(index);
+            for (double level : levels) {
+                particle(operator, world, point.x(), level, point.z(), session.height);
+            }
+        }
+
+        // The origin stays fixed to the command's center even as the operator moves.
         double x = session.centerX + 0.5;
         double z = session.centerZ + 0.5;
         for (double y : new double[]{bottom, eyeLevel, top}) {
-            particle(operator, world, x, y, z, CENTER);
+            particle(operator, world, x, y, z, session.center);
         }
     }
 
@@ -148,10 +150,15 @@ final class RollbackAreaPreview {
         private final int centerZ;
         private final long expiresAt;
         private final List<RollbackBoundaryGeometry.Point> perimeter;
+        private final RollbackPreviewVisualSettings settings;
+        private final Particle.DustOptions border;
+        private final Particle.DustOptions height;
+        private final Particle.DustOptions center;
         private BukkitTask task;
 
         private Session(String token, String worldName, UUID worldId,
-                        int centerX, int centerZ, int radius, long expiresAt,
+                        int centerX, int centerZ, long expiresAt,
+                        RollbackPreviewVisualSettings settings,
                         List<RollbackBoundaryGeometry.Point> perimeter) {
             this.token = token;
             this.worldName = worldName;
@@ -159,7 +166,11 @@ final class RollbackAreaPreview {
             this.centerX = centerX;
             this.centerZ = centerZ;
             this.expiresAt = expiresAt;
+            this.settings = settings;
             this.perimeter = perimeter;
+            this.border = new Particle.DustOptions(settings.borderColor(), 1.4f);
+            this.height = new Particle.DustOptions(settings.heightColor(), 1.0f);
+            this.center = new Particle.DustOptions(settings.centerColor(), 1.8f);
         }
     }
 }
