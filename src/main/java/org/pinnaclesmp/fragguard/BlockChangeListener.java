@@ -346,7 +346,8 @@ final class BlockChangeListener implements Listener {
         Block primingBlock = event.getPrimingBlock();
         CausalAttribution attributed = causalChains.prime(
                 causalPosition(event.getBlock()),
-                primingBlock == null ? null : causalPosition(primingBlock),
+                primingBlock == null || primingBlock.getWorld() == null
+                        ? null : causalPosition(primingBlock),
                 entity == null ? null : entity.getUniqueId(),
                 directlyAttributed, System.currentTimeMillis());
         logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.TNT_PRIME,
