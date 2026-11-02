@@ -2141,7 +2141,9 @@ final class Database {
     private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {
         return new BlockChange(previous.happenedAt(), serverTick, latest.actorUuid(), latest.actorName(), previous.worldName(),
                 previous.x(), previous.y(), previous.z(), latest.action(), previous.beforeData(), latest.afterData(),
-                previous.beforeEntityData(), latest.afterEntityData());
+                previous.beforeEntityData(), latest.afterEntityData(),
+                latest.causalPlayerUuid(), latest.causalPlayerName(),
+                latest.causalChainId(), latest.causalCauseType());
     }
 
     private static boolean sameState(String firstData, byte[] firstEntityData,
