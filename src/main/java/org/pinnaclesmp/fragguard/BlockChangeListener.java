@@ -24,6 +24,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockRedstoneEvent;
 import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
@@ -45,15 +46,18 @@ import org.bukkit.event.block.SpongeAbsorbEvent;
 import org.bukkit.event.block.TNTPrimeEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntitySpawnEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerTakeLecternBookEvent;
 import org.bukkit.event.world.StructureGrowEvent;
+import org.bukkit.event.world.WorldUnloadEvent;
 import org.bukkit.inventory.InventoryHolder;
 
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -76,6 +80,7 @@ final class BlockChangeListener implements Listener {
     private final Database database;
     private final Map<UUID, PendingPlayerBreak> pendingPlayerBreaks = new LinkedHashMap<>();
     private final FertilizationDeduplicator fertilizationDeduplicator = new FertilizationDeduplicator();
+    private final CausalChainTracker causalChains = new CausalChainTracker();
 
     BlockChangeListener(FragGuardPlugin plugin, Database database) {
         this.plugin = plugin;
@@ -89,6 +94,9 @@ final class BlockChangeListener implements Listener {
         }
 
         Player player = event.getPlayer();
+        causalChains.playerModified(causalPosition(event.getBlockPlaced()),
+                player.getUniqueId().toString(), player.getName(), System.currentTimeMillis(),
+                isMechanism(event.getBlockPlaced().getType()));
 
         if (event instanceof BlockMultiPlaceEvent multiPlaceEvent) {
             for (BlockState replacedState : multiPlaceEvent.getReplacedBlockStates()) {
@@ -136,6 +144,8 @@ final class BlockChangeListener implements Listener {
         }
 
         Block brokenBlock = event.getBlock();
+        causalChains.playerModified(causalPosition(brokenBlock), playerUuid.toString(),
+                player.getName(), System.currentTimeMillis(), false);
         boolean handledByTntPrime = brokenBlock.getType() == Material.TNT
                 && brokenBlock.getBlockData() instanceof TNT tntData
                 && tntData.isUnstable()
@@ -552,6 +562,10 @@ final class BlockChangeListener implements Listener {
         }
 
         Player player = event.getPlayer();
+        if (isMechanism(material)) {
+            causalChains.playerActivated(causalPosition(clickedBlock),
+                    player.getUniqueId().toString(), player.getName(), System.currentTimeMillis());
+        }
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureInteractionBefore(beforeStates, clickedBlock, blockData, blockState);
         logAfterServerAppliesChange(
