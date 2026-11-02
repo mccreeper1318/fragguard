@@ -343,8 +343,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         } else {
             player.sendMessage(color("&aConflict protection: newer block changes will be skipped and reported."));
         }
-        player.sendMessage(color("&bCyan = rollback edge, yellow = vertical extent, green = center. "
-                + "&7Only you can see these markers."));
+        if (RollbackPreviewVisualSettings.from(plugin.getConfig()).enabled()) {
+            player.sendMessage(color("&bThe rollback boundary is visible only to you. "
+                    + "&7Perimeter, vertical extent, and center use the configured colors."));
+        } else {
+            player.sendMessage(color("&7Rollback visualization is disabled in config.yml."));
+        }
         player.sendMessage(color("&eNo blocks have been changed. Confirm within " + expirationSeconds
                 + " seconds: &f/fg rollback confirm " + token));
         player.sendMessage(color("&7To dismiss this preview: &f/fg rollback cancel"));
