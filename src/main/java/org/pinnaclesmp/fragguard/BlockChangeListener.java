@@ -1051,8 +1051,8 @@ final class BlockChangeListener implements Listener {
         if (entity instanceof Player player) {
             return new Actor(player.getUniqueId().toString(), player.getName());
         }
-        return new Actor(entity.getUniqueId().toString(),
-                label + ": " + readableEnum(entity.getType().name()));
+        return new Actor(entity.getUniqueId() == null ? SYSTEM_UUID : entity.getUniqueId().toString(),
+                label + ": " + (entity.getType() == null ? "Entity" : readableEnum(entity.getType().name())));
     }
 
     private Actor physicalTntActor(TNTPrimeEvent event) {
