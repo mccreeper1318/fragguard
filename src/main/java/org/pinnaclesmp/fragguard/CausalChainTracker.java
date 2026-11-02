@@ -148,12 +148,14 @@ final class CausalChainTracker {
                             UUID primingEntity, CausalAttribution directPlayer, long now) {
         sweep(now);
         Link causal;
-        if (directPlayer != null) {
+        // Preserve the original chain for a TNT -> TNT prime, even when
+        // Paper's recursive getSource() also resolves to the original player.
+        causal = primingEntity == null ? null : entities.get(primingEntity);
+        if (causal == null && directPlayer != null) {
             causal = new Link(directPlayer, now, now, tntBlock);
-        } else if (primingEntity != null) {
-            causal = entities.get(primingEntity);
-        } else {
-            causal = primingBlock == null ? null : blocks.get(primingBlock);
+        }
+        if (causal == null && primingBlock != null) {
+            causal = blocks.get(primingBlock);
         }
         if (!active(causal, tntBlock, now)) {
             return null;
