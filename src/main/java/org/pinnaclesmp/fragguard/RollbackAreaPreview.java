@@ -115,8 +115,7 @@ final class RollbackAreaPreview {
         }
 
         // Eight sparse columns, never one particle per block or per height.
-        List<Double> levels = RollbackBoundaryGeometry.verticalLevels(minHeight, maxHeight,
-                session.settings.verticalSections(minHeight, maxHeight));
+        List<Double> levels = session.verticalLevels(minHeight, maxHeight);
         for (int i = 0; i < RollbackBoundaryGeometry.VERTICAL_COLUMNS; i++) {
             int index = i * session.perimeter.size() / RollbackBoundaryGeometry.VERTICAL_COLUMNS;
             RollbackBoundaryGeometry.Point point = session.perimeter.get(index);
@@ -154,6 +153,9 @@ final class RollbackAreaPreview {
         private final Particle.DustOptions border;
         private final Particle.DustOptions height;
         private final Particle.DustOptions center;
+        private int cachedMinHeight = Integer.MIN_VALUE;
+        private int cachedMaxHeight = Integer.MIN_VALUE;
+        private List<Double> cachedLevels = List.of();
         private BukkitTask task;
 
         private Session(String token, String worldName, UUID worldId,
@@ -171,6 +173,16 @@ final class RollbackAreaPreview {
             this.border = new Particle.DustOptions(settings.borderColor(), 1.4f);
             this.height = new Particle.DustOptions(settings.heightColor(), 1.0f);
             this.center = new Particle.DustOptions(settings.centerColor(), 1.8f);
+        }
+
+        private List<Double> verticalLevels(int minHeight, int maxHeight) {
+            if (minHeight != cachedMinHeight || maxHeight != cachedMaxHeight) {
+                cachedLevels = RollbackBoundaryGeometry.verticalLevels(minHeight, maxHeight,
+                        settings.verticalSections(minHeight, maxHeight));
+                cachedMinHeight = minHeight;
+                cachedMaxHeight = maxHeight;
+            }
+            return cachedLevels;
         }
     }
 }
