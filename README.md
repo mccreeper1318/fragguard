@@ -238,7 +238,8 @@ will remain available for inspection.
 Supported evidence includes direct player TNT ignition, player-launched
 projectiles, TNT-to-TNT priming with an observable entity source, and TNT
 entities spawned at an **exact** recently observed priming location.
-Player-operated switches and buttons, directly altered mechanism components,
+Actual player-operated levers, buttons and pressure plates (not passive
+right-clicks on pistons or observers), directly altered mechanism components,
 live redstone updates, and piston movements form a bounded graph of
 actual component and block movement positions. An active, connected component
 can attribute a piston or TNT at that component, including an observable
@@ -248,10 +249,13 @@ fails closed to system/physical attribution. Merely being near a player, or
 happening after an earlier interaction, does not confer ownership.
 
 Causal links are maintained **only in memory**; they are never resumed after
-restart. They expire after 4 seconds idle or 30 seconds total, cannot be
-tracked farther than 96 blocks on any axis from the original activation,
-and are capped to 2,048 block links, 512 TNT entity links, and 256 recent
-prime locations. A world unload, plugin reload/disable or memory pressure
+restart. Mechanism links expire after 4 seconds idle or 30 seconds total.
+An individually observed TNT entity is retained up to 60 seconds from its
+own spawn to accommodate slow fuse progression at reduced TPS. No entity
+can restart expired mechanism ownership merely by existing nearby.
+Tracked mechanisms cannot extend farther than 96 blocks on any axis from
+the original activation, and are capped to 2,048 block links, 512 TNT
+entity links, and 256 recent prime locations. A world unload, plugin reload/disable or memory pressure
 clears relevant links. Cross-session or conflicting ownership invalidates the
 claim instead of guessing. Fires, unobservable redstone components,
 untraceable TNT duper cycles, and delayed environmental propagation are not
