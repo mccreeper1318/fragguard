@@ -339,13 +339,18 @@ final class BlockChangeListener implements Listener {
             return;
         }
 
-        Actor actor = actorForTntPrime(event);
-        logBlockAfterServerAppliesChange(
-                event.getBlock(),
-                ChangeAction.TNT_PRIME,
-                actor.uuid(),
-                actor.name()
-        );
+        Entity entity = event.getPrimingEntity();
+        Actor physicalActor = physicalTntActor(event);
+        CausalAttribution directlyAttributed = entity == null ? null
+                : attributionFromEntity(entity, "DIRECT_TNT");
+        Block primingBlock = event.getPrimingBlock();
+        CausalAttribution attributed = causalChains.prime(
+                causalPosition(event.getBlock()),
+                primingBlock == null ? null : causalPosition(primingBlock),
+                entity == null ? null : entity.getUniqueId(),
+                directlyAttributed, System.currentTimeMillis());
+        logBlockAfterServerAppliesChange(event.getBlock(), ChangeAction.TNT_PRIME,
+                physicalActor.uuid(), physicalActor.name(), attributed);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -364,13 +369,14 @@ final class BlockChangeListener implements Listener {
             }
         }
 
-        Actor actor = actorForEntity(event.getEntity(), "Explosion");
-        logAfterServerAppliesChange(
-                beforeStates,
-                ChangeAction.EXPLOSION,
-                actor.uuid(),
-                actor.name()
-        );
+        Entity explosive = event.getEntity();
+        Actor physical = physicalEntityActor(explosive, "Explosion");
+        CausalAttribution linked = explosive == null ? null
+                : causalChains.entityCause(explosive.getUniqueId(), System.currentTimeMillis());
+        CausalAttribution attributed = linked == null
+                ? attributionFromEntity(explosive, "ENTITY_EXPLOSION") : linked;
+        logAfterServerAppliesChange(beforeStates, ChangeAction.EXPLOSION,
+                physical.uuid(), physical.name(), attributed);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -645,17 +651,11 @@ final class BlockChangeListener implements Listener {
 
         ChangeAction action = pistonCause ? ChangeAction.PISTON_BREAK : ChangeAction.LIQUID_BREAK;
         String actorName = pistonCause ? "Piston Break" : readableEnum(sourceType.name()) + " Break";
-
-        logNow(
-                broken,
-                action,
-                SYSTEM_UUID,
-                actorName,
-                broken.getBlockData().getAsString(),
-                AIR_DATA,
-                BlockEntitySnapshot.capture(broken),
-                null
-        );
+        CausalAttribution attributed = pistonCause
+                ? causalChains.observedAt(causalPosition(source), System.currentTimeMillis(), "PISTON_BREAK")
+                : null;
+        logNow(broken, action, SYSTEM_UUID, actorName, broken.getBlockData().getAsString(),
+                AIR_DATA, BlockEntitySnapshot.capture(broken), null, attributed);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -669,7 +669,12 @@ final class BlockChangeListener implements Listener {
 
         Map<BlockPosition, CapturedBlockState> beforeStates = capturePistonAffectedBlocks(
                 event.getBlock(), event.getDirection(), event.getBlocks());
-        logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_EXTEND, "Piston Extend");
+        CausalAttribution attributed = causalChains.piston(causalPosition(event.getBlock()),
+                event.getBlocks().stream().map(this::causalPosition).toList(),
+                event.getDirection().getModX(), event.getDirection().getModY(),
+                event.getDirection().getModZ(), System.currentTimeMillis());
+        logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_EXTEND,
+                SYSTEM_UUID, "Piston Extend", attributed);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -683,7 +688,12 @@ final class BlockChangeListener implements Listener {
 
         Map<BlockPosition, CapturedBlockState> beforeStates = capturePistonAffectedBlocks(
                 event.getBlock(), event.getDirection(), event.getBlocks());
-        logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_RETRACT, "Piston Retract");
+        CausalAttribution attributed = causalChains.piston(causalPosition(event.getBlock()),
+                event.getBlocks().stream().map(this::causalPosition).toList(),
+                event.getDirection().getModX(), event.getDirection().getModY(),
+                event.getDirection().getModZ(), System.currentTimeMillis());
+        logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_RETRACT,
+                SYSTEM_UUID, "Piston Retract", attributed);
     }
 
     private Map<BlockPosition, CapturedBlockState> capturePistonAffectedBlocks(
