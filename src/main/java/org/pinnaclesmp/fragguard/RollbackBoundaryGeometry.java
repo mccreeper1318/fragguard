@@ -33,6 +33,20 @@ final class RollbackBoundaryGeometry {
         return Math.max(minHeight + 0.5, Math.min(maxHeight - 0.5, requested));
     }
 
+    /** Sparse interior guide levels; top/bottom rings are rendered separately. */
+    static List<Double> verticalLevels(int minHeight, int maxHeight, int sections) {
+        if (maxHeight <= minHeight || sections < 2 || sections > 13) {
+            return List.of();
+        }
+        double bottom = minHeight + 0.5;
+        double top = maxHeight - 0.5;
+        List<Double> levels = new ArrayList<>(sections - 1);
+        for (int i = 1; i < sections; i++) {
+            levels.add(bottom + (top - bottom) * i / sections);
+        }
+        return List.copyOf(levels);
+    }
+
     record Point(double x, double z) {
     }
 }
