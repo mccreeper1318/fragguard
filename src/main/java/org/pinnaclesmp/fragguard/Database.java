@@ -1555,6 +1555,10 @@ final class Database {
                           AND actor_uuid = ?
                           AND actor_name = ?
                           AND action = ?
+                          AND causal_player_uuid IS ?
+                          AND causal_player_name IS ?
+                          AND causal_chain_id IS ?
+                          AND causal_cause_type IS ?
                           AND after_data = ?
                           AND ((after_entity_data IS NULL AND ? IS NULL) OR after_entity_data = ?)
                         """);
@@ -1589,9 +1593,13 @@ final class Database {
                             update.setString(4, candidate.actorUuid());
                             update.setString(5, candidate.actorName());
                             update.setString(6, candidate.action().storageId());
-                            update.setString(7, candidate.afterData());
-                            update.setBytes(8, candidate.afterEntityData());
-                            update.setBytes(9, candidate.afterEntityData());
+                            update.setString(7, candidate.causalPlayerUuid());
+                            update.setString(8, candidate.causalPlayerName());
+                            update.setString(9, candidate.causalChainId());
+                            update.setString(10, candidate.causalCauseType());
+                            update.setString(11, candidate.afterData());
+                            update.setBytes(12, candidate.afterEntityData());
+                            update.setBytes(13, candidate.afterEntityData());
                             if (update.executeUpdate() == 1) {
                                 coalesces++;
                                 deleteNoOp.setLong(1, candidate.rowId());
@@ -2065,6 +2073,8 @@ final class Database {
         return Objects.equals(previous.actorUuid(), latest.actorUuid())
                 && Objects.equals(previous.actorName(), latest.actorName())
                 && previous.action() == latest.action()
+                && sameCausalAttribution(previous.causalPlayerUuid(), previous.causalPlayerName(),
+                        previous.causalChainId(), previous.causalCauseType(), latest)
                 && sameState(previous.afterData(), previous.afterEntityData(),
                         latest.beforeData(), latest.beforeEntityData());
     }
@@ -2073,8 +2083,18 @@ final class Database {
         return Objects.equals(previous.actorUuid(), latest.actorUuid())
                 && Objects.equals(previous.actorName(), latest.actorName())
                 && previous.action() == latest.action()
+                && sameCausalAttribution(previous.causalPlayerUuid(), previous.causalPlayerName(),
+                        previous.causalChainId(), previous.causalCauseType(), latest)
                 && sameState(previous.afterData(), previous.afterEntityData(),
                         latest.beforeData(), latest.beforeEntityData());
+    }
+
+    private static boolean sameCausalAttribution(String uuid, String name, String chain,
+                                                  String cause, BlockChange change) {
+        return Objects.equals(uuid, change.causalPlayerUuid())
+                && Objects.equals(name, change.causalPlayerName())
+                && Objects.equals(chain, change.causalChainId())
+                && Objects.equals(cause, change.causalCauseType());
     }
 
     private static PersistedCoalesceCandidate persistedCandidate(long rowId, BlockChange change) {
@@ -2082,7 +2102,8 @@ final class Database {
                 ? null
                 : Arrays.copyOf(change.afterEntityData(), change.afterEntityData().length);
         return new PersistedCoalesceCandidate(rowId, change.actorUuid(), change.actorName(), change.action(),
-                change.afterData(), entityData);
+                change.causalPlayerUuid(), change.causalPlayerName(), change.causalChainId(),
+                change.causalCauseType(), change.afterData(), entityData);
     }
 
     private void applyPersistedCoalesceCandidateChanges(
@@ -2208,6 +2229,10 @@ final class Database {
             String actorUuid,
             String actorName,
             ChangeAction action,
+            String causalPlayerUuid,
+            String causalPlayerName,
+            String causalChainId,
+            String causalCauseType,
             String afterData,
             byte[] afterEntityData
     ) {
