@@ -173,7 +173,9 @@ final class CausalChainTracker {
         if (recentPrimes.size() >= MAX_PRIME_LINKS) {
             recentPrimes.clear();
         }
-        recentPrimes.put(tntBlock, causal.touch(now, "TNT_PRIME"));
+        // Prime is a new observed physical event: reset its short handoff
+        // window even when the source TNT burned a long fuse.
+        recentPrimes.put(tntBlock, new Link(result, now, now, tntBlock));
         return result;
     }
 
