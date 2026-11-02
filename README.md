@@ -274,8 +274,33 @@ Use `/fg rollback cancel` (or **Cancel Active Preview** in the rollback GUI)
 to invalidate your pending preview without starting a rollback job. Cancelling
 also invalidates any outstanding asynchronous rollback-preview search so a
 late query result cannot recreate a cancelled preview. Cancelling when nothing
-is active is harmless. Additional visualization configuration is planned for
-later 26.3-1.2.1 work.
+is active is harmless.
+
+### Boundary visualization settings
+
+The particle outline is presentation-only and **does not change the rollback radius**.
+All settings are optional; existing server configurations use these defaults:
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| `rollback-preview-visualization-enabled` | `true` | Disable visual particles without disabling rollback previews |
+| `rollback-preview-perimeter-quality` | `1` | 0=sparse, 1=standard, 2=detailed; clamped to 0–2 |
+| `rollback-preview-vertical-spacing` | `64` | Requested blocks between vertical guides; clamped to 16–192 |
+| `rollback-preview-operator-ring-enabled` | `true` | Show a ring at the operator's current height |
+| `rollback-preview-update-ticks` | `20` | Refresh interval (10–100 ticks) |
+| `rollback-preview-border-color` | `"#00FFFF"` | Cyan perimeter ring; use `#RRGGBB` |
+| `rollback-preview-height-color` | `"#FFFF00"` | Yellow vertical/top/bottom guides |
+| `rollback-preview-center-color` | `"#00FF00"` | Green origin marker |
+
+With standard density, the perimeter uses **24 points for radius 1–10,
+32 for 11–25, 48 for 26–50, and 64 for 51+**. Quality adjusts this by
+a small amount and always caps it at 96. Vertical columns use up to 12
+interior samples each, even in unusually tall worlds. The operator-height
+ring follows the operator as they fly or walk, using the refresh interval
+rather than rebuilding the boundary geometry every tick. Colors with
+invalid hex strings revert to the built-in defaults. The renderer uses
+player-targeted extended-range particles; other players never receive
+them, and no world blocks or entities change.
 
 ## Build
 

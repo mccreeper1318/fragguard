@@ -8,6 +8,7 @@
 - Updated artifact GitHub Actions to upload 7.0.2 and download 8.0.2 (#122).
 - Updated Gradle wrapper to 9.8.1 (#123).
 - Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
+- Improved rollback boundary visibility, sampling, and configuration (#99).
 
 ### Added
 

@@ -80,5 +80,21 @@ rollback-max-chunks-per-command: 256
 # Preview tokens expire before a rollback can be confirmed.
 rollback-confirmation-timeout-seconds: 60
 
+# The outline is client-only particles, visible only to the operator.
+rollback-preview-visualization-enabled: true
+# 0 = sparse, 1 = standard (24/32/48/64 points), 2 = detailed; capped to 96 points.
+rollback-preview-perimeter-quality: 1
+# Spacing of the sparse full-height guide columns. Clamped to 16-192 blocks,
+# and a maximum of 12 interior levels per guide column.
+rollback-preview-vertical-spacing: 64
+# Draw a brighter circular ring at the operator's current elevation.
+rollback-preview-operator-ring-enabled: true
+# Particle refresh cadence in ticks. Clamped to 10-100; default: once per second.
+rollback-preview-update-ticks: 20
+# Optional color overrides; use #RRGGBB (invalid values fall back to defaults).
+rollback-preview-border-color: "#00FFFF"
+rollback-preview-height-color: "#FFFF00"
+rollback-preview-center-color: "#00FF00"
+
 # Usually false is safer for rollback because it avoids triggering gravity/neighbor updates everywhere.
 apply-physics-during-rollback: false
