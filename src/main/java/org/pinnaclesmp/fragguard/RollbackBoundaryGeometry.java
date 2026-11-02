@@ -11,7 +11,6 @@ import java.util.List;
 final class RollbackBoundaryGeometry {
     static final int PERIMETER_SAMPLES = 48;
     static final int VERTICAL_COLUMNS = 8;
-    static final int VERTICAL_SAMPLES = 5;
 
     private RollbackBoundaryGeometry() {
     }
