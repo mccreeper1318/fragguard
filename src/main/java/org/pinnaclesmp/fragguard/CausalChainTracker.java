@@ -123,6 +123,10 @@ final class CausalChainTracker {
             touched.add(position);
             touched.add(position.shift(dx, dy, dz));
         }
+        if ((long) blocks.size() + touched.size() >= MAX_BLOCK_LINKS) {
+            clear(); // No partial machine ownership after capacity exhaustion.
+            return null;
+        }
         // Conflicting active ownership anywhere in the actual moved set
         // invalidates both sessions rather than attributing by proximity.
         Set<String> conflict = new HashSet<>();
@@ -258,7 +262,11 @@ final class CausalChainTracker {
                 continue;
             }
             if (result != null && !result.attribution.chainId().equals(candidate.attribution.chainId())) {
-                return null; // conflicting or unknown cause
+                String first = result.attribution.chainId();
+                String second = candidate.attribution.chainId();
+                invalidateChain(first);
+                invalidateChain(second);
+                return null; // ambiguous ownership invalidates both sessions
             }
             result = candidate;
         }
