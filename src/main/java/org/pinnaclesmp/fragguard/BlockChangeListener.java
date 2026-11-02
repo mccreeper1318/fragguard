@@ -94,9 +94,6 @@ final class BlockChangeListener implements Listener {
         }
 
         Player player = event.getPlayer();
-        causalChains.playerModified(causalPosition(event.getBlockPlaced()),
-                player.getUniqueId().toString(), player.getName(), System.currentTimeMillis(),
-                isMechanism(event.getBlockPlaced().getType()));
 
         if (event instanceof BlockMultiPlaceEvent multiPlaceEvent) {
             for (BlockState replacedState : multiPlaceEvent.getReplacedBlockStates()) {
@@ -110,6 +107,11 @@ final class BlockChangeListener implements Listener {
 
     private void logPlacement(BlockState replacedState, Player player) {
         Block placedBlock = replacedState.getBlock();
+        if (placedBlock.getWorld() != null && placedBlock.getType() != null) {
+            causalChains.playerModified(causalPosition(placedBlock),
+                    player.getUniqueId().toString(), player.getName(), System.currentTimeMillis(),
+                    isMechanism(placedBlock.getType()));
+        }
         logNow(
                 placedBlock,
                 ChangeAction.PLACE,
@@ -1026,6 +1028,9 @@ final class BlockChangeListener implements Listener {
     }
 
     private boolean isMechanism(Material material) {
+        if (material == null) {
+            return false;
+        }
         String name = material.name();
         return material == Material.LEVER || name.endsWith("_BUTTON")
                 || name.endsWith("_PRESSURE_PLATE") || material == Material.REDSTONE_WIRE
