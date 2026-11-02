@@ -18,7 +18,7 @@ java {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:26.3.build.177-stable")
-    implementation("org.xerial:sqlite-jdbc:3.53.4.0")
+    implementation("org.xerial:sqlite-jdbc:3.54.1.0")
     implementation("org.slf4j:slf4j-nop:2.0.20")
 
     testImplementation("io.papermc.paper:paper-api:26.3.build.177-stable")
