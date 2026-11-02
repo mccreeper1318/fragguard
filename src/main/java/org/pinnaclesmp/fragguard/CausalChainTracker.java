@@ -60,6 +60,11 @@ final class CausalChainTracker {
         for (String id : superseded) {
             invalidateChain(id);
         }
+        Link existing = blocks.get(position);
+        if (existing != null && existing.attribution.playerUuid().equals(uuid) && active(existing, position, now)) {
+            blocks.put(position, existing.touch(now, "PLAYER_ACTIVATION"));
+            return; // Repeat pressure-plate events must not split the same causal chain.
+        }
         if (blocks.size() >= MAX_BLOCK_LINKS) {
             clear(); // fail closed under load, never evict into arbitrary ownership
         }
@@ -73,7 +78,7 @@ final class CausalChainTracker {
         Set<String> superseded = new HashSet<>();
         for (Position neighbor : connected(position)) {
             Link previous = blocks.get(neighbor);
-            if (previous != null && !previous.attribution.playerUuid().equals(uuid)) {
+            if (previous != null) {
                 superseded.add(previous.attribution.chainId());
             }
         }
