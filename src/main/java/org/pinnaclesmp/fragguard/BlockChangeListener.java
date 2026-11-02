@@ -971,6 +971,98 @@ final class BlockChangeListener implements Listener {
         return material.name().endsWith("_BUCKET") && material != Material.MILK_BUCKET;
     }
 
+    @EventHandler(priority = EventPriority.MONITOR)
+    void onRedstonePower(BlockRedstoneEvent event) {
+        if (BlockLoggingSuppression.isSuppressed()) {
+            return;
+        }
+        if (isMechanism(event.getBlock().getType())) {
+            causalChains.redstone(causalPosition(event.getBlock()),
+                    System.currentTimeMillis(), event.getNewCurrent() > 0);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    void onTntSpawn(EntitySpawnEvent event) {
+        if (BlockLoggingSuppression.isSuppressed() || !(event.getEntity() instanceof TNTPrimed tnt)) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        CausalChainTracker.Position position = causalPosition(tnt.getLocation().getBlock());
+        CausalAttribution linked = null;
+        Entity source = tnt.getSource();
+        if (source != null && source.getUniqueId() != null) {
+            linked = causalChains.chainedEntity(source.getUniqueId(), tnt.getUniqueId(), position, now);
+        }
+        if (linked == null) {
+            linked = causalChains.spawnedTnt(position, tnt.getUniqueId(), now);
+        }
+        if (linked == null && source != null) {
+            CausalAttribution direct = attributionFromEntity(source, "TNT_SOURCE");
+            if (direct != null) {
+                causalChains.prime(position, null, source.getUniqueId(), direct, now);
+                causalChains.spawnedTnt(position, tnt.getUniqueId(), now);
+            }
+        }
+    }
+
+    @EventHandler
+    void onWorldUnload(WorldUnloadEvent event) {
+        causalChains.unloadWorld(event.getWorld().getName());
+    }
+
+    void clearCausalAttribution() {
+        causalChains.clear();
+    }
+
+    private CausalChainTracker.Position causalPosition(Block block) {
+        return new CausalChainTracker.Position(block.getWorld().getName(),
+                block.getX(), block.getY(), block.getZ());
+    }
+
+    private boolean isMechanism(Material material) {
+        String name = material.name();
+        return material == Material.LEVER || name.endsWith("_BUTTON")
+                || name.endsWith("_PRESSURE_PLATE") || material == Material.REDSTONE_WIRE
+                || material == Material.REDSTONE_TORCH || material == Material.REDSTONE_WALL_TORCH
+                || material == Material.REPEATER || material == Material.COMPARATOR
+                || material == Material.OBSERVER || material == Material.PISTON
+                || material == Material.STICKY_PISTON || material == Material.TNT
+                || material == Material.TRIPWIRE_HOOK || material == Material.TARGET;
+    }
+
+    private CausalAttribution attributionFromEntity(Entity source, String cause) {
+        Actor player = playerActorForCause(source, new HashSet<>());
+        if (player == null) {
+            return null;
+        }
+        return new CausalAttribution(player.uuid(), player.name(),
+                UUID.randomUUID().toString(), cause);
+    }
+
+    private Actor physicalEntityActor(Entity entity, String label) {
+        if (entity == null) {
+            return new Actor(SYSTEM_UUID, label);
+        }
+        if (entity instanceof Player player) {
+            return new Actor(player.getUniqueId().toString(), player.getName());
+        }
+        return new Actor(entity.getUniqueId().toString(),
+                label + ": " + readableEnum(entity.getType().name()));
+    }
+
+    private Actor physicalTntActor(TNTPrimeEvent event) {
+        String label = "TNT Prime: " + readableEnum(event.getCause().name());
+        if (event.getPrimingEntity() != null) {
+            return physicalEntityActor(event.getPrimingEntity(), label);
+        }
+        if (event.getPrimingBlock() != null) {
+            return new Actor(SYSTEM_UUID, label + ": "
+                    + readableEnum(event.getPrimingBlock().getType().name()));
+        }
+        return new Actor(SYSTEM_UUID, label);
+    }
+
     private Actor actorForTntPrime(TNTPrimeEvent event) {
         String causeLabel = "TNT Prime: " + readableEnum(event.getCause().name());
         Entity primingEntity = event.getPrimingEntity();
