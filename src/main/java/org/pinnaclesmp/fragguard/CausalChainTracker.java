@@ -138,6 +138,12 @@ final class CausalChainTracker {
         return link.attribution;
     }
 
+    CausalAttribution observedAt(Position physicalSource, long now, String cause) {
+        sweep(now);
+        Link link = uniqueConnected(physicalSource, now);
+        return link == null ? null : link.touch(now, cause).attribution;
+    }
+
     CausalAttribution prime(Position tntBlock, Position primingBlock,
                             UUID primingEntity, CausalAttribution directPlayer, long now) {
         sweep(now);
