@@ -287,8 +287,9 @@ final class Database {
                     INSERT INTO block_changes
                     (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                      before_data, after_data, world_uuid, chunk_x, chunk_z,
-                     before_entity_data, after_entity_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     before_entity_data, after_entity_data, causal_player_uuid, causal_player_name,
+                     causal_chain_id, causal_cause_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, Statement.RETURN_GENERATED_KEYS)) {
                 for (RequiredBlockChange required : requiredChanges) {
                     BlockChange change = required.change();
@@ -307,6 +308,10 @@ final class Database {
                     statement.setInt(13, change.z() >> 4);
                     statement.setBytes(14, change.beforeEntityData());
                     statement.setBytes(15, change.afterEntityData());
+                    statement.setString(16, change.causalPlayerUuid());
+                    statement.setString(17, change.causalPlayerName());
+                    statement.setString(18, change.causalChainId());
+                    statement.setString(19, change.causalCauseType());
                     statement.executeUpdate();
                     try (ResultSet keys = statement.getGeneratedKeys()) {
                         if (!keys.next()) {
@@ -344,8 +349,9 @@ final class Database {
                          INSERT INTO block_changes
                          (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                           before_data, after_data, world_uuid, chunk_x, chunk_z,
-                          before_entity_data, after_entity_data, rollback_pending)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                          before_entity_data, after_entity_data, rollback_pending,
+                          causal_player_uuid, causal_player_name, causal_chain_id, causal_cause_type)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                          """, Statement.RETURN_GENERATED_KEYS);
                  PreparedStatement link = databaseConnection.prepareStatement("""
                          UPDATE rollback_job_changes
@@ -379,6 +385,10 @@ final class Database {
                     insert.setInt(13, change.z() >> 4);
                     insert.setBytes(14, change.beforeEntityData());
                     insert.setBytes(15, change.afterEntityData());
+                    insert.setString(16, change.causalPlayerUuid());
+                    insert.setString(17, change.causalPlayerName());
+                    insert.setString(18, change.causalChainId());
+                    insert.setString(19, change.causalCauseType());
                     insert.executeUpdate();
 
                     long auditId;
@@ -1552,8 +1562,9 @@ final class Database {
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                          before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick,
-                         before_entity_data, after_entity_data)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         before_entity_data, after_entity_data, causal_player_uuid,
+                         causal_player_name, causal_chain_id, causal_cause_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement deleteNoOp = connection.prepareStatement("""
                         DELETE FROM block_changes
@@ -1611,6 +1622,10 @@ final class Database {
                         insert.setLong(15, pending.key.tick());
                         insert.setBytes(16, change.beforeEntityData());
                         insert.setBytes(17, change.afterEntityData());
+                        insert.setString(18, change.causalPlayerUuid());
+                        insert.setString(19, change.causalPlayerName());
+                        insert.setString(20, change.causalChainId());
+                        insert.setString(21, change.causalCauseType());
                         insert.executeUpdate();
                         try (ResultSet keys = insert.getGeneratedKeys()) {
                             if (!keys.next()) {
