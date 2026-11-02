@@ -134,7 +134,7 @@ class HistoricalPlayerResolverTest {
         assertEquals(OLD_PLAYER, database.resolveHistoricalPlayerAsync("OlderName").join().uuid());
         assertEquals("NewerName", database.resolveHistoricalPlayerAsync("OlderName").join().latestName());
         assertEquals(1, database.loadRollbackChangesAsync(job.id(), false).join().size());
-        assertEquals(2, database.lookupAsync("world", 0, 0, 10, 1, 20, 30).join().totalRows());
+        assertEquals(2, database.lookupSinceAsync("world", 0, 0, 10, 1, 20, 0L).join().totalRows());
 
         try (Connection connection = open(); Statement statement = connection.createStatement()) {
             try (ResultSet rows = statement.executeQuery("PRAGMA user_version")) {
