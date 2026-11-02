@@ -723,18 +723,28 @@ final class BlockChangeListener implements Listener {
     }
 
     private void logBlockAfterServerAppliesChange(
-            Block block,
-            ChangeAction action,
-            String actorUuid,
-            String actorName
+            Block block, ChangeAction action, String actorUuid, String actorName
+    ) {
+        logBlockAfterServerAppliesChange(block, action, actorUuid, actorName, null);
+    }
+
+    private void logBlockAfterServerAppliesChange(
+            Block block, ChangeAction action, String actorUuid, String actorName,
+            CausalAttribution attribution
     ) {
         Map<BlockPosition, CapturedBlockState> beforeStates = new LinkedHashMap<>();
         captureBefore(beforeStates, block);
-        logAfterServerAppliesChange(beforeStates, action, actorUuid, actorName);
+        logAfterServerAppliesChange(beforeStates, action, actorUuid, actorName, attribution);
     }
 
     private void logAfterServerAppliesChange(Map<BlockPosition, CapturedBlockState> beforeStates,
                                              ChangeAction action, String actorUuid, String actorName) {
+        logAfterServerAppliesChange(beforeStates, action, actorUuid, actorName, null);
+    }
+
+    private void logAfterServerAppliesChange(Map<BlockPosition, CapturedBlockState> beforeStates,
+                                             ChangeAction action, String actorUuid, String actorName,
+                                             CausalAttribution attribution) {
         if (BlockLoggingSuppression.isSuppressed() || beforeStates.isEmpty()) {
             return;
         }
@@ -749,7 +759,8 @@ final class BlockChangeListener implements Listener {
                         serverTick,
                         action,
                         actorUuid,
-                        actorName
+                        actorName,
+                        attribution
                 )
         );
     }
@@ -771,11 +782,16 @@ final class BlockChangeListener implements Listener {
 
     private void writeCapturedChanges(
             Map<BlockPosition, CapturedBlockState> beforeStates,
-            long happenedAt,
-            long serverTick,
-            ChangeAction action,
-            String actorUuid,
-            String actorName
+            long happenedAt, long serverTick, ChangeAction action,
+            String actorUuid, String actorName
+    ) {
+        writeCapturedChanges(beforeStates, happenedAt, serverTick, action, actorUuid, actorName, null);
+    }
+
+    private void writeCapturedChanges(
+            Map<BlockPosition, CapturedBlockState> beforeStates,
+            long happenedAt, long serverTick, ChangeAction action,
+            String actorUuid, String actorName, CausalAttribution attribution
     ) {
         for (Map.Entry<BlockPosition, CapturedBlockState> entry : beforeStates.entrySet()) {
             BlockPosition position = entry.getKey();
@@ -815,12 +831,19 @@ final class BlockChangeListener implements Listener {
                     afterData,
                     before.entityData(),
                     afterEntityData
-            ));
+            ).withCausalAttribution(attribution));
         }
     }
 
     private void logNow(Block block, ChangeAction action, String actorUuid, String actorName,
                         String beforeData, String afterData, byte[] beforeEntityData, byte[] afterEntityData) {
+        logNow(block, action, actorUuid, actorName, beforeData, afterData,
+                beforeEntityData, afterEntityData, null);
+    }
+
+    private void logNow(Block block, ChangeAction action, String actorUuid, String actorName,
+                        String beforeData, String afterData, byte[] beforeEntityData, byte[] afterEntityData,
+                        CausalAttribution attribution) {
         if (BlockLoggingSuppression.isSuppressed()
                 || (beforeData.equals(afterData) && Arrays.equals(beforeEntityData, afterEntityData))) {
             return;
@@ -839,7 +862,7 @@ final class BlockChangeListener implements Listener {
                 afterData,
                 beforeEntityData,
                 afterEntityData
-        ));
+        ).withCausalAttribution(attribution));
     }
 
     private void captureLiquidBefore(Map<BlockPosition, CapturedBlockState> beforeStates, Block block) {
