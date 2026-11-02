@@ -826,14 +826,14 @@ class DatabaseTest {
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
             try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
                 assertTrue(version.next());
-                assertEquals(4, version.getInt(1));
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
             }
             try (ResultSet indexes = statement.executeQuery("""
                     SELECT 1 FROM sqlite_master
                     WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
                     """)) {
                 assertFalse(indexes.next(),
-                        "schema v4 must not retain or rebuild the persistent same-tick coalescing index");
+                        "schema v5 must not retain or rebuild the persistent same-tick coalescing index");
             }
         }
     }
@@ -855,7 +855,7 @@ class DatabaseTest {
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
             try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
                 assertTrue(version.next());
-                assertEquals(4, version.getInt(1));
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
             }
             try (ResultSet indexes = statement.executeQuery("""
                     SELECT 1 FROM sqlite_master
