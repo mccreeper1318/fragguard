@@ -202,6 +202,22 @@ class PlayerLookupDatabaseTest {
                 assertTrue(explain.getString("detail").contains("idx_fg_causal_name_uuid"),
                         "historical causal-only names must use the index");
             }
+            // The latest-name resolver must read at most one index-ordered
+            // candidate from each branch, never sort a prolific player's rows.
+            for (String[] plan : new String[][]{
+                    {"EXPLAIN QUERY PLAN SELECT actor_name, happened_at, id FROM block_changes "
+                            + "WHERE actor_uuid = '" + PLAYER + "' "
+                            + "ORDER BY happened_at DESC, id DESC LIMIT 1", "idx_fg_actor_time"},
+                    {"EXPLAIN QUERY PLAN SELECT causal_player_name, happened_at, id FROM block_changes "
+                            + "WHERE causal_player_uuid = '" + PLAYER + "' AND causal_player_name IS NOT NULL "
+                            + "ORDER BY happened_at DESC, id DESC LIMIT 1", "idx_fg_causal_actor_time"}
+            }) {
+                try (ResultSet explanation = sql.executeQuery(plan[0])) {
+                    assertTrue(explanation.next());
+                    assertTrue(explanation.getString("detail").contains(plan[1]),
+                            "latest-name resolution needs index seek: " + plan[1]);
+                }
+            }
         }
     }
 
