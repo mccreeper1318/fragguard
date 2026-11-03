@@ -334,6 +334,12 @@ Selective planning for Steve produces **glass -> dirt**, never
 historically protected and no rollback target is generated. Both
 direct edits and attributed TNT/piston effects obey this same rule.
 
+Planning also refuses a stale preview when another recorded change has
+occurred at a selected coordinate **after its snapshot timestamp**. A known
+later edit by another actor is reported as a historical conflict; even a
+later target-player edit requires a fresh plan rather than silently changing
+the preview's scope. Normal `force` does not bypass these protections.
+
 Planning reports reversible coordinates, historical ownership conflicts,
 no-op coordinates, and unavailable/inconsistent history separately.
 The planner checks continuity of block states **and block-entity snapshots**
