@@ -54,7 +54,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     // Tracks queries until their main-thread completion, so cancellation/quit/reload
     // cannot resurrect a preview from an older asynchronous search.
     private final Map<UUID, UUID> pendingRollbackQueries = new HashMap<>();
-    private final Map<UUID, UUID> playerLookupRequests = new HashMap<>();
+    private final Map<UUID, UUID> lookupRequests = new HashMap<>();
     private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
@@ -72,12 +72,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID actor = event.getPlayer().getUniqueId();
         pendingRollbackQueries.remove(actor);
-        playerLookupRequests.remove(actor);
+        lookupRequests.remove(actor);
         removePreviewsFor(actor);
     }
 
     void clearRollbackPreviews() {
-        playerLookupRequests.clear();
+        lookupRequests.clear();
         pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
@@ -148,9 +148,19 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         int centerZ = player.getLocation().getBlockZ();
         String worldName = player.getWorld().getName();
 
+        UUID actor = player.getUniqueId();
+        UUID request = UUID.randomUUID();
+        lookupRequests.put(actor, request);
         player.sendMessage(color("&7Searching block logs in radius &f" + radius + "&7..."));
         database.lookupAsync(worldName, centerX, centerZ, radius, page, pageSize, plugin.getRetentionDays())
                 .whenComplete((lookupPage, throwable) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!request.equals(lookupRequests.get(actor))) {
+                        return; // A newer player or radius lookup replaced this request.
+                    }
+                    lookupRequests.remove(actor);
+                    if (!player.isOnline()) {
+                        return;
+                    }
                     if (throwable != null) {
                         plugin.getLogger().log(Level.WARNING, "FragGuard lookup failed", unwrap(throwable));
                         player.sendMessage(color("&cFragGuard lookup failed. Check console for details."));
@@ -171,17 +181,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
         UUID actor = player.getUniqueId();
         UUID request = UUID.randomUUID();
-        playerLookupRequests.put(actor, request);
+        lookupRequests.put(actor, request);
         int pageSize = Math.min(200, Math.max(1, plugin.getConfig().getInt("lookup-page-size", 15)));
         player.sendMessage(color("&7Searching retained player history across "
                 + (scope.worldName() == null ? "all worlds" : scope.worldName()) + "&7..."));
         database.lookupPlayerAsync(scope.playerArgument(), scope.worldName(),
                         scope.page(), pageSize, scope.durationMillis(), plugin.getRetentionDays())
                 .whenComplete((result, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
-                    if (!request.equals(playerLookupRequests.get(actor))) {
+                    if (!request.equals(lookupRequests.get(actor))) {
                         return; // A later request replaced this one, or the operator disconnected.
                     }
-                    playerLookupRequests.remove(actor);
+                    lookupRequests.remove(actor);
                     if (!player.isOnline()) {
                         return;
                     }
@@ -216,7 +226,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
         long now = System.currentTimeMillis();
         for (PlayerLookupRow row : result.rows()) {
-            String transition = blockTransition(row.beforeData(), row.afterData());
+            String transition = readableBlockData(row.beforeData())
+                    + " &8→ &f" + readableBlockData(row.afterData());
             String action = row.action().displayPastTense();
             if (row.indirectlyAttributedTo(uuid)) {
                 player.sendMessage(color("&b" + result.player().latestName() + " &7caused &e" + action
