@@ -702,7 +702,7 @@ final class Database {
             long snapshotBytes = 0L;
 
             String timelineSql = """
-                    SELECT id, actor_uuid, causal_player_uuid, world,
+                    SELECT id, happened_at, actor_uuid, causal_player_uuid, world,
                            before_data, after_data, before_entity_data, after_entity_data
                     FROM block_changes
                     WHERE rollback_pending = 0 AND world_uuid = ?
@@ -718,19 +718,32 @@ final class Database {
                 var scanner = new SelectivePlayerRollbackPlanner.CoordinateScanner(
                         uuid, position.x(), position.y(), position.z());
                 boolean exceededHistoryLimit = false;
+                boolean newerOtherActor = false;
+                boolean newerTargetActor = false;
                 try (PreparedStatement history = queryStatement(databaseConnection, timelineSql)) {
                     history.setString(1, position.worldUuid());
                     history.setInt(2, position.x());
                     history.setInt(3, position.y());
                     history.setInt(4, position.z());
                     history.setLong(5, cutoff);
-                    history.setLong(6, upper);
+                    history.setLong(6, now);
                     history.setInt(7, SelectivePlayerRollbackPlanner.MAX_HISTORY_ROWS_PER_COORDINATE + 1);
                     try (ResultSet rows = history.executeQuery()) {
                         while (rows.next()) {
                             if (activeQuery != null && activeQuery.isDone()) {
                                 throw new SQLTimeoutException(
                                         "Player rollback planning exceeded its query deadline.");
+                            }
+                            // A known change after the caller's preview snapshot
+                            // makes that preview stale. Never let executor force
+                            // overwrite those recorded later edits. The next
+                            // planning attempt should capture a new snapshot.
+                            if (rows.getLong("happened_at") > upper) {
+                                boolean owned = uuid.equals(rows.getString("actor_uuid"))
+                                        || uuid.equals(rows.getString("causal_player_uuid"));
+                                newerTargetActor = owned;
+                                newerOtherActor = !owned;
+                                break;
                             }
                             try {
                                 scanner.add(new SelectivePlayerRollbackPlanner.HistoryRow(
@@ -745,7 +758,11 @@ final class Database {
                         }
                     }
                 }
-                if (exceededHistoryLimit) {
+                if (newerOtherActor) {
+                    historicalConflicts++;
+                    continue;
+                }
+                if (exceededHistoryLimit || newerTargetActor) {
                     unavailable++;
                     continue;
                 }
