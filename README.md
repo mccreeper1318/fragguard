@@ -35,6 +35,9 @@ Only server operators with `fragguard.admin` can use FragGuard administration co
 /fg help
 /fg lookup r:30
 /fg lookup r:30 p:2
+/fg lookup u:Builder p:2
+/fg lookup u:Builder t:2d p:2
+/fg lookup u:Builder w:world_nether t:6h
 /fg rollback r:30 t:2d 7h 15m
 /fg rollback confirm <token>
 /fg undo <job-id>
@@ -103,6 +106,43 @@ Shows recent block-change logs in a full-height cylinder around the current posi
 ```text
 /fg lookup r:30 p:2
 ```
+
+### Global player lookup
+
+Player scope is separate from nearby radius lookup. Use **one** scope at a time:
+`r:<radius>` or `u:<username-or-uuid>`; combining them is rejected.
+
+```text
+/fg lookup u:Builder
+/fg lookup u:Builder p:2
+/fg lookup u:Builder t:2d p:2
+/fg lookup u:Builder w:world_nether t:6h
+/fg lookup u:11111111-2222-3333-4444-555555555555
+```
+
+A player lookup searches all worlds by default, regardless of the operator's location.
+`w:<world>` limits it to one world and `t:<duration>` limits it to a recent
+period (such as `t:1d` or `t:6h`); when `t:` is omitted, the full retained
+history is searched, **never older than `retention-days`**. `p:<page>` selects
+a page. Subsequent-page suggestions keep the same player, world and time scope.
+Names are case-insensitive, include historical renames, and can be replaced with
+canonical or compact UUIDs. An ambiguous reused username is rejected so
+FragGuard never selects a player by guesswork.
+
+Results include the latest player name, world, coordinates, action, before/after
+block transition, timestamp and age. They include both directly authored
+changes and **confidently attributed indirect changes** from TNT, projectiles
+and supported piston/flying-machine chains. Indirect rows show the immediate
+physical actor (for example, `Explosion: TNT` or `Piston Extend`) and the
+stored causal type instead of pretending that the player directly broke blocks.
+
+The global player query runs on FragGuard's bounded, cancellable database
+worker after earlier writes are flushed. It uses UUID/time indexes, deterministic
+timestamp+row-ID ordering, and bounded lightweight pages without fetching
+container/other block-entity BLOBs. A new query or logout invalidates an older
+player-lookup completion. It does not alter the existing radius lookup or
+the GUI area lookup's separate Player/Action/Material filters. A future issue
+(#104) will add a dedicated global-player scope to the GUI.
 
 ## Rollback
 
@@ -262,9 +302,9 @@ untraceable TNT duper cycles, and delayed environmental propagation are not
 automatically assigned to the triggering player. Missing attribution is
 preferable to blaming the wrong player.
 
-This is the **attribution foundation**, not the player-scoped rollback feature:
-new player lookup, history conflict protection, and selective rollback are
-implemented in subsequent 26.3-1.2.1 issues. Final integration tests on the
+Causal attribution is now included in command-based global player lookup.
+Player-scoped rollback, historical conflict protection, and the dedicated
+global-player GUI workflow follow in later 26.3-1.2.1 issues. Final integration tests on the
 live Paper server are reserved for the end of the update.
 
 ## Historical player identity and actor indexes
@@ -277,15 +317,17 @@ names belonging to more than one UUID are rejected instead of guessed; unknown
 players also produce a clear error. Environmental/system actors are not treated
 as players.
 
-Database schema **v5** adds indexes for actor UUID/time, actor UUID/world/time,
-and case-insensitive historical usernames. Upgrades from v4 add these indexes
-without rewriting historical rows, container snapshots or saved rollback jobs.
+Database schema **v5** added actor UUID/time, actor UUID/world/time,
+and case-insensitive direct usernames. Schema **v6** added nullable causal
+identity fields and indexed causal UUID/time lookups. Schema **v7** adds an
+index for historical causal usernames. Each migration preserves existing
+history, container snapshots and saved rollback jobs.
 Index creation may take time on large databases; a normal startup migration
 must complete before the server begins using FragGuard's database.
 
-This resolver is an internal foundation for future player-wide lookup, causal
-attribution and selective player rollback. The `u:` command filter and player
-rollback commands will be delivered in subsequent 26.3-1.2.1 issues.
+The shared resolver now supports command-based global player lookup with
+`u:`, including names appearing only in causal history. Selective player
+rollback commands remain part of later 26.3-1.2.1 issues.
 
 ## SQLite native access on Java 24+
 
