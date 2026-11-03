@@ -178,11 +178,40 @@ class SelectivePlayerRollbackPlannerTest {
     @Test
     void missingLegacyContainerAndSignSnapshotsAreUnavailable() {
         for (String block : List.of("minecraft:chest", "minecraft:oak_sign",
-                "minecraft:lectern", "minecraft:barrel", "minecraft:blue_shulker_box")) {
+                "minecraft:lectern", "minecraft:barrel",
+                "minecraft:shulker_box", "minecraft:blue_shulker_box",
+                "minecraft:oak_shelf", "minecraft:bamboo_shelf")) {
             var decision = evaluate(row(1, STEVE, null, block, AIR, null, null));
             assertEquals(SelectivePlayerRollbackPlanner.Status.UNAVAILABLE, decision.status(),
                     "missing historical entity data must never be treated as empty: " + block);
         }
+    }
+
+    @Test
+    void intermediateMissingContainerSnapshotsInvalidateOtherwiseSafeEndpoints() {
+        var missingChest = evaluate(
+                row(2, STEVE, null, "minecraft:chest", DIRT, null, null),
+                row(1, STEVE, null, STONE, "minecraft:chest", null, null));
+        assertEquals(SelectivePlayerRollbackPlanner.Status.UNAVAILABLE, missingChest.status(),
+                "intermediate chest inventory cannot be inferred from two ordinary endpoints");
+        assertNull(missingChest.target());
+
+        var missingShelf = evaluate(
+                row(2, "piston", STEVE, "minecraft:oak_shelf", DIRT, null, null),
+                row(1, STEVE, null, AIR, "minecraft:oak_shelf", null, null));
+        assertEquals(SelectivePlayerRollbackPlanner.Status.UNAVAILABLE, missingShelf.status(),
+                "causally attributed intermediate shelf contents must remain protected");
+    }
+
+    @Test
+    void intermediateFullyCapturedContainerCanStillBeReverted() {
+        byte[] chest = {4, 5, 6};
+        var decision = evaluate(
+                row(2, STEVE, null, "minecraft:chest", DIRT, chest, null),
+                row(1, STEVE, null, STONE, "minecraft:chest", null, chest.clone()));
+        assertEquals(SelectivePlayerRollbackPlanner.Status.REVERSIBLE, decision.status());
+        assertEquals(STONE, decision.target().blockData());
+        assertEquals(DIRT, decision.target().expectedData());
     }
 
     @Test
