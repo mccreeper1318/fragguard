@@ -85,6 +85,7 @@ class CausalAttributionPersistenceTest {
         try (Connection db = open(); Statement stmt = db.createStatement()) {
             stmt.execute("DROP INDEX IF EXISTS idx_fg_causal_actor_time");
             stmt.execute("DROP INDEX IF EXISTS idx_fg_causal_actor_world_time");
+            stmt.execute("DROP INDEX IF EXISTS idx_fg_causal_name_uuid");
             stmt.execute("ALTER TABLE block_changes DROP COLUMN causal_player_uuid");
             stmt.execute("ALTER TABLE block_changes DROP COLUMN causal_player_name");
             stmt.execute("ALTER TABLE block_changes DROP COLUMN causal_chain_id");

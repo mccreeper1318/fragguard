@@ -10,10 +10,10 @@ import java.util.regex.Pattern;
 
 /**
  * Shared resolver for player-scoped lookup and rollback. Names only select a
- * canonical historical UUID: subsequent queries must filter by actor_uuid.
+ * canonical historical UUID: subsequent queries match direct and causal UUIDs.
  *
  * All SQL runs on FragGuard's database worker and uses indexes built by the
- * schema-v5 migration; it never queries online players or an external API.
+ * schema-v5/v6/v7 migrations; it never queries online players or an external API.
  */
 final class HistoricalPlayerResolver {
     private static final Pattern CANONICAL_UUID = Pattern.compile(
@@ -50,42 +50,69 @@ final class HistoricalPlayerResolver {
             player = resolveHistoricalName(connection, value, statements);
         }
 
-        // Resolve by UUID, never by the old supplied name: this returns the most
-        // recent label even after a rename without changing historical ownership.
+        // Resolve by UUID, not by the supplied old username. Each indexed
+        // branch returns only its newest row, so the resolver never sorts or
+        // materializes every block mutation by a prolific player.
         String uuid = player.toString();
-        try (PreparedStatement statement = statements.prepare(connection, """
-                SELECT actor_name FROM block_changes
+        NameCandidate direct = latestName(connection, uuid, statements, """
+                SELECT actor_name AS recorded_name, happened_at, id
+                FROM block_changes
                 WHERE actor_uuid = ?
                 ORDER BY happened_at DESC, id DESC
                 LIMIT 1
-                """)) {
+                """);
+        NameCandidate causal = latestName(connection, uuid, statements, """
+                SELECT causal_player_name AS recorded_name, happened_at, id
+                FROM block_changes
+                WHERE causal_player_uuid = ? AND causal_player_name IS NOT NULL
+                ORDER BY happened_at DESC, id DESC
+                LIMIT 1
+                """);
+        if (direct == null && causal == null) {
+            throw new IdentityException("No retained FragGuard history for player " + value + ".");
+        }
+        NameCandidate newest = causal == null || direct != null && (
+                direct.happenedAt() > causal.happenedAt()
+                        || direct.happenedAt() == causal.happenedAt()
+                        && direct.id() >= causal.id()) ? direct : causal;
+        String display = newest.name();
+        return new HistoricalPlayerIdentity(player,
+                display == null || display.isBlank() ? uuid : display);
+    }
+
+    private static NameCandidate latestName(Connection connection, String uuid,
+                                           StatementFactory statements, String sql) throws SQLException {
+        try (PreparedStatement statement = statements.prepare(connection, sql)) {
             statement.setString(1, uuid);
-            try (ResultSet row = statement.executeQuery()) {
-                if (!row.next()) {
-                    throw new IdentityException("No retained FragGuard history for player " + value + ".");
-                }
-                String display = row.getString("actor_name");
-                if (display == null || display.isBlank()) {
-                    display = uuid;
-                }
-                return new HistoricalPlayerIdentity(player, display);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? new NameCandidate(
+                        result.getString("recorded_name"), result.getLong("happened_at"),
+                        result.getLong("id")) : null;
             }
         }
+    }
+
+    private record NameCandidate(String name, long happenedAt, long id) {
     }
 
     private static UUID resolveHistoricalName(Connection connection, String name,
                                              StatementFactory statements) throws SQLException {
         UUID candidate = null;
-        // actor_name COLLATE NOCASE is indexed; DISTINCT only compares UUIDs
-        // for rows matching the given name, not the entire history table.
+        // Both name lookups are indexed (schema v7), even when a player has
+        // only indirect events and no directly authored block changes.
         try (PreparedStatement statement = statements.prepare(connection, """
-                SELECT DISTINCT actor_uuid FROM block_changes
+                SELECT actor_uuid AS player_uuid FROM block_changes
                 WHERE actor_name = ? COLLATE NOCASE
+                UNION
+                SELECT causal_player_uuid AS player_uuid FROM block_changes
+                WHERE causal_player_name = ? COLLATE NOCASE
+                  AND causal_player_uuid IS NOT NULL
                 """)) {
             statement.setString(1, name);
+            statement.setString(2, name);
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
-                    UUID found = parseUuid(rows.getString("actor_uuid"));
+                    UUID found = parseUuid(rows.getString("player_uuid"));
                     if (found == null) {
                         continue; // environmental/system labels are not player identities
                     }

@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 6;
+    static final int SCHEMA_VERSION = 7;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int MAX_PERSISTED_COALESCE_CANDIDATES = 4_096;
@@ -530,6 +530,87 @@ final class Database {
                 this::queryStatement), true);
     }
 
+    /**
+     * Global player-scoped history: no center/radius and no block-entity BLOBs.
+     * Name resolution, count and page selection run on the same ordered database
+     * worker behind its write barrier, with cancellable query statements.
+     */
+    CompletableFuture<PlayerLookupPage> lookupPlayerAsync(
+            String playerArgument, String worldName, int page, int pageSize,
+            long durationMillis, int retentionDays) {
+        return submit(connection -> {
+            long now = System.currentTimeMillis();
+            long retainedMillis = TimeUnit.DAYS.toMillis(Math.max(1, retentionDays));
+            long window = durationMillis <= 0L ? retainedMillis : Math.min(retainedMillis, durationMillis);
+            long cutoff = now - window;
+
+            HistoricalPlayerResolver.HistoricalPlayerIdentity player =
+                    HistoricalPlayerResolver.resolve(connection, playerArgument, this::queryStatement);
+            int safeSize = Math.min(200, Math.max(1, pageSize));
+            String uuid = player.uuid().toString();
+            String worldFilter = worldName == null ? "" : " AND world = ?";
+            String where = "rollback_pending = 0 AND happened_at >= ? AND happened_at <= ?"
+                    + " AND " + playerOwnershipPredicate() + worldFilter;
+
+            long total;
+            try (PreparedStatement count = queryStatement(connection,
+                    "SELECT COUNT(*) FROM block_changes WHERE " + where)) {
+                bindPlayerLookup(count, cutoff, now, uuid, worldName);
+                try (ResultSet rows = count.executeQuery()) {
+                    total = rows.next() ? rows.getLong(1) : 0L;
+                }
+            }
+            int displayTotal = (int) Math.min(Integer.MAX_VALUE, total);
+            int totalPages = Math.max(1, (int) Math.ceil(displayTotal / (double) safeSize));
+            int safePage = Math.max(1, Math.min(page, totalPages));
+            long offset = (long) (safePage - 1) * safeSize;
+            String sql = """
+                    SELECT id, happened_at, actor_uuid, actor_name,
+                           causal_player_uuid, causal_player_name, causal_cause_type,
+                           world, x, y, z, action, before_data, after_data,
+                           CASE WHEN before_entity_data IS NULL AND after_entity_data IS NULL
+                                THEN 0 ELSE 1 END AS has_block_entity_data
+                    FROM block_changes
+                    WHERE %s
+                    ORDER BY happened_at DESC, id DESC
+                    LIMIT ? OFFSET ?
+                    """.formatted(where);
+            List<PlayerLookupRow> history = new ArrayList<>(Math.min(safeSize, 100));
+            try (PreparedStatement select = queryStatement(connection, sql)) {
+                int index = bindPlayerLookup(select, cutoff, now, uuid, worldName);
+                select.setInt(index++, safeSize);
+                select.setLong(index, offset);
+                try (ResultSet rows = select.executeQuery()) {
+                    while (rows.next()) {
+                        history.add(new PlayerLookupRow(
+                                rows.getLong("id"), rows.getLong("happened_at"),
+                                rows.getString("actor_uuid"), rows.getString("actor_name"),
+                                rows.getString("causal_player_uuid"), rows.getString("causal_player_name"),
+                                rows.getString("causal_cause_type"), rows.getString("world"),
+                                rows.getInt("x"), rows.getInt("y"), rows.getInt("z"),
+                                ChangeAction.fromStorageId(rows.getString("action")),
+                                rows.getString("before_data"), rows.getString("after_data"),
+                                rows.getInt("has_block_entity_data") != 0));
+                    }
+                }
+            }
+            return new PlayerLookupPage(player, history, safePage, safeSize, displayTotal);
+        }, true);
+    }
+
+    private int bindPlayerLookup(PreparedStatement statement, long cutoff, long now,
+                                 String uuid, String worldName) throws SQLException {
+        int index = 1;
+        statement.setLong(index++, cutoff);
+        statement.setLong(index++, now);
+        statement.setString(index++, uuid);
+        statement.setString(index++, uuid);
+        if (worldName != null) {
+            statement.setString(index++, worldName);
+        }
+        return index;
+    }
+
     CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
                                               int page, int pageSize, int retentionDays) {
         String worldUuid = resolveWorldUuid(worldName);
@@ -1005,6 +1086,7 @@ final class Database {
                         case 2 -> migrateRollbackSafetySchema(databaseConnection);
                         case 4 -> migrateHistoricalActorIndexes(databaseConnection);
                         case 5 -> migrateCausalAttributionSchema(databaseConnection);
+                        case 6 -> migrateCausalPlayerNameIndex(databaseConnection);
                         default -> throw new SQLException("No FragGuard database migration exists for schema version "
                                 + previousVersion + ".");
                     }
@@ -1381,6 +1463,17 @@ final class Database {
             statement.executeUpdate("""
                     CREATE INDEX IF NOT EXISTS idx_fg_causal_actor_world_time
                     ON block_changes(causal_player_uuid, world_uuid, happened_at DESC, id DESC)
+                    WHERE causal_player_uuid IS NOT NULL
+                    """);
+        }
+    }
+
+    private void migrateCausalPlayerNameIndex(Connection databaseConnection) throws SQLException {
+        startupStage = "indexing causal player names for cross-world history lookup";
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_causal_name_uuid
+                    ON block_changes(causal_player_name COLLATE NOCASE, causal_player_uuid)
                     WHERE causal_player_uuid IS NOT NULL
                     """);
         }
