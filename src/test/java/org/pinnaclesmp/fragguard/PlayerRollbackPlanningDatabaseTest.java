@@ -106,7 +106,8 @@ class PlayerRollbackPlanningDatabaseTest {
         var force = plan(STEVE, base, now, true, 30, 100, 1024);
         assertEquals(1, normal.targets().size());
         assertEquals(1, force.targets().size());
-        assertEquals(3, normal.historicalConflicts());
+        assertEquals(4, normal.historicalConflicts(),
+                "the reversible latest Steve edit also has older Steve work protected behind Alex");
         assertEquals(normal.historicalConflicts(), force.historicalConflicts());
         assertEquals(2, normal.targets().getFirst().x());
         assertEquals(DIRT, normal.targets().getFirst().blockData());
