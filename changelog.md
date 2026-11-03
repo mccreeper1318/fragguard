@@ -7,6 +7,9 @@
 - Updated README build instructions for 26.3-1.2.1.
 - Updated artifact GitHub Actions to upload 7.0.2 and download 8.0.2 (#122).
 - Updated Gradle wrapper to 9.8.1 (#123).
+- Updated Gradle wrapper to 9.8.2 (#127).
+- Updated Java setup to 6.1.0 and Gradle setup to 6.4.1 in GitHub Actions (#132).
+- Updated SQLite JDBC to 3.54.1.0 (#133).
 - Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
 - Improved rollback boundary visibility, sampling, and configuration (#99).
 - Added UUID-based historical player resolution and actor query indexes (#100).
