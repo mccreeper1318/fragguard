@@ -113,8 +113,10 @@ class BlockChangeListenerTest {
             harness.runNextTick();
 
             BlockChange change = harness.captureSingleChange();
-            assertEquals(PLAYER_UUID.toString(), change.actorUuid());
-            assertEquals("Builder", change.actorName());
+            assertEquals(explosive.getUniqueId().toString(), change.actorUuid(),
+                    "physical explosive entity must remain the immediate actor");
+            assertEquals(PLAYER_UUID.toString(), change.causalPlayerUuid());
+            assertEquals("Builder", change.causalPlayerName());
             assertEquals(ChangeAction.EXPLOSION, change.action());
         }
     }
@@ -171,6 +173,11 @@ class BlockChangeListenerTest {
             assertEquals(ChangeAction.TNT_PRIME, change.action());
             assertEquals(expectedActorUuid, change.actorUuid());
             assertEquals(expectedActorName, change.actorName());
+            if (primingEntity instanceof Player || primingEntity instanceof Projectile) {
+                assertEquals(PLAYER_UUID.toString(), change.causalPlayerUuid());
+            } else {
+                assertEquals(null, change.causalPlayerUuid());
+            }
             assertEquals("minecraft:tnt[unstable=false]", change.beforeData());
             assertEquals("minecraft:air", change.afterData());
         }
@@ -240,6 +247,7 @@ class BlockChangeListenerTest {
 
         Projectile projectile = mock(Projectile.class);
         when(projectile.getShooter()).thenReturn(player);
+        when(projectile.getUniqueId()).thenReturn(UUID.fromString("9a50eb16-57e2-416d-a345-3dc126b5bf0e"));
 
         UUID creeperUuid = UUID.fromString("d5817df9-f062-4f5e-a0dd-ac328f570fa7");
         Entity creeper = mock(Entity.class);
@@ -252,7 +260,7 @@ class BlockChangeListenerTest {
                 Arguments.of("fire priming", TNTPrimeEvent.PrimeCause.FIRE, null,
                         Material.FIRE, "SYSTEM", "TNT Prime: Fire: Fire"),
                 Arguments.of("player-fired projectile priming", TNTPrimeEvent.PrimeCause.PROJECTILE, projectile,
-                        null, PLAYER_UUID.toString(), "Builder"),
+                        null, "9a50eb16-57e2-416d-a345-3dc126b5bf0e", "TNT Prime: Projectile: Entity"),
                 Arguments.of("entity explosion priming", TNTPrimeEvent.PrimeCause.EXPLOSION, creeper,
                         null, creeperUuid.toString(), "TNT Prime: Explosion: Creeper"),
                 Arguments.of("direct player priming", TNTPrimeEvent.PrimeCause.PLAYER, player,

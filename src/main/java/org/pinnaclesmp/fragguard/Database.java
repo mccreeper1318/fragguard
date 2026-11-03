@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 5;
+    static final int SCHEMA_VERSION = 6;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int MAX_PERSISTED_COALESCE_CANDIDATES = 4_096;
@@ -287,8 +287,9 @@ final class Database {
                     INSERT INTO block_changes
                     (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                      before_data, after_data, world_uuid, chunk_x, chunk_z,
-                     before_entity_data, after_entity_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     before_entity_data, after_entity_data, causal_player_uuid, causal_player_name,
+                     causal_chain_id, causal_cause_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, Statement.RETURN_GENERATED_KEYS)) {
                 for (RequiredBlockChange required : requiredChanges) {
                     BlockChange change = required.change();
@@ -307,6 +308,10 @@ final class Database {
                     statement.setInt(13, change.z() >> 4);
                     statement.setBytes(14, change.beforeEntityData());
                     statement.setBytes(15, change.afterEntityData());
+                    statement.setString(16, change.causalPlayerUuid());
+                    statement.setString(17, change.causalPlayerName());
+                    statement.setString(18, change.causalChainId());
+                    statement.setString(19, change.causalCauseType());
                     statement.executeUpdate();
                     try (ResultSet keys = statement.getGeneratedKeys()) {
                         if (!keys.next()) {
@@ -344,8 +349,9 @@ final class Database {
                          INSERT INTO block_changes
                          (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                           before_data, after_data, world_uuid, chunk_x, chunk_z,
-                          before_entity_data, after_entity_data, rollback_pending)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                          before_entity_data, after_entity_data, rollback_pending,
+                          causal_player_uuid, causal_player_name, causal_chain_id, causal_cause_type)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                          """, Statement.RETURN_GENERATED_KEYS);
                  PreparedStatement link = databaseConnection.prepareStatement("""
                          UPDATE rollback_job_changes
@@ -379,6 +385,10 @@ final class Database {
                     insert.setInt(13, change.z() >> 4);
                     insert.setBytes(14, change.beforeEntityData());
                     insert.setBytes(15, change.afterEntityData());
+                    insert.setString(16, change.causalPlayerUuid());
+                    insert.setString(17, change.causalPlayerName());
+                    insert.setString(18, change.causalChainId());
+                    insert.setString(19, change.causalCauseType());
                     insert.executeUpdate();
 
                     long auditId;
@@ -972,7 +982,7 @@ final class Database {
         if (existingSchema && MigrationStoragePolicy.requiresFullBackup(schemaVersion)) {
             migrationBackup = createMigrationBackup(databaseConnection, schemaVersion);
         } else if (existingSchema && schemaVersion >= 3) {
-            plugin.getLogger().info("FragGuard schema v3+ migrations only update indexes; "
+            plugin.getLogger().info("FragGuard schema v3+ migrations only update metadata and indexes; "
                     + "skipping a full database copy.");
         }
 
@@ -994,6 +1004,7 @@ final class Database {
                         case 1 -> migrateBlockEntitySchema(databaseConnection);
                         case 2 -> migrateRollbackSafetySchema(databaseConnection);
                         case 4 -> migrateHistoricalActorIndexes(databaseConnection);
+                        case 5 -> migrateCausalAttributionSchema(databaseConnection);
                         default -> throw new SQLException("No FragGuard database migration exists for schema version "
                                 + previousVersion + ".");
                     }
@@ -1355,6 +1366,31 @@ final class Database {
         }
     }
 
+    private void migrateCausalAttributionSchema(Connection databaseConnection) throws SQLException {
+        startupStage = "adding optional causal attribution to historical block records";
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_player_uuid", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_player_name", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_chain_id", "TEXT");
+        addColumnIfMissing(databaseConnection, "block_changes", "causal_cause_type", "TEXT");
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_causal_actor_time
+                    ON block_changes(causal_player_uuid, happened_at DESC, id DESC)
+                    WHERE causal_player_uuid IS NOT NULL
+                    """);
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_causal_actor_world_time
+                    ON block_changes(causal_player_uuid, world_uuid, happened_at DESC, id DESC)
+                    WHERE causal_player_uuid IS NOT NULL
+                    """);
+        }
+    }
+
+    /** Shared ownership condition for player lookup/rollback in #101/#102. */
+    static String playerOwnershipPredicate() {
+        return "(actor_uuid = ? OR causal_player_uuid = ?)";
+    }
+
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
             throws SQLException {
         try (PreparedStatement changes = databaseConnection.prepareStatement("""
@@ -1519,6 +1555,10 @@ final class Database {
                           AND actor_uuid = ?
                           AND actor_name = ?
                           AND action = ?
+                          AND causal_player_uuid IS ?
+                          AND causal_player_name IS ?
+                          AND causal_chain_id IS ?
+                          AND causal_cause_type IS ?
                           AND after_data = ?
                           AND ((after_entity_data IS NULL AND ? IS NULL) OR after_entity_data = ?)
                         """);
@@ -1526,8 +1566,9 @@ final class Database {
                         INSERT INTO block_changes
                         (happened_at, actor_uuid, actor_name, world, x, y, z, action,
                          before_data, after_data, world_uuid, chunk_x, chunk_z, coalesce_session, server_tick,
-                         before_entity_data, after_entity_data)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         before_entity_data, after_entity_data, causal_player_uuid,
+                         causal_player_name, causal_chain_id, causal_cause_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement deleteNoOp = connection.prepareStatement("""
                         DELETE FROM block_changes
@@ -1552,9 +1593,13 @@ final class Database {
                             update.setString(4, candidate.actorUuid());
                             update.setString(5, candidate.actorName());
                             update.setString(6, candidate.action().storageId());
-                            update.setString(7, candidate.afterData());
-                            update.setBytes(8, candidate.afterEntityData());
-                            update.setBytes(9, candidate.afterEntityData());
+                            update.setString(7, candidate.causalPlayerUuid());
+                            update.setString(8, candidate.causalPlayerName());
+                            update.setString(9, candidate.causalChainId());
+                            update.setString(10, candidate.causalCauseType());
+                            update.setString(11, candidate.afterData());
+                            update.setBytes(12, candidate.afterEntityData());
+                            update.setBytes(13, candidate.afterEntityData());
                             if (update.executeUpdate() == 1) {
                                 coalesces++;
                                 deleteNoOp.setLong(1, candidate.rowId());
@@ -1585,6 +1630,10 @@ final class Database {
                         insert.setLong(15, pending.key.tick());
                         insert.setBytes(16, change.beforeEntityData());
                         insert.setBytes(17, change.afterEntityData());
+                        insert.setString(18, change.causalPlayerUuid());
+                        insert.setString(19, change.causalPlayerName());
+                        insert.setString(20, change.causalChainId());
+                        insert.setString(21, change.causalCauseType());
                         insert.executeUpdate();
                         try (ResultSet keys = insert.getGeneratedKeys()) {
                             if (!keys.next()) {
@@ -2024,6 +2073,8 @@ final class Database {
         return Objects.equals(previous.actorUuid(), latest.actorUuid())
                 && Objects.equals(previous.actorName(), latest.actorName())
                 && previous.action() == latest.action()
+                && sameCausalAttribution(previous.causalPlayerUuid(), previous.causalPlayerName(),
+                        previous.causalChainId(), previous.causalCauseType(), latest)
                 && sameState(previous.afterData(), previous.afterEntityData(),
                         latest.beforeData(), latest.beforeEntityData());
     }
@@ -2032,8 +2083,18 @@ final class Database {
         return Objects.equals(previous.actorUuid(), latest.actorUuid())
                 && Objects.equals(previous.actorName(), latest.actorName())
                 && previous.action() == latest.action()
+                && sameCausalAttribution(previous.causalPlayerUuid(), previous.causalPlayerName(),
+                        previous.causalChainId(), previous.causalCauseType(), latest)
                 && sameState(previous.afterData(), previous.afterEntityData(),
                         latest.beforeData(), latest.beforeEntityData());
+    }
+
+    private static boolean sameCausalAttribution(String uuid, String name, String chain,
+                                                  String cause, BlockChange change) {
+        return Objects.equals(uuid, change.causalPlayerUuid())
+                && Objects.equals(name, change.causalPlayerName())
+                && Objects.equals(chain, change.causalChainId())
+                && Objects.equals(cause, change.causalCauseType());
     }
 
     private static PersistedCoalesceCandidate persistedCandidate(long rowId, BlockChange change) {
@@ -2041,7 +2102,8 @@ final class Database {
                 ? null
                 : Arrays.copyOf(change.afterEntityData(), change.afterEntityData().length);
         return new PersistedCoalesceCandidate(rowId, change.actorUuid(), change.actorName(), change.action(),
-                change.afterData(), entityData);
+                change.causalPlayerUuid(), change.causalPlayerName(), change.causalChainId(),
+                change.causalCauseType(), change.afterData(), entityData);
     }
 
     private void applyPersistedCoalesceCandidateChanges(
@@ -2079,7 +2141,9 @@ final class Database {
     private BlockChange merge(BlockChange previous, BlockChange latest, long serverTick) {
         return new BlockChange(previous.happenedAt(), serverTick, latest.actorUuid(), latest.actorName(), previous.worldName(),
                 previous.x(), previous.y(), previous.z(), latest.action(), previous.beforeData(), latest.afterData(),
-                previous.beforeEntityData(), latest.afterEntityData());
+                previous.beforeEntityData(), latest.afterEntityData(),
+                latest.causalPlayerUuid(), latest.causalPlayerName(),
+                latest.causalChainId(), latest.causalCauseType());
     }
 
     private static boolean sameState(String firstData, byte[] firstEntityData,
@@ -2167,6 +2231,10 @@ final class Database {
             String actorUuid,
             String actorName,
             ChangeAction action,
+            String causalPlayerUuid,
+            String causalPlayerName,
+            String causalChainId,
+            String causalCauseType,
             String afterData,
             byte[] afterEntityData
     ) {

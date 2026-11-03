@@ -223,6 +223,50 @@ The old `gui-lookup-max-rows` hard refusal is no longer used. Existing server co
 
 Changing grouping thresholds changes only presentation. Exact raw history remains stored and reachable.
 
+## Causal player attribution for TNT and machinery
+
+FragGuard's schema **v6** preserves the immediate physical source in
+`actor_uuid`/`actor_name` and records optional, separate
+`causal_player_uuid`, `causal_player_name`, `causal_chain_id`, and
+`causal_cause_type`. The v5-to-v6 migration adds nullable columns and
+indexed causal UUID/time queries **without rewriting older history or rollback jobs**.
+Unattributed historical rows remain valid and their causal fields are null.
+Player-wide lookup and rollback in follow-up issues #101/#102 will match both
+the direct actor UUID and the causal player UUID; the persisted physical cause
+will remain available for inspection.
+
+Supported evidence includes direct player TNT ignition, player-launched
+projectiles, TNT-to-TNT priming with an observable entity source, and TNT
+entities spawned at an **exact** recently observed priming location.
+Actual player-operated levers, buttons and pressure plates (not passive
+right-clicks on pistons or observers), directly altered mechanism components,
+live redstone updates, and piston movements form a bounded graph of
+actual component and block movement positions. An active, connected component
+can attribute a piston or TNT at that component, including an observable
+piston-driven TNT duplicator. A detached or ambiguously powered machine, a
+different player's restart/modification, or a source absent from Paper's events
+fails closed to system/physical attribution. Merely being near a player, or
+happening after an earlier interaction, does not confer ownership.
+
+Causal links are maintained **only in memory**; they are never resumed after
+restart. Mechanism links expire after 4 seconds idle or 30 seconds total.
+An individually observed TNT entity is retained up to 60 seconds from its
+own spawn to accommodate slow fuse progression at reduced TPS. No entity
+can restart expired mechanism ownership merely by existing nearby.
+Tracked mechanisms cannot extend farther than 96 blocks on any axis from
+the original activation, and are capped to 2,048 block links, 512 TNT
+entity links, and 256 recent prime locations. A world unload, plugin reload/disable or memory pressure
+clears relevant links. Cross-session or conflicting ownership invalidates the
+claim instead of guessing. Fires, unobservable redstone components,
+untraceable TNT duper cycles, and delayed environmental propagation are not
+automatically assigned to the triggering player. Missing attribution is
+preferable to blaming the wrong player.
+
+This is the **attribution foundation**, not the player-scoped rollback feature:
+new player lookup, history conflict protection, and selective rollback are
+implemented in subsequent 26.3-1.2.1 issues. Final integration tests on the
+live Paper server are reserved for the end of the update.
+
 ## Historical player identity and actor indexes
 
 FragGuard resolves players from **retained block history** rather than online player
