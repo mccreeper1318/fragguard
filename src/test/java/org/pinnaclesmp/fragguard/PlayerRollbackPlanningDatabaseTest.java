@@ -162,6 +162,32 @@ class PlayerRollbackPlanningDatabaseTest {
     }
 
     @Test
+    void knownPostSnapshotWritesCannotBeOverwrittenEvenInForceMode() throws Exception {
+        database = start();
+        long now = System.currentTimeMillis();
+        database.insertRequiredAsync(List.of(
+                change(now - 10_000, STEVE, "Steve", "world", 11, AIR, STONE),
+                change(now - 8_000, ALEX, "Alex", "world", 11, STONE, GLASS),
+                change(now - 10_000, STEVE, "Steve", "world", 12, AIR, STONE),
+                change(now - 8_000, STEVE, "Steve", "world", 12, STONE, DIRT)
+        )).join();
+        long snapshotBeforeLaterWrites = now - 9_000;
+        var normal = plan(STEVE, now - 20_000, snapshotBeforeLaterWrites,
+                false, 30, 100, 1024);
+        var force = plan(STEVE, now - 20_000, snapshotBeforeLaterWrites,
+                true, 30, 100, 1024);
+        assertTrue(normal.targets().isEmpty());
+        assertTrue(force.targets().isEmpty(),
+                "force must not apply a stale plan over newer recorded ownership");
+        assertEquals(1, normal.historicalConflicts(),
+                "another player's known post-snapshot edit is a historical conflict");
+        assertEquals(1, normal.unavailable(),
+                "even the target player's post-snapshot edit requires a fresh preview");
+        assertEquals(normal.historicalConflicts(), force.historicalConflicts());
+        assertEquals(normal.unavailable(), force.unavailable());
+    }
+
+    @Test
     void enforcesTimeRetentionAndConfiguredBlockAndSnapshotBounds()
             throws Exception {
         database = start();
