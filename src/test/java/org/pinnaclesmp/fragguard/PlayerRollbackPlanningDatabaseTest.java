@@ -138,13 +138,20 @@ class PlayerRollbackPlanningDatabaseTest {
                         "minecraft:chest", "minecraft:chest", null, middle),
                 // A physically inconsistent ledger cannot be used to plan.
                 change(base + 1000, STEVE, "Steve", "world", 5, AIR, STONE),
-                change(base + 2000, STEVE, "Steve", "world", 5, DIRT, GLASS)
+                change(base + 2000, STEVE, "Steve", "world", 5, DIRT, GLASS),
+                // Both endpoints are ordinary blocks; the intervening
+                // legacy container state is unknown and must be skipped.
+                change(base + 1000, STEVE, "Steve", "world", 6, STONE, "minecraft:shulker_box"),
+                change(base + 2000, STEVE, "Steve", "world", 6, "minecraft:shulker_box", DIRT),
+                change(base + 1000, STEVE, "Steve", "world", 7, STONE, "minecraft:oak_shelf"),
+                change(base + 2000, STEVE, "Steve", "world", 7, "minecraft:oak_shelf", DIRT)
         )).join();
 
         var result = plan(STEVE, base, now, false, 30, 50, 1024);
         assertEquals(2, result.reversibleCoordinates());
         assertEquals(1, result.noOps());
-        assertEquals(2, result.unavailable());
+        assertEquals(4, result.unavailable(),
+                "missing intermediate shulker and shelf snapshots must fail closed");
         assertEquals(0, result.historicalConflicts());
         Map<Integer, RollbackTarget> targets = result.targets().stream()
                 .collect(Collectors.toMap(RollbackTarget::x, Function.identity()));
