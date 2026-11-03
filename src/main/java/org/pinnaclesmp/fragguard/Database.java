@@ -639,6 +639,152 @@ final class Database {
         }, true);
     }
 
+    /**
+     * Plans (but does not apply) a selective rollback. Every candidate's full
+     * retained timeline is checked newest-first. Historical ownership cannot
+     * be bypassed by force; force remains an executor-only live-state option.
+     *
+     * The existing database worker flushes queued writes before this query,
+     * and all statements retain its query timeout/cancellation mechanism.
+     */
+    CompletableFuture<PlayerRollbackPlan> planPlayerRollbackAsync(
+            String playerArgument, long targetTimestamp, long snapshotTimestamp,
+            int maxBlocks, long maxSnapshotBytes, int retentionDays, boolean force) {
+        if (maxBlocks <= 0 || maxSnapshotBytes <= 0) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "Player rollback block and snapshot limits must be positive."));
+        }
+        return submit(databaseConnection -> {
+            long now = System.currentTimeMillis();
+            long upper = Math.min(snapshotTimestamp, now);
+            long cutoff = Math.max(targetTimestamp,
+                    now - TimeUnit.DAYS.toMillis(Math.max(1, retentionDays)));
+            if (cutoff >= upper) {
+                throw new IllegalArgumentException("Player rollback time window is empty or outside retention.");
+            }
+            // Resolve once using stable UUID, including historical/causal-only names.
+            var player = HistoricalPlayerResolver.resolve(databaseConnection,
+                    playerArgument, this::queryStatement);
+            String uuid = player.uuid().toString();
+
+            record Position(String worldUuid, int x, int y, int z) {}
+            List<Position> positions = new ArrayList<>();
+            String candidatesSql = """
+                    SELECT world_uuid, x, y, z
+                    FROM block_changes
+                    WHERE rollback_pending = 0
+                      AND happened_at > ? AND happened_at <= ?
+                      AND (actor_uuid = ? OR causal_player_uuid = ?)
+                    GROUP BY world_uuid, x, y, z
+                    LIMIT ?
+                    """;
+            try (PreparedStatement candidates = queryStatement(databaseConnection, candidatesSql)) {
+                candidates.setLong(1, cutoff);
+                candidates.setLong(2, upper);
+                candidates.setString(3, uuid);
+                candidates.setString(4, uuid);
+                candidates.setLong(5, (long) maxBlocks + 1L);
+                try (ResultSet rows = candidates.executeQuery()) {
+                    while (rows.next()) {
+                        positions.add(new Position(rows.getString("world_uuid"),
+                                rows.getInt("x"), rows.getInt("y"), rows.getInt("z")));
+                    }
+                }
+            }
+            if (positions.size() > maxBlocks) {
+                throw new PlayerRollbackLimitExceededException(maxBlocks);
+            }
+
+            List<RollbackTarget> targets = new ArrayList<>(Math.min(positions.size(), 256));
+            int historicalConflicts = 0;
+            int noOps = 0;
+            int unavailable = 0;
+            long snapshotBytes = 0L;
+
+            String timelineSql = """
+                    SELECT id, actor_uuid, causal_player_uuid, world,
+                           before_data, after_data, before_entity_data, after_entity_data
+                    FROM block_changes
+                    WHERE rollback_pending = 0 AND world_uuid = ?
+                      AND x = ? AND y = ? AND z = ?
+                      AND happened_at > ? AND happened_at <= ?
+                    ORDER BY happened_at DESC, id DESC
+                    LIMIT ?
+                    """;
+            for (Position position : positions) {
+                if (activeQuery != null && activeQuery.isDone()) {
+                    throw new SQLTimeoutException("Player rollback planning exceeded its query deadline.");
+                }
+                var scanner = new SelectivePlayerRollbackPlanner.CoordinateScanner(
+                        uuid, position.x(), position.y(), position.z());
+                boolean exceededHistoryLimit = false;
+                try (PreparedStatement history = queryStatement(databaseConnection, timelineSql)) {
+                    history.setString(1, position.worldUuid());
+                    history.setInt(2, position.x());
+                    history.setInt(3, position.y());
+                    history.setInt(4, position.z());
+                    history.setLong(5, cutoff);
+                    history.setLong(6, upper);
+                    history.setInt(7, SelectivePlayerRollbackPlanner.MAX_HISTORY_ROWS_PER_COORDINATE + 1);
+                    try (ResultSet rows = history.executeQuery()) {
+                        while (rows.next()) {
+                            if (activeQuery != null && activeQuery.isDone()) {
+                                throw new SQLTimeoutException(
+                                        "Player rollback planning exceeded its query deadline.");
+                            }
+                            try {
+                                scanner.add(new SelectivePlayerRollbackPlanner.HistoryRow(
+                                        rows.getLong("id"), rows.getString("actor_uuid"),
+                                        rows.getString("causal_player_uuid"), rows.getString("world"),
+                                        rows.getString("before_data"), rows.getString("after_data"),
+                                        rows.getBytes("before_entity_data"), rows.getBytes("after_entity_data")));
+                            } catch (SelectivePlayerRollbackPlanner.HistoryLimitExceededException exception) {
+                                exceededHistoryLimit = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (exceededHistoryLimit) {
+                    unavailable++;
+                    continue;
+                }
+                var decision = scanner.finish();
+                if (decision.protectedOlderChanges()
+                        || decision.status() == SelectivePlayerRollbackPlanner.Status.HISTORICAL_CONFLICT) {
+                    historicalConflicts++;
+                }
+                switch (decision.status()) {
+                    case REVERSIBLE -> {
+                        RollbackTarget target = decision.target();
+                        long targetBytes = target.targetEntityData() == null
+                                ? 0L : target.targetEntityData().length;
+                        long expectedBytes = target.expectedEntityData() == null
+                                ? 0L : target.expectedEntityData().length;
+                        if (targetBytes > maxSnapshotBytes - snapshotBytes
+                                || expectedBytes > maxSnapshotBytes - snapshotBytes - targetBytes) {
+                            throw new RollbackSnapshotLimitExceededException(maxSnapshotBytes);
+                        }
+                        snapshotBytes += targetBytes + expectedBytes;
+                        targets.add(target);
+                    }
+                    case NO_OP -> noOps++;
+                    case UNAVAILABLE -> unavailable++;
+                    case HISTORICAL_CONFLICT -> { /* Already counted above. */ }
+                }
+            }
+            return new PlayerRollbackPlan(player, cutoff, upper, targets,
+                    positions.size(), historicalConflicts, noOps, unavailable);
+        }, true);
+    }
+
+    static final class PlayerRollbackLimitExceededException extends IllegalStateException {
+        PlayerRollbackLimitExceededException(int maxBlocks) {
+            super("Player rollback touches more than " + maxBlocks
+                    + " coordinates; narrow the time window or adjust rollback-max-blocks-per-command.");
+        }
+    }
+
     CompletableFuture<List<RollbackTarget>> rollbackTargetsAsync(String worldName, int centerX, int centerZ,
                                                                    int radius, long targetTimestamp,
                                                                    long snapshotTimestamp, int maxBlocks) {
