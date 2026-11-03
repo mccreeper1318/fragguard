@@ -82,6 +82,13 @@ final class SelectivePlayerRollbackPlanner {
                 encounteredBoundary = true;
                 return;
             }
+            // Validate every owned step, not only the final target/expected
+            // endpoints. An intermediate chest/sign with missing legacy
+            // snapshots cannot prove a continuous reversible history.
+            if (unknownEntityState(row.beforeData(), row.beforeEntityData())
+                    || unknownEntityState(row.afterData(), row.afterEntityData())) {
+                invalidChain = true;
+            }
             if (!hasOwnedSuffix) {
                 // Newest recorded change establishes the expected live state.
                 expectedBlock = row.afterData();
@@ -139,7 +146,8 @@ final class SelectivePlayerRollbackPlanner {
                 .replace("minecraft:", "");
         return material.endsWith("_sign") || material.endsWith("_banner")
                 || material.endsWith("_head") || material.endsWith("_skull")
-                || material.endsWith("_shulker_box")
+                || material.equals("shulker_box") || material.endsWith("_shulker_box")
+                || material.endsWith("_shelf")
                 || switch (material) {
                     case "chest", "trapped_chest", "barrel", "hopper", "furnace",
                          "blast_furnace", "smoker", "dropper", "dispenser",
