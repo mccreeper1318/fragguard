@@ -54,6 +54,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     // Tracks queries until their main-thread completion, so cancellation/quit/reload
     // cannot resurrect a preview from an older asynchronous search.
     private final Map<UUID, UUID> pendingRollbackQueries = new HashMap<>();
+    private final Map<UUID, UUID> playerLookupRequests = new HashMap<>();
     private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
@@ -71,10 +72,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID actor = event.getPlayer().getUniqueId();
         pendingRollbackQueries.remove(actor);
+        playerLookupRequests.remove(actor);
         removePreviewsFor(actor);
     }
 
     void clearRollbackPreviews() {
+        playerLookupRequests.clear();
         pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
@@ -121,6 +124,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     }
 
     private void handleLookup(Player player, String[] args) {
+        if (PlayerLookupArguments.isPlayerScope(args)) {
+            handlePlayerLookup(player, args);
+            return;
+        }
         OptionalInt radiusOptional;
         try {
             radiusOptional = RadiusParser.parse(args);
@@ -153,6 +160,81 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 }));
     }
 
+    private void handlePlayerLookup(Player player, String[] args) {
+        PlayerLookupArguments scope;
+        try {
+            scope = PlayerLookupArguments.parse(args, plugin.getRetentionDays());
+        } catch (IllegalArgumentException exception) {
+            player.sendMessage(color("&c" + exception.getMessage()));
+            player.sendMessage(color("&7Usage: &f/fg lookup u:<player> [w:<world>] [t:<time>] [p:<page>]"));
+            return;
+        }
+        UUID actor = player.getUniqueId();
+        UUID request = UUID.randomUUID();
+        playerLookupRequests.put(actor, request);
+        int pageSize = Math.min(200, Math.max(1, plugin.getConfig().getInt("lookup-page-size", 15)));
+        player.sendMessage(color("&7Searching retained player history across "
+                + (scope.worldName() == null ? "all worlds" : scope.worldName()) + "&7..."));
+        database.lookupPlayerAsync(scope.playerArgument(), scope.worldName(),
+                        scope.page(), pageSize, scope.durationMillis(), plugin.getRetentionDays())
+                .whenComplete((result, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!request.equals(playerLookupRequests.get(actor))) {
+                        return; // A later request replaced this one, or the operator disconnected.
+                    }
+                    playerLookupRequests.remove(actor);
+                    if (!player.isOnline()) {
+                        return;
+                    }
+                    if (failure != null) {
+                        Throwable cause = unwrap(failure);
+                        if (cause instanceof HistoricalPlayerResolver.IdentityException) {
+                            player.sendMessage(color("&c" + cause.getMessage()));
+                        } else {
+                            plugin.getLogger().log(Level.WARNING, "FragGuard player lookup failed", cause);
+                            player.sendMessage(color("&cPlayer history lookup failed. Check console for details."));
+                        }
+                        return;
+                    }
+                    sendPlayerLookupResults(player, result, scope);
+                }));
+    }
+
+    private void sendPlayerLookupResults(Player player, PlayerLookupPage result,
+                                         PlayerLookupArguments scope) {
+        player.sendMessage(color("&8&m------&r &bFragGuard Player Lookup &8&m------"));
+        String uuid = result.player().uuid().toString();
+        player.sendMessage(color("&7Player: &f" + result.player().latestName()
+                + " &8(" + uuid + ")"));
+        player.sendMessage(color("&7World: &f" + (scope.worldName() == null ? "All worlds" : scope.worldName())
+                + " &7| Time: &f" + (scope.timeArgument().isEmpty() ? "Retained history" : scope.timeArgument())
+                + " &7| Page: &f" + result.page() + "/" + result.totalPages()
+                + " &7| Results: &f" + result.totalRows()));
+
+        if (result.rows().isEmpty()) {
+            player.sendMessage(color("&7No matching block changes in retained history."));
+            return;
+        }
+        long now = System.currentTimeMillis();
+        for (PlayerLookupRow row : result.rows()) {
+            String transition = blockTransition(row.beforeData(), row.afterData());
+            String action = row.action().displayPastTense();
+            if (row.indirectlyAttributedTo(uuid)) {
+                player.sendMessage(color("&b" + result.player().latestName() + " &7caused &e" + action
+                        + " &f" + transition + " &8via &e" + row.actorName()
+                        + (row.causalCauseType() == null ? "" : " &8[" + row.causalCauseType() + "]")));
+            } else {
+                player.sendMessage(color("&b" + row.actorName() + " &7" + action
+                        + " &f" + transition));
+            }
+            player.sendMessage(color("&8" + row.worldName() + " &7at &f" + row.x() + " " + row.y()
+                    + " " + row.z() + " &8(" + DurationParser.compactAge(now - row.happenedAt())
+                    + "; " + DATE_FORMAT.format(Instant.ofEpochMilli(row.happenedAt())) + ")"));
+        }
+        if (result.page() < result.totalPages()) {
+            player.sendMessage(color("&7Next page: &f" + scope.nextPageCommand(result.page() + 1)));
+        }
+    }
+
     private void sendLookupResults(Player player, LookupPage page, int radius) {
         player.sendMessage(color("&8&m------&r &bFragGuard Lookup &8&m------"));
         player.sendMessage(color("&7Radius: &f" + radius + " &7| Page: &f" + page.page() + "/" + page.totalPages()
@@ -178,16 +260,20 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     }
 
     private String blockTransition(LookupRow row) {
-        String before = readableBlockData(row.beforeData());
-        String after = readableBlockData(row.afterData());
+        return blockTransition(row.beforeData(), row.afterData());
+    }
 
-        if (row.beforeData().equals(row.afterData())) {
+    private String blockTransition(String beforeData, String afterData) {
+        String before = readableBlockData(beforeData);
+        String after = readableBlockData(afterData);
+
+        if (beforeData.equals(afterData)) {
             return after;
         }
-        if (isAir(row.beforeData())) {
+        if (isAir(beforeData)) {
             return after;
         }
-        if (isAir(row.afterData())) {
+        if (isAir(afterData)) {
             return before;
         }
         return before + " &8→ &f" + after;
@@ -1461,6 +1547,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&8&m------&r &bFragGuard &8&m------"));
         player.sendMessage(color("&f/fg lookup r:30 &7- Show block-change logs in a full-height radius."));
         player.sendMessage(color("&f/fg lookup r:30 p:2 &7- View another lookup page."));
+        player.sendMessage(color("&f/fg lookup u:Builder p:2 &7- View a player's retained history in all worlds."));
+        player.sendMessage(color("&f/fg lookup u:Builder w:world_nether t:6h &7- Filter player by world/time."));
         player.sendMessage(color("&f/fg rollback r:30 t:2d 7h 15m &7- Preview an area rollback."));
         player.sendMessage(color("&f/fg rollback r:30 t:2d force &7- Preview a rollback that may overwrite newer changes."));
         player.sendMessage(color("&f/fg rollback confirm <token> &7- Run a previewed rollback."));
@@ -1482,7 +1570,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
 
         String subCommand = args[0].toLowerCase(Locale.ROOT);
         if (subCommand.equals("lookup") || subCommand.equals("inspect") || subCommand.equals("l")) {
-            return partial(args[args.length - 1], List.of("r:15", "r:30", "r:50", "p:1"));
+            boolean playerScope = PlayerLookupArguments.isPlayerScope(
+                    Arrays.copyOfRange(args, 1, args.length));
+            List<String> suggestions = new ArrayList<>(playerScope
+                    ? List.of("u:", "p:1", "p:2", "t:1h", "t:1d", "t:2d")
+                    : List.of("r:15", "r:30", "r:50", "p:1", "u:"));
+            if (playerScope) {
+                for (World world : plugin.getServer().getWorlds()) {
+                    suggestions.add("w:" + world.getName());
+                }
+            }
+            return partial(args[args.length - 1], suggestions);
         }
         if (subCommand.equals("rollback") || subCommand.equals("rb")) {
             if (args.length == 3 && args[1].equalsIgnoreCase("confirm")) {
