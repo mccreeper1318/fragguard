@@ -11,6 +11,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import java.util.logging.Logger;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -46,6 +51,8 @@ final class GuiPlayerHistoryStore {
             """;
     private final File databaseFile;
     private final int timeoutSeconds;
+    private final Logger logger = Logger.getLogger("FragGuard GUI Player History");
+    private final ThreadLocal<QueryCancellation> activeRequest = new ThreadLocal<>();
 
     GuiPlayerHistoryStore(File dataFolder, int timeoutSeconds) {
         this.databaseFile = new File(dataFolder, "fragguard.db");
@@ -83,7 +90,7 @@ final class GuiPlayerHistoryStore {
     CompletableFuture<IdentityPage> identitiesAsync(int page, int retentionDays) {
         int index = Math.max(0, page);
         long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(Math.max(1, retentionDays));
-        return async(() -> {
+        return boundedQueryAsync("player-selector", () -> {
             try (Connection db = open(); PreparedStatement statement = prepare(db, """
                     WITH actors AS (
                         SELECT actor_uuid AS uuid, actor_name AS name, happened_at, id
@@ -112,6 +119,7 @@ final class GuiPlayerHistoryStore {
                 List<PlayerIdentity> identities = new ArrayList<>();
                 try (ResultSet rows = statement.executeQuery()) {
                     while (rows.next()) {
+                        ensureQueryActive();
                         try {
                             UUID uuid = UUID.fromString(rows.getString("uuid"));
                             identities.add(new PlayerIdentity(uuid, rows.getString("latest_name")));
@@ -131,7 +139,7 @@ final class GuiPlayerHistoryStore {
 
     CompletableFuture<HistoryPage> historyAsync(HistoryQuery query, int requestedPage) {
         int page = Math.max(1, requestedPage);
-        return async(() -> {
+        return boundedQueryAsync("player-history", () -> {
             String filters = OWNED + (query.worldName() == null ? "" : " AND world = ?")
                     + (query.action() == null ? "" : " AND action IN (?, ?)")
                     + (query.material() == null ? "" : " AND (" + MATERIAL + ") = ?");
@@ -162,6 +170,7 @@ final class GuiPlayerHistoryStore {
                     stmt.setLong(next, (long) (safePage - 1) * EVENT_PAGE_SIZE);
                     try (ResultSet rs = stmt.executeQuery()) {
                         while (rs.next()) {
+                            ensureQueryActive();
                             events.add(new PlayerLookupRow(rs.getLong("id"),
                                     rs.getLong("happened_at"), rs.getString("actor_uuid"),
                                     rs.getString("actor_name"), rs.getString("causal_player_uuid"),
@@ -185,7 +194,7 @@ final class GuiPlayerHistoryStore {
         // scope and snapshot, not just the current page.
         HistoryQuery unfiltered = query.withAction(null).withMaterial(null);
         String where = OWNED + (query.worldName() == null ? "" : " AND world = ?");
-        return async(() -> {
+        return boundedQueryAsync("player-filters", () -> {
             try (Connection db = open()) {
                 List<ChangeAction> actions = new ArrayList<>();
                 try (PreparedStatement stmt = prepare(db,
@@ -194,6 +203,7 @@ final class GuiPlayerHistoryStore {
                     bind(stmt, unfiltered);
                     try (ResultSet rows = stmt.executeQuery()) {
                         while (rows.next()) {
+                            ensureQueryActive();
                             ChangeAction action = ChangeAction.fromStorageId(rows.getString(1));
                             if (!actions.contains(action)) actions.add(action);
                         }
@@ -206,6 +216,7 @@ final class GuiPlayerHistoryStore {
                     bind(stmt, unfiltered);
                     try (ResultSet rows = stmt.executeQuery()) {
                         while (rows.next()) {
+                            ensureQueryActive();
                             String material = rows.getString(1);
                             if (material != null && !material.isBlank()) materials.add(material);
                         }
@@ -236,11 +247,13 @@ final class GuiPlayerHistoryStore {
     }
 
     private Connection open() throws SQLException {
+        ensureQueryActive();
         Connection db = DriverManager.getConnection("jdbc:sqlite:" + databaseFile.getAbsolutePath());
         try (Statement statement = db.createStatement()) {
             statement.execute("PRAGMA query_only=ON");
             statement.execute("PRAGMA busy_timeout=5000");
-        } catch (SQLException exception) {
+            ensureQueryActive();
+        } catch (SQLException | RuntimeException exception) {
             db.close();
             throw exception;
         }
@@ -248,12 +261,97 @@ final class GuiPlayerHistoryStore {
     }
 
     private PreparedStatement prepare(Connection db, String sql) throws SQLException {
+        ensureQueryActive();
         PreparedStatement stmt = db.prepareStatement(sql);
-        stmt.setQueryTimeout(timeoutSeconds);
-        return stmt;
+        try {
+            // sqlite-jdbc's JDBC timeout is a busy-lock timeout, not a CPU budget.
+            // The async deadline below must independently interrupt live SQL.
+            stmt.setQueryTimeout(timeoutSeconds);
+            trackStatement(stmt);
+            return stmt;
+        } catch (SQLException | RuntimeException failure) {
+            stmt.close();
+            throw failure;
+        }
     }
 
-    private <T> CompletableFuture<T> async(java.util.function.Supplier<T> supplier) {
-        return CompletableFuture.supplyAsync(supplier).orTimeout(timeoutSeconds, TimeUnit.SECONDS);
+    /** Register the current SQLite statement so expiry actually interrupts it. */
+    void trackStatement(PreparedStatement statement) throws SQLException {
+        QueryCancellation request = activeRequest.get();
+        if (request != null) request.track(statement);
+    }
+
+    void ensureQueryActive() {
+        QueryCancellation request = activeRequest.get();
+        if (request != null && request.isCancelled()) {
+            throw new CompletionException(new TimeoutException(
+                    "FragGuard GUI player-history SQL read cancelled"));
+        }
+    }
+
+    /** One independent cancellation context per GUI request, never shared across retries. */
+    <T> CompletableFuture<T> boundedQueryAsync(String phase, Supplier<T> supplier) {
+        QueryCancellation request = new QueryCancellation();
+        long started = System.nanoTime();
+        CompletableFuture<T> future = CompletableFuture.supplyAsync(() -> {
+            activeRequest.set(request);
+            try {
+                ensureQueryActive(); // Also cover deadlines during worker queueing.
+                T result = supplier.get();
+                ensureQueryActive();
+                return result;
+            } finally {
+                activeRequest.remove();
+            }
+        });
+        future.orTimeout(timeoutSeconds, TimeUnit.SECONDS);
+        return future.whenComplete((result, failure) -> {
+            if (failure != null && unwrap(failure) instanceof TimeoutException) {
+                request.cancel();
+                logger.warning("FragGuard GUI player query " + phase + " exceeded "
+                        + timeoutSeconds + " seconds (elapsed "
+                        + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                        + " ms); cancelling the underlying SQLite statement");
+            }
+        });
+    }
+
+    private static Throwable unwrap(Throwable failure) {
+        while (failure.getCause() != null && failure.getCause() != failure) {
+            failure = failure.getCause();
+        }
+        return failure;
+    }
+
+    static final class QueryCancellation {
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+        private final AtomicReference<PreparedStatement> running = new AtomicReference<>();
+
+        void track(PreparedStatement statement) throws SQLException {
+            running.set(statement);
+            if (cancelled.get()) {
+                try {
+                    statement.cancel();
+                } finally {
+                    throw new SQLException("FragGuard GUI player-history SQL read cancelled");
+                }
+            }
+        }
+
+        boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        void cancel() {
+            cancelled.set(true);
+            PreparedStatement statement = running.get();
+            if (statement != null) {
+                try {
+                    statement.cancel();
+                } catch (SQLException ignored) {
+                    // The request is already timed out; interruption is best effort.
+                }
+            }
+        }
     }
 }
