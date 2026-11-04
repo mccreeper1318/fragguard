@@ -1667,7 +1667,7 @@ final class Database {
         try (Statement statement = databaseConnection.createStatement()) {
             statement.executeUpdate("""
                     CREATE INDEX IF NOT EXISTS idx_fg_coordinate_time
-                    ON block_changes(world_uuid, x, y, z, happened_at DESC, id DESC)
+                    ON block_changes(y, world_uuid, x, z, happened_at DESC, id DESC)
                     WHERE rollback_pending = 0
                     """);
         }
