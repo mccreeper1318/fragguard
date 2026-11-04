@@ -7,7 +7,6 @@
 - Updated Paper API to 26.3 build 241 stable.
 - Updated README build instructions for 26.3-1.2.1.
 - Updated artifact GitHub Actions to upload 7.0.2 and download 8.0.2 (#122).
-- Updated Gradle wrapper to 9.8.1 (#123).
 - Updated Gradle wrapper to 9.8.2 (#127).
 - Updated Java setup to 6.1.0 and Gradle setup to 6.4.1 in GitHub Actions (#132).
 - Updated SQLite JDBC to 3.54.1.0 (#133).
@@ -27,9 +26,6 @@
 
 ### Fixed
 
-- Fixed player-history GUI queries continuing to scan SQLite after their timeouts (#104).
-- Fixed GUI preview cancellation interfering with replacement radius searches (#104).
-- Fixed global player material filters disagreeing with displayed block transformations (#104).
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).
 
