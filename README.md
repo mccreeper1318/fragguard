@@ -364,10 +364,42 @@ historical ownership boundary, **even when the eventual executor's
 normal `force` option is enabled**. Force only affects live-state
 conflict handling and cannot make older another-player work eligible.
 
-Player-specific preview, confirmation, job persistence, recovery,
-undo, and GUI integration are delivered by follow-up issues #103/#104.
-Live Paper server tests are deferred until the integrated
-26.3-1.2.1 update is complete.
+The player-scoped command and job workflow is now available:
+
+```text
+/fg rollback u:Builder t:1h
+/fg rollback u:Builder t:2d w:world_nether
+/fg rollback u:Builder t:6h force
+/fg rollback confirm <token>
+/fg rollback cancel
+/fg status <job-id>
+/fg undo <job-id>
+```
+
+A player rollback **always requires `t:`** and rejects any combination of
+`u:` and `r:`. Without `w:` it includes all loaded worlds. The preview
+shows target identity, time, scope, reversible block/chunk/world counts, and
+historically protected conflicts. The player scope never draws a misleading
+radius outline. Confirmation requires the unexpired owner-specific token;
+cancellation and logout invalidate it without modifying blocks.
+
+Schema **v9** persists explicit `PLAYER`/`RADIUS` job scope, operator versus
+target-player identities, optional world selection, protected-history counts,
+per-target stable world UUIDs, physical cause and causal-chain provenance,
+and durable world/chunk overlap reservations. Other active rollback/undo
+jobs reserving a shared world/chunk are rejected across all scope pairs.
+Missing or renamed worlds are checked by UUID to prevent execution in an
+unrelated world that reused the old name. Fresh changes after preview are
+rejected when persisting player jobs. The existing resumable execution,
+chunk ticket lifecycle and undo conflict checks are reused, including
+across multiple worlds; the undo GUI and `/fg status <job-id>` display
+explicit scope information. Existing radius jobs remain readable and
+continue using the same workflow.
+
+The upcoming GUI issue #104 adds a dedicated **new player rollback
+configuration** screen; the undoable-job browser already identifies
+player-scoped jobs. Live Paper server tests remain deferred until the
+integrated 26.3-1.2.1 update is complete.
 
 ## Historical player identity and actor indexes
 
