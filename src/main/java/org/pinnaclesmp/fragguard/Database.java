@@ -955,6 +955,25 @@ final class Database {
         }
         final String scopedWorldUuid = worldScopeUuid;
         Set<RollbackJobChunk> reservations = RollbackJobChunk.fromTargets(targets);
+        int maxBlocks = Math.max(1, plugin.getConfig().getInt("rollback-max-blocks-per-command", 50_000));
+        int maxChunks = Math.max(1, plugin.getConfig().getInt("rollback-max-chunks-per-command", 256));
+        long maxSnapshotBytes = Math.max(1L, plugin.getConfig().getLong(
+                "rollback-max-snapshot-bytes-per-command", DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES));
+        if (targets.size() > maxBlocks || reservations.size() > maxChunks) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "The player rollback preview exceeds the currently configured block/chunk limits."));
+        }
+        long snapshotBytes = 0L;
+        for (RollbackTarget target : targets) {
+            long expected = target.expectedEntityData() == null ? 0 : target.expectedEntityData().length;
+            long desired = target.targetEntityData() == null ? 0 : target.targetEntityData().length;
+            if (expected > maxSnapshotBytes - snapshotBytes
+                    || desired > maxSnapshotBytes - snapshotBytes - expected) {
+                return CompletableFuture.failedFuture(
+                        new RollbackSnapshotLimitExceededException(maxSnapshotBytes));
+            }
+            snapshotBytes += expected + desired;
+        }
         int affectedWorlds = (int) reservations.stream().map(RollbackJobChunk::worldUuid).distinct().count();
         return submit(db -> inTransaction(db, () -> {
             rejectOverlappingChunks(db, reservations, -1L);
