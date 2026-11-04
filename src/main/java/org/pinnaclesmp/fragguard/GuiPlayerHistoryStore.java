@@ -89,6 +89,8 @@ final class GuiPlayerHistoryStore {
                         SELECT actor_uuid AS uuid, actor_name AS name, happened_at, id
                         FROM block_changes WHERE rollback_pending = 0 AND happened_at >= ?
                           AND actor_uuid IS NOT NULL AND length(actor_uuid) = 36
+                          AND actor_name IS NOT NULL AND length(actor_name) BETWEEN 1 AND 16
+                          AND actor_name NOT GLOB '*[^A-Za-z0-9_]*'
                         UNION ALL
                         SELECT causal_player_uuid AS uuid, causal_player_name AS name, happened_at, id
                         FROM block_changes WHERE rollback_pending = 0 AND happened_at >= ?
