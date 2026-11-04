@@ -113,7 +113,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 }
             }
             case "undo" -> handleUndo(player, args);
-            case "status" -> sendDatabaseStatus(player);
+            case "status" -> {
+                if (args.length == 2) {
+                    sendRollbackJobStatus(player, args[1]);
+                } else {
+                    sendDatabaseStatus(player);
+                }
+            }
             default -> {
                 player.sendMessage(color("&cUnknown FragGuard command. Use &f/fg help&c."));
                 return true;
@@ -301,6 +307,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     }
 
     private void handleRollback(Player player, String[] args) {
+        if (PlayerRollbackArguments.isPlayerScope(args)) {
+            handlePlayerRollback(player, args);
+            return;
+        }
         OptionalInt radiusOptional;
         try {
             radiusOptional = RadiusParser.parse(args);
@@ -374,10 +384,111 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }));
     }
 
+    private void handlePlayerRollback(Player player, String[] args) {
+        PlayerRollbackArguments scope;
+        try {
+            scope = PlayerRollbackArguments.parse(args, plugin.getRetentionDays());
+        } catch (IllegalArgumentException exception) {
+            player.sendMessage(color("&c" + exception.getMessage()));
+            player.sendMessage(color("&7Usage: &f/fg rollback u:<player> t:<time> [w:<world>] [force]"));
+            return;
+        }
+        if (scope.worldName() != null && plugin.getServer().getWorld(scope.worldName()) == null) {
+            player.sendMessage(color("&cWorld '" + scope.worldName() + "' is not loaded."));
+            return;
+        }
+        long snapshot = System.currentTimeMillis();
+        long targetTime = snapshot - scope.durationMillis();
+        int maxBlocks = Math.max(1, plugin.getConfig().getInt("rollback-max-blocks-per-command", 50_000));
+        UUID operator = player.getUniqueId();
+        UUID queryId = UUID.randomUUID();
+        pendingRollbackQueries.put(operator, queryId);
+        player.sendMessage(color("&7Planning player rollback for &f" + scope.playerArgument()
+                + " &7in &f" + (scope.worldName() == null ? "all worlds" : scope.worldName()) + "&7..."));
+        CompletableFuture<PlayerRollbackPlan> query;
+        try {
+            query = database.planPlayerRollbackAsync(scope.playerArgument(), scope.worldName(),
+                    targetTime, snapshot, maxBlocks, maximumRollbackSnapshotBytes(),
+                    plugin.getRetentionDays(), scope.force());
+        } catch (RuntimeException exception) {
+            pendingRollbackQueries.remove(operator, queryId);
+            throw exception;
+        }
+        reportQueryProgress(player, query, operator, queryId);
+        query.whenComplete((plan, failure) -> onServerThread(() -> {
+            if (!queryId.equals(pendingRollbackQueries.get(operator))) {
+                return;
+            }
+            pendingRollbackQueries.remove(operator);
+            if (!player.isOnline()) {
+                return;
+            }
+            if (failure != null) {
+                reportRollbackQueryFailure(player, failure);
+                return;
+            }
+            previewPlayerRollback(player, scope, plan);
+        }));
+    }
+
+    private void previewPlayerRollback(Player operator, PlayerRollbackArguments scope,
+                                       PlayerRollbackPlan plan) {
+        if (plan.targets().isEmpty()) {
+            operator.sendMessage(color("&7No safe block changes for &f" + plan.player().latestName()
+                    + "&7. Historical conflicts: &f" + plan.historicalConflicts()
+                    + "&7 | Unavailable: &f" + plan.unavailable()));
+            return;
+        }
+        int affectedChunks = RollbackChunkPlan.countTargetChunks(plan.targets());
+        int maxChunks = Math.max(1, plugin.getConfig().getInt("rollback-max-chunks-per-command", 256));
+        if (affectedChunks > maxChunks) {
+            operator.sendMessage(color("&cPlayer rollback touches " + affectedChunks
+                    + " chunks, exceeding the configured limit of " + maxChunks + "."));
+            return;
+        }
+        int affectedWorlds = (int) plan.targets().stream().map(RollbackTarget::worldUuid).distinct().count();
+        long now = System.currentTimeMillis();
+        long timeoutSeconds = Math.max(5, plugin.getConfig().getInt(
+                "rollback-confirmation-timeout-seconds", 60));
+        removeExpiredPreviews(now);
+        removePreviewsFor(operator.getUniqueId());
+        String token = UUID.randomUUID().toString().substring(0, 8);
+        RollbackPreview preview = new RollbackPreview(token, operator.getUniqueId(), operator.getName(),
+                scope.worldName() == null ? "*" : scope.worldName(), 0, 0, 0,
+                plan.targetTimestamp(), plan.snapshotTimestamp(), scope.force(),
+                List.copyOf(plan.targets()), now + timeoutSeconds * 1000L,
+                plan, scope.worldName());
+        previews.put(token, preview);
+        schedulePreviewExpiration(preview, now);
+
+        operator.sendMessage(color("&8&m------&r &eFragGuard Player Rollback Preview &8&m------"));
+        operator.sendMessage(color("&7Target: &f" + plan.player().latestName()
+                + " &8(" + plan.player().uuid() + ")"));
+        operator.sendMessage(color("&7World scope: &f" + (scope.worldName() == null ? "All" : scope.worldName())
+                + " &7| Worlds affected: &f" + affectedWorlds));
+        operator.sendMessage(color("&7Reversible blocks: &f" + plan.reversibleCoordinates()
+                + " &7| Chunks: &f" + affectedChunks));
+        operator.sendMessage(color("&7Historical conflicts: &e" + plan.historicalConflicts()
+                + " &7| No-ops: &f" + plan.noOps() + " &7| Unavailable: &f" + plan.unavailable()));
+        operator.sendMessage(color("&7Since: &f" + DATE_FORMAT.format(Instant.ofEpochMilli(plan.targetTimestamp()))
+                + " &7| Snapshot: &f" + DATE_FORMAT.format(Instant.ofEpochMilli(plan.snapshotTimestamp()))));
+        operator.sendMessage(color(scope.force()
+                ? "&cForce live-state mode; historical ownership protection still applies."
+                : "&aLive conflicts will be skipped; historical ownership is always protected."));
+        operator.sendMessage(color("&7This is a scattered player rollback: no single radius outline is drawn."));
+        operator.sendMessage(color("&eNo blocks have changed. Confirm within " + timeoutSeconds
+                + " seconds: &f/fg rollback confirm " + token));
+        operator.sendMessage(color("&7Cancel with: &f/fg rollback cancel"));
+    }
+
     private void reportRollbackQueryFailure(Player player, Throwable throwable) {
         Throwable cause = unwrap(throwable);
         if (cause instanceof TimeoutException) {
             player.sendMessage(color("&cRollback preview timed out. Reduce the radius or time range and try again."));
+        } else if (cause instanceof Database.PlayerRollbackLimitExceededException
+                || cause instanceof HistoricalPlayerResolver.IdentityException
+                || cause instanceof IllegalArgumentException) {
+            player.sendMessage(color("&c" + cause.getMessage()));
         } else if (cause instanceof Database.RollbackSnapshotLimitExceededException limit) {
             player.sendMessage(color("&cRollback preview exceeds the configured block-entity snapshot limit of "
                     + limit.maximumBytes() + " bytes."));
@@ -529,7 +640,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             player.sendMessage(color("&cThat rollback confirmation belongs to another operator."));
             return;
         }
-        if (!preview.worldName.equals(player.getWorld().getName())) {
+        if (!preview.isPlayerScope() && !preview.worldName.equals(player.getWorld().getName())) {
             player.sendMessage(color("&cReturn to the previewed world before confirming this rollback."));
             return;
         }
@@ -540,11 +651,30 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             previews.remove(preview.token);
             areaPreview.stop(preview.actorUuid, preview.token);
         }
+        // Multi-world previews are bound to their stable world identities,
+        // not whichever name another world may acquire before confirmation.
+        if (preview.isPlayerScope()) {
+            for (RollbackTarget target : preview.targets) {
+                World currentWorld;
+                try {
+                    currentWorld = plugin.getServer().getWorld(UUID.fromString(target.worldUuid()));
+                } catch (IllegalArgumentException exception) {
+                    currentWorld = null;
+                }
+                if (currentWorld == null || !currentWorld.getName().equals(target.worldName())) {
+                    player.sendMessage(color("&cA previewed world was renamed or unloaded. Re-run the player rollback."));
+                    return;
+                }
+            }
+        }
         player.sendMessage(color("&7Saving rollback job and undo information..."));
-        database.createRollbackJobAsync(preview.actorUuid.toString(), preview.actorName, preview.worldName,
+        CompletableFuture<RollbackJob> saving = preview.isPlayerScope()
+                ? database.createPlayerRollbackJobAsync(preview.actorUuid.toString(),
+                        preview.actorName, preview.playerPlan, preview.playerWorldScope, preview.force)
+                : database.createRollbackJobAsync(preview.actorUuid.toString(), preview.actorName, preview.worldName,
                         preview.centerX, preview.centerZ, preview.radius, preview.targetTimestamp,
-                        preview.snapshotTimestamp, preview.force, preview.targets)
-                .whenComplete((job, throwable) -> onServerThread(() -> {
+                        preview.snapshotTimestamp, preview.force, preview.targets);
+        saving.whenComplete((job, throwable) -> onServerThread(() -> {
                     if (throwable != null) {
                         reportJobError(player, "Could not start rollback", throwable);
                         return;
@@ -1562,6 +1692,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg lookup u:Builder w:world_nether t:6h &7- Filter player by world/time."));
         player.sendMessage(color("&f/fg rollback r:30 t:2d 7h 15m &7- Preview an area rollback."));
         player.sendMessage(color("&f/fg rollback r:30 t:2d force &7- Preview a rollback that may overwrite newer changes."));
+        player.sendMessage(color("&f/fg rollback u:Builder t:1h &7- Preview player history across all worlds."));
+        player.sendMessage(color("&f/fg rollback u:Builder t:1h w:world_nether &7- Restrict to one world."));
+        player.sendMessage(color("&f/fg status <job-id> &7- Inspect saved rollback job scope and progress."));
         player.sendMessage(color("&f/fg rollback confirm <token> &7- Run a previewed rollback."));
         player.sendMessage(color("&f/fg rollback cancel &7- Dismiss your rollback preview."));
         player.sendMessage(color("&f/fg undo <job-id> &7- Reverse blocks actually changed by a saved rollback job."));
@@ -1604,7 +1737,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         .toList());
             }
             return partial(args[args.length - 1],
-                    List.of("confirm", "cancel", "r:15", "r:30", "r:50", "t:1h", "t:1d", "2d", "7h", "15m", "force"));
+                    List.of("confirm", "cancel", "r:15", "r:30", "r:50", "u:", "w:", "t:1h", "t:1d", "2d", "7h", "15m", "force"));
         }
         return Collections.emptyList();
     }
@@ -1654,7 +1787,20 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             long snapshotTimestamp,
             boolean force,
             List<RollbackTarget> targets,
-            long expiresAt
+            long expiresAt,
+            PlayerRollbackPlan playerPlan,
+            String playerWorldScope
     ) {
+        RollbackPreview(String token, UUID actorUuid, String actorName, String worldName,
+                        int centerX, int centerZ, int radius, long targetTimestamp,
+                        long snapshotTimestamp, boolean force, List<RollbackTarget> targets,
+                        long expiresAt) {
+            this(token, actorUuid, actorName, worldName, centerX, centerZ, radius,
+                    targetTimestamp, snapshotTimestamp, force, targets, expiresAt, null, null);
+        }
+
+        boolean isPlayerScope() {
+            return playerPlan != null;
+        }
     }
 }
