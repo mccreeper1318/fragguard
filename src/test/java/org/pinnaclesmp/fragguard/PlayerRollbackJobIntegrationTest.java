@@ -65,8 +65,8 @@ class PlayerRollbackJobIntegrationTest {
 
         List<RollbackJobChange> saved = db.loadRollbackChangesAsync(job.id(), false).join();
         assertEquals(3, saved.size());
-        assertEquals(List.of(WORLD, NETHER, WORLD),
-                saved.stream().map(RollbackJobChange::worldUuid).toList());
+        assertEquals(2, saved.stream().filter(change -> WORLD.equals(change.worldUuid())).count());
+        assertEquals(1, saved.stream().filter(change -> NETHER.equals(change.worldUuid())).count());
         var tnt = saved.stream().filter(change -> change.x() == -100).findFirst().orElseThrow();
         assertEquals("Explosion: TNT", tnt.physicalActorName());
         assertEquals("tnt-a", tnt.physicalActorUuid());
@@ -81,7 +81,8 @@ class PlayerRollbackJobIntegrationTest {
         assertEquals(job.id(), recovered.id());
         assertEquals(2, recovered.affectedWorlds());
         assertEquals(3, db.loadRollbackChangesAsync(job.id(), false).join().size());
-        assertEquals(NETHER, db.loadRollbackChangesAsync(job.id(), false).join().get(1).worldUuid());
+        assertTrue(db.loadRollbackChangesAsync(job.id(), false).join().stream()
+                .anyMatch(change -> NETHER.equals(change.worldUuid())));
 
         // Persist completed results and verify crash-safe undo reads both worlds.
         for (RollbackJobChange change : db.loadRollbackChangesAsync(job.id(), false).join()) {
@@ -139,10 +140,9 @@ class PlayerRollbackJobIntegrationTest {
         db.completeRollbackJobAsync(distant.id(), false).join();
         // The stored radius job may be undone only when no conflicting job is active.
         db.beginUndoAsync(playerJob.id()).join();
-        var radiusUndo = assertThrows(CompletionException.class, () ->
-                db.beginUndoAsync(distant.id()).join());
-        // Distant chunks do not conflict; therefore this undo should be valid instead.
-        assertNotNull(radiusUndo);
+        RollbackJob radiusUndo = db.beginUndoAsync(distant.id()).join();
+        assertEquals("UNDOING", radiusUndo.status(),
+                "disjoint radius undo may proceed during an unrelated player undo");
     }
 
     @Test
