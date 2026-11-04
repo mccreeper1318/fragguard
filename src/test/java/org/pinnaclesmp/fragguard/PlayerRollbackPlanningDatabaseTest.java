@@ -9,6 +9,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -214,6 +219,86 @@ class PlayerRollbackPlanningDatabaseTest {
                 byteLimit.getCause());
     }
 
+    @Test
+    void renamedWorldUsesStableUuidEvenWhenOldDisplayNameIsReused() throws Exception {
+        database = start("original_world", true, false);
+        long now = System.currentTimeMillis();
+        database.insertRequiredAsync(List.of(change(now - 10_000, STEVE, "Steve",
+                "original_world", 22, AIR, STONE))).join();
+        database.shutdown();
+        database = start("renamed_world", true, true);
+
+        var planned = plan(STEVE, now - 20_000, now, false, 30, 100, 1024);
+        assertEquals(1, planned.reversibleCoordinates());
+        assertEquals(0, planned.unavailable());
+        assertEquals("renamed_world", planned.targets().getFirst().worldName(),
+                "history's old display name must not become an execution target");
+        assertNotEquals("original_world", planned.targets().getFirst().worldName(),
+                "a different loaded world can reuse the original name");
+    }
+
+    @Test
+    void unloadedWorldIsUnavailableWithoutGuessingByHistoricalDisplayName() throws Exception {
+        database = start();
+        long now = System.currentTimeMillis();
+        database.insertRequiredAsync(List.of(change(now - 10_000, STEVE, "Steve",
+                "world_nether", 23, AIR, STONE))).join();
+        database.shutdown();
+        database = start("world", false, false);
+
+        var planned = plan(STEVE, now - 20_000, now, true, 30, 100, 1024);
+        assertEquals(1, planned.candidateCoordinates());
+        assertEquals(1, planned.unavailable());
+        assertEquals(0, planned.reversibleCoordinates());
+        assertTrue(planned.targets().isEmpty(),
+                "force must not route an unloaded world's history to a named substitute");
+    }
+
+    @Test
+    void versionSevenUpgradeBuildsAnIndexedCoordinateTimeSeek() throws Exception {
+        database = start();
+        long now = System.currentTimeMillis();
+        database.insertRequiredAsync(List.of(change(now - 10_000, STEVE, "Steve",
+                "world", 24, AIR, STONE))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = open(); Statement sql = connection.createStatement()) {
+            sql.execute("DROP INDEX idx_fg_coordinate_time");
+            sql.execute("PRAGMA user_version=7");
+        }
+        database = start();
+
+        try (Connection connection = open(); Statement sql = connection.createStatement()) {
+            try (ResultSet version = sql.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
+            }
+            try (ResultSet plan = sql.executeQuery("""
+                    EXPLAIN QUERY PLAN
+                    SELECT id, happened_at, before_data FROM block_changes
+                    WHERE rollback_pending = 0 AND world_uuid =
+                          '99999999-2222-3333-4444-555555555555'
+                      AND x=24 AND y=64 AND z=0
+                      AND happened_at > 0 AND happened_at <= 9999999999999
+                    ORDER BY happened_at DESC, id DESC
+                    LIMIT 8193
+                    """)) {
+                List<String> details = new ArrayList<>();
+                while (plan.next()) {
+                    details.add(plan.getString("detail"));
+                }
+                assertTrue(details.stream().anyMatch(s -> s.contains("idx_fg_coordinate_time")),
+                        "per-coordinate history should use its coordinate/time index: " + details);
+                assertFalse(details.stream().anyMatch(s -> s.contains("USE TEMP B-TREE")),
+                        "newest-first history should not need a temporary sort: " + details);
+            }
+        }
+
+        var planned = plan(STEVE, now - 20_000, now, false, 30, 100, 1024);
+        assertEquals(1, planned.targets().size(), "index-only migration must preserve history");
+    }
+
     private PlayerRollbackPlan plan(String name, long start, long end, boolean force,
                                     int days, int maxBlocks, long maxBytes) {
         return database.planPlayerRollbackAsync(name, start, end, maxBlocks,
@@ -245,6 +330,11 @@ class PlayerRollbackPlanningDatabaseTest {
     }
 
     private Database start() throws Exception {
+        return start("world", true, false);
+    }
+
+    private Database start(String currentWorldName, boolean loadNether,
+                           boolean reuseOriginalWorldName) throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);
         World world = mock(World.class);
@@ -255,15 +345,32 @@ class PlayerRollbackPlanningDatabaseTest {
         when(plugin.getServer()).thenReturn(server);
         when(plugin.getConfig()).thenReturn(cfg);
         when(plugin.getLogger()).thenReturn(Logger.getLogger("PlayerRollbackPlanningDatabaseTest"));
-        when(server.getWorlds()).thenReturn(List.of(world, nether));
-        when(server.getWorld("world")).thenReturn(world);
-        when(server.getWorld("world_nether")).thenReturn(nether);
-        when(world.getName()).thenReturn("world");
+
+        List<World> loaded = new ArrayList<>();
+        when(world.getName()).thenReturn(currentWorldName);
         when(world.getUID()).thenReturn(UUID.fromString("99999999-2222-3333-4444-555555555555"));
-        when(nether.getName()).thenReturn("world_nether");
-        when(nether.getUID()).thenReturn(UUID.fromString("99999999-2222-3333-4444-666666666666"));
+        loaded.add(world);
+        when(server.getWorld(currentWorldName)).thenReturn(world);
+        if (loadNether) {
+            when(nether.getName()).thenReturn("world_nether");
+            when(nether.getUID()).thenReturn(UUID.fromString("99999999-2222-3333-4444-666666666666"));
+            when(server.getWorld("world_nether")).thenReturn(nether);
+            loaded.add(nether);
+        }
+        if (reuseOriginalWorldName) {
+            World reused = mock(World.class);
+            when(reused.getName()).thenReturn("original_world");
+            when(reused.getUID()).thenReturn(UUID.fromString("99999999-2222-3333-4444-777777777777"));
+            when(server.getWorld("original_world")).thenReturn(reused);
+            loaded.add(reused);
+        }
+        when(server.getWorlds()).thenReturn(loaded);
         Database instance = new Database(plugin);
         instance.init();
         return instance;
+    }
+
+    private Connection open() throws Exception {
+        return DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("fragguard.db"));
     }
 }
