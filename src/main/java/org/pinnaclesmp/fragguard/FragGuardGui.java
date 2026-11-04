@@ -854,6 +854,16 @@ final class FragGuardGui implements Listener {
             case 16 -> {
                 if (session.rollbackScope == Scope.PLAYER) runPlayerRollbackPreview(player, session);
                 else {
+                    // A prior player-scoped GUI preview can remain active after
+                    // switching to Nearby Area. Cancel it *before* submitting the
+                    // new radius query. Clearing ownership here also ensures the
+                    // deferred inventory-close handler cannot cancel that query.
+                    String ownedToken = session.playerPreviewToken;
+                    if (ownedToken != null && ownedToken.equals(activeRollbackToken(player))) {
+                        player.performCommand("fg rollback cancel");
+                    }
+                    session.playerPreviewToken = null;
+                    session.playerRollbackPlan = null;
                     TimePreset preset = times().get(session.rollbackTimeIndex);
                     String command = "fg rollback r:" + session.rollbackRadius + " t:" + preset.commandToken()
                             + (session.rollbackForce ? " force" : "");
