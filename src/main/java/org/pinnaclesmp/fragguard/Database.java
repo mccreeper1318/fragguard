@@ -844,7 +844,8 @@ final class Database {
         String worldUuid = resolveWorldUuid(worldName);
         List<RollbackTarget> savedTargets = List.copyOf(targets);
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
-            rejectOverlappingJob(databaseConnection, worldUuid, worldName, centerX, centerZ, radius, -1L);
+            rejectOverlappingChunks(databaseConnection,
+                    RollbackJobChunk.radius(worldUuid, centerX, centerZ, radius), -1L);
             long now = System.currentTimeMillis();
             long jobId;
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
@@ -878,22 +879,23 @@ final class Database {
 
             try (PreparedStatement statement = databaseConnection.prepareStatement("""
                     INSERT INTO rollback_job_changes
-                    (job_id, sequence, world, x, y, z, expected_data, target_data,
+                    (job_id, sequence, world, world_uuid, x, y, z, expected_data, target_data,
                      expected_entity_data, target_entity_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """)) {
                 for (int index = 0; index < savedTargets.size(); index++) {
                     RollbackTarget target = savedTargets.get(index);
                     statement.setLong(1, jobId);
                     statement.setInt(2, index);
                     statement.setString(3, target.worldName());
-                    statement.setInt(4, target.x());
-                    statement.setInt(5, target.y());
-                    statement.setInt(6, target.z());
-                    statement.setString(7, target.expectedData());
-                    statement.setString(8, target.blockData());
-                    statement.setBytes(9, target.expectedEntityData());
-                    statement.setBytes(10, target.targetEntityData());
+                    statement.setString(4, worldUuid);
+                    statement.setInt(5, target.x());
+                    statement.setInt(6, target.y());
+                    statement.setInt(7, target.z());
+                    statement.setString(8, target.expectedData());
+                    statement.setString(9, target.blockData());
+                    statement.setBytes(10, target.expectedEntityData());
+                    statement.setBytes(11, target.targetEntityData());
                     statement.addBatch();
                     if ((index + 1) % batchSize == 0) {
                         statement.executeBatch();
@@ -977,7 +979,10 @@ final class Database {
                                 rows.getBoolean("conflicted"), rows.getBoolean("undone"),
                                 rows.getBytes("before_entity_data"), rows.getBytes("target_entity_data"),
                                 rows.getBytes("expected_entity_data"), appliedData, appliedEntityData,
-                                nullablePendingAuditId, rows.getBoolean("pending_audit_undo")));
+                                nullablePendingAuditId, rows.getBoolean("pending_audit_undo"),
+                                rows.getString("world_uuid"), rows.getString("physical_actor_uuid"),
+                                rows.getString("physical_actor_name"), rows.getString("causal_player_uuid"),
+                                rows.getString("causal_chain_id"), rows.getString("causal_cause_type")));
                     }
                 }
             }
@@ -1122,8 +1127,7 @@ final class Database {
             if (!job.status().equals("COMPLETED") && !job.status().equals("FAILED")) {
                 throw new IllegalStateException("Rollback job #" + jobId + " cannot be undone while it is " + job.status() + ".");
             }
-            rejectOverlappingJob(databaseConnection, job.worldUuid(), job.worldName(), job.centerX(),
-                    job.centerZ(), job.radius(), jobId);
+            rejectOverlappingChunks(databaseConnection, reservedChunks(databaseConnection, job), jobId);
             try (PreparedStatement statement = databaseConnection.prepareStatement(
                     "UPDATE rollback_jobs SET status = 'UNDOING', updated_at = ?, last_error = NULL WHERE id = ?")) {
                 statement.setLong(1, System.currentTimeMillis());
@@ -2301,31 +2305,52 @@ final class Database {
         }
     }
 
-    private void rejectOverlappingJob(Connection databaseConnection, String worldUuid, String worldName,
-                                       int centerX, int centerZ, int radius, long excludedJobId) throws SQLException {
-        try (PreparedStatement statement = databaseConnection.prepareStatement("""
-                SELECT id, center_x, center_z, radius
-                FROM rollback_jobs
-                WHERE world_uuid IN (?, ?) AND (world_uuid = ? OR world = ?)
-                  AND status IN ('RUNNING', 'UNDOING') AND id <> ?
+    private void rejectOverlappingChunks(Connection db, Set<RollbackJobChunk> requested,
+                                          long excludedJobId) throws SQLException {
+        if (requested.isEmpty()) {
+            return;
+        }
+        try (PreparedStatement active = db.prepareStatement("""
+                SELECT * FROM rollback_jobs
+                WHERE status IN ('RUNNING', 'UNDOING') AND id <> ?
                 """)) {
-            statement.setString(1, worldUuid);
-            statement.setString(2, worldName);
-            statement.setString(3, worldUuid);
-            statement.setString(4, worldName);
-            statement.setLong(5, excludedJobId);
-            try (ResultSet rows = statement.executeQuery()) {
-                while (rows.next()) {
-                    long dx = (long) rows.getInt("center_x") - centerX;
-                    long dz = (long) rows.getInt("center_z") - centerZ;
-                    long combinedRadius = (long) rows.getInt("radius") + radius;
-                    if (dx * dx + dz * dz <= combinedRadius * combinedRadius) {
-                        throw new IllegalStateException("Rollback job #" + rows.getLong("id")
-                                + " is already running in an overlapping region.");
+            active.setLong(1, excludedJobId);
+            try (ResultSet jobs = active.executeQuery()) {
+                while (jobs.next()) {
+                    RollbackJob job = readJob(jobs);
+                    Set<RollbackJobChunk> occupied = reservedChunks(db, job);
+                    for (RollbackJobChunk key : requested) {
+                        if (occupied.contains(key)) {
+                            throw new IllegalStateException("Rollback job #" + job.id()
+                                    + " is already running in an overlapping region.");
+                        }
                     }
                 }
             }
         }
+    }
+
+    private Set<RollbackJobChunk> reservedChunks(Connection db, RollbackJob job) throws SQLException {
+        if (!job.isPlayerScope()) {
+            return RollbackJobChunk.radius(job.worldUuid(), job.centerX(), job.centerZ(), job.radius());
+        }
+        Set<RollbackJobChunk> keys = new HashSet<>();
+        try (PreparedStatement statement = db.prepareStatement("""
+                SELECT world_uuid, chunk_x, chunk_z FROM rollback_job_chunks
+                WHERE job_id = ?
+                """)) {
+            statement.setLong(1, job.id());
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    keys.add(new RollbackJobChunk(rows.getString(1), rows.getInt(2), rows.getInt(3)));
+                }
+            }
+        }
+        if (keys.isEmpty() && job.totalBlocks() > 0) {
+            throw new IllegalStateException("Player rollback job #" + job.id()
+                    + " lacks durable chunk reservations; refusing overlapping work.");
+        }
+        return keys;
     }
 
     private RollbackJob loadJob(Connection databaseConnection, long jobId) throws SQLException {
@@ -2353,7 +2378,11 @@ final class Database {
                 rows.getLong("target_timestamp"), snapshotTimestamp, rows.getBoolean("force"),
                 rows.getString("status"), rows.getInt("total_blocks"), rows.getInt("processed_blocks"),
                 rows.getInt("applied_blocks"), rows.getInt("conflict_blocks"),
-                rows.getInt("undo_processed_blocks"), rows.getString("last_error"));
+                rows.getInt("undo_processed_blocks"), rows.getString("last_error"),
+                rows.getString("scope_type"), rows.getString("target_player_uuid"),
+                rows.getString("target_player_name"), rows.getString("world_scope_uuid"),
+                rows.getString("world_scope_name"), rows.getInt("historical_conflicts"),
+                rows.getInt("affected_worlds"), rows.getInt("affected_chunks"));
     }
 
     private void touchJob(Connection databaseConnection, long jobId) throws SQLException {
