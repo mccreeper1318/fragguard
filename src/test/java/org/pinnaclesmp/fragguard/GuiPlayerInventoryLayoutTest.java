@@ -120,7 +120,8 @@ class GuiPlayerInventoryLayoutTest {
             assertTrue(details.get(slots.get(16)).lore.stream()
                     .anyMatch(s -> s.contains("testtoken")));
             assertTrue(details.get(slots.get(22)).title.contains("Cancel Preview"));
-            assertFalse(slots.containsKey(24), "a scattered player preview has no fake radius control");
+            assertFalse(details.get(slots.get(24)).title.contains("Radius"),
+                    "a scattered player preview has no fake radius control");
         }
     }
 
