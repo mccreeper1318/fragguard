@@ -19,8 +19,25 @@ record RollbackJobChange(
         String appliedData,
         byte[] appliedEntityData,
         Long pendingAuditId,
-        boolean pendingAuditUndo
+        boolean pendingAuditUndo,
+        String worldUuid,
+        String physicalActorUuid,
+        String physicalActorName,
+        String causalPlayerUuid,
+        String causalChainId,
+        String causalCauseType
 ) {
+    RollbackJobChange(int sequence, String worldName, int x, int y, int z,
+                      String beforeData, String targetData, String expectedData,
+                      boolean processed, boolean applied, boolean conflicted, boolean undone,
+                      byte[] beforeEntityData, byte[] targetEntityData, byte[] expectedEntityData,
+                      String appliedData, byte[] appliedEntityData, Long pendingAuditId,
+                      boolean pendingAuditUndo) {
+        this(sequence, worldName, x, y, z, beforeData, targetData, expectedData,
+                processed, applied, conflicted, undone, beforeEntityData, targetEntityData,
+                expectedEntityData, appliedData, appliedEntityData, pendingAuditId,
+                pendingAuditUndo, null, null, null, null, null, null);
+    }
     RollbackJobChange(
             int sequence,
             String worldName,
@@ -64,6 +81,8 @@ record RollbackJobChange(
     RollbackJobChange withBeforeState(String blockData, byte[] entityData) {
         return new RollbackJobChange(sequence, worldName, x, y, z, blockData, targetData, expectedData,
                 processed, applied, conflicted, undone, entityData, targetEntityData, expectedEntityData,
-                appliedData, appliedEntityData, pendingAuditId, pendingAuditUndo);
+                appliedData, appliedEntityData, pendingAuditId, pendingAuditUndo,
+                worldUuid, physicalActorUuid, physicalActorName, causalPlayerUuid,
+                causalChainId, causalCauseType);
     }
 }
