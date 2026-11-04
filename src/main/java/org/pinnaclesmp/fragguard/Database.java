@@ -711,8 +711,9 @@ final class Database {
             long snapshotBytes = 0L;
 
             String timelineSql = """
-                    SELECT id, happened_at, actor_uuid, causal_player_uuid, world,
-                           before_data, after_data, before_entity_data, after_entity_data
+                    SELECT id, happened_at, actor_uuid, actor_name, causal_player_uuid,
+                           causal_chain_id, causal_cause_type, world, before_data,
+                           after_data, before_entity_data, after_entity_data
                     FROM block_changes
                     WHERE rollback_pending = 0 AND world_uuid = ?
                       AND x = ? AND y = ? AND z = ?
@@ -730,7 +731,8 @@ final class Database {
                     continue; // Never fall back to a historical/reused display name.
                 }
                 var scanner = new SelectivePlayerRollbackPlanner.CoordinateScanner(
-                        uuid, currentWorldName, position.x(), position.y(), position.z());
+                        uuid, currentWorldName, position.worldUuid(),
+                        position.x(), position.y(), position.z());
                 boolean exceededHistoryLimit = false;
                 boolean newerOtherActor = false;
                 boolean newerTargetActor = false;
@@ -764,7 +766,9 @@ final class Database {
                                         rows.getLong("id"), rows.getString("actor_uuid"),
                                         rows.getString("causal_player_uuid"), rows.getString("world"),
                                         rows.getString("before_data"), rows.getString("after_data"),
-                                        rows.getBytes("before_entity_data"), rows.getBytes("after_entity_data")));
+                                        rows.getBytes("before_entity_data"), rows.getBytes("after_entity_data"),
+                                        rows.getString("actor_name"), rows.getString("causal_chain_id"),
+                                        rows.getString("causal_cause_type")));
                             } catch (SelectivePlayerRollbackPlanner.HistoryLimitExceededException exception) {
                                 exceededHistoryLimit = true;
                                 break;
