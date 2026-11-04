@@ -29,6 +29,8 @@ class GuiPlayerInventoryLayoutTest {
     @Test
     void pickerUsesAllFortyFiveSlotsAndGlobalPagesKeepWorldAndPhysicalCause() {
         Inventory inventory = mock(Inventory.class);
+        // The player preview uses a 27-slot inventory and fills empty slots.
+        when(inventory.getSize()).thenReturn(27);
         Map<Integer, ItemStack> slots = new HashMap<>();
         Map<ItemStack, ItemDetails> details = new IdentityHashMap<>();
         doAnswer(invocation -> {
