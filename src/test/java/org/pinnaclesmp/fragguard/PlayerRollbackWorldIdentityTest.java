@@ -42,10 +42,27 @@ class PlayerRollbackWorldIdentityTest {
     }
 
     @Test
+    void normalizedWorldNameRetainsOriginalStableUuidAndCause() {
+        var change = new RollbackJobChange(0, "old_world", 3, 64, 4,
+                "minecraft:stone", "minecraft:air", "minecraft:stone",
+                false, false, false, false, null, null, null, null, null,
+                null, false, EXPECTED.toString(), "tnt-entity", "Explosion: TNT",
+                "target-player", "chain-2", "TNT_CHAIN");
+        var refreshed = change.withWorldName("renamed_world");
+        assertEquals("renamed_world", refreshed.worldName());
+        assertEquals(EXPECTED.toString(), refreshed.worldUuid());
+        assertEquals("tnt-entity", refreshed.physicalActorUuid());
+        assertEquals("target-player", refreshed.causalPlayerUuid());
+        assertEquals("TNT_CHAIN", refreshed.causalCauseType());
+    }
+
+    @Test
     void bothMutationPathsUseVerifiedWorldResolutionNotHistoricalName() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/org/pinnaclesmp/fragguard/FragGuardCommand.java"));
         assertFalse(source.contains("Bukkit.getWorld(change.worldName())"));
+        assertEquals(2, source.split("queued.withWorldName\\(world.getName\\(\\)\\)", -1).length - 1,
+                "both normal and forced mutation paths must propagate current world names into audits");
         int prepare = source.indexOf("private void applyPreparedBatch");
         int force = source.indexOf("private void retryForcedChangesSlice");
         assertTrue(prepare > 0 && force > prepare);
