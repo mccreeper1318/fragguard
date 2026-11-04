@@ -85,6 +85,9 @@ class RollbackSafetyRegressionTest {
                 assertEquals("minecraft:air", row.getString("applied_data"),
                         "the v3 setup must model a physics-normalized result distinct from target_data");
             }
+            // The v8 coordinate index is intentionally partial on
+            // rollback_pending; remove it before emulating the older v2 schema.
+            statement.executeUpdate("DROP INDEX IF EXISTS idx_fg_coordinate_time");
             statement.executeUpdate("ALTER TABLE block_changes DROP COLUMN rollback_pending");
             statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN applied_data");
             statement.executeUpdate("ALTER TABLE rollback_job_changes DROP COLUMN applied_entity_data");

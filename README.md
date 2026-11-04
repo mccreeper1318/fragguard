@@ -307,6 +307,68 @@ Player-scoped rollback, historical conflict protection, and the dedicated
 global-player GUI workflow follow in later 26.3-1.2.1 issues. Final integration tests on the
 live Paper server are reserved for the end of the update.
 
+## Selective player rollback planning (26.3-1.2.1)
+
+The new **planning API** is used by the upcoming player-scoped rollback
+commands (#103). Planning alone **does not change any blocks**. It resolves
+a player's current/previous username or UUID to a stable historical UUID,
+then inspects direct and confidently causally attributed events from the
+chosen time window, across all worlds. This includes traceable TNT chains,
+projectile-ignited TNT, and supported piston/flying-machine consequences.
+
+For each affected coordinate, the planner reads the retained history in
+reverse chronological order. It can reverse only the **newest uninterrupted
+suffix owned by that player**. Another player's edit, an unattributed
+environmental edit, or other recorded work ends the reversible suffix.
+
+For example, given the following chronology:
+
+```text
+10:00 Steve: air -> stone
+10:05 Alex:  stone -> dirt
+10:10 Steve: dirt -> glass
+```
+
+Selective planning for Steve produces **glass -> dirt**, never
+**glass -> air**. If Alex is the latest editor, the coordinate is
+historically protected and no rollback target is generated. Both
+direct edits and attributed TNT/piston effects obey this same rule.
+
+Planning also refuses a stale preview when another recorded change has
+occurred at a selected coordinate **after its snapshot timestamp**. A known
+later edit by another actor is reported as a historical conflict; even a
+later target-player edit requires a fresh plan rather than silently changing
+the preview's scope. Normal `force` does not bypass these protections.
+
+Planning reports reversible coordinates, historical ownership conflicts,
+no-op coordinates, and unavailable/inconsistent history separately.
+The planner checks continuity of block states **and block-entity snapshots**
+to avoid crossing changes to inventory, sign text, and other supported
+tile data. Missing legacy snapshots for a block-entity are not treated as
+empty inventories. When retained history is too long to verify safely,
+an incomplete snapshot is detected, or historical states disagree, the
+coordinate is skipped rather than being guessed.
+
+`rollback-max-blocks-per-command` bounds candidate coordinates,
+`rollback-max-snapshot-bytes-per-command` bounds saved target/expected
+block-entity data, and a per-coordinate history cap prevents unbounded
+reconstruction. **Schema v8** adds an indexed world UUID/coordinate/time
+history lookup so each candidate is checked without a world-wide scan.
+World names in old history may be outdated after a rename, so targets
+use the **currently loaded world name resolved from its stable UUID**;
+unloaded or unrecognized worlds are classified as unavailable, never
+mapped by their potentially reused old display names.
+The existing database worker's write barrier and query
+timeouts remain in effect. The planner never overrides a known
+historical ownership boundary, **even when the eventual executor's
+normal `force` option is enabled**. Force only affects live-state
+conflict handling and cannot make older another-player work eligible.
+
+Player-specific preview, confirmation, job persistence, recovery,
+undo, and GUI integration are delivered by follow-up issues #103/#104.
+Live Paper server tests are deferred until the integrated
+26.3-1.2.1 update is complete.
+
 ## Historical player identity and actor indexes
 
 FragGuard resolves players from **retained block history** rather than online player
