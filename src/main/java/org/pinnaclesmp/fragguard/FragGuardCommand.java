@@ -812,10 +812,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             return;
         }
 
-        World world = Bukkit.getWorld(chunk.worldName());
+        World world = resolveChunkWorld(chunk);
         if (world == null) {
             failJob(job, operator, new IllegalStateException(
-                    "World '" + chunk.worldName() + "' is not loaded."));
+                    "World '" + chunk.worldName() + "' is not loaded or its UUID has changed."));
             return;
         }
 
@@ -885,9 +885,25 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
 
         chunkTicketReferences.remove(chunk);
-        World world = Bukkit.getWorld(chunk.worldName());
+        World world = resolveChunkWorld(chunk);
         if (world != null) {
             world.removePluginChunkTicket(chunk.x(), chunk.z(), plugin);
+        }
+    }
+
+    private World resolveChunkWorld(RollbackChunkPlan.ChunkKey chunk) {
+        World byName = Bukkit.getWorld(chunk.worldName());
+        if (chunk.worldUuid() == null || chunk.worldUuid().isBlank()) {
+            return byName; // Legacy unit tests and older jobs with no UUID.
+        }
+        if (byName != null && (byName.getUID() == null
+                || chunk.worldUuid().equals(byName.getUID().toString()))) {
+            return byName;
+        }
+        try {
+            return Bukkit.getWorld(UUID.fromString(chunk.worldUuid()));
+        } catch (IllegalArgumentException invalidWorldId) {
+            return null;
         }
     }
 
@@ -1601,6 +1617,49 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         + "s; queued writes: " + health.queuedWrites() + ")."));
             }
         }.runTaskTimer(plugin, 40L, 40L);
+    }
+
+    private void sendRollbackJobStatus(Player player, String rawJobId) {
+        long id;
+        try {
+            id = Long.parseLong(rawJobId);
+            if (id <= 0) {
+                throw new NumberFormatException("Invalid job number");
+            }
+        } catch (NumberFormatException ignored) {
+            player.sendMessage(color("&cUsage: /fg status <job-id>"));
+            return;
+        }
+        database.loadRollbackJobAsync(id).whenComplete((job, failure) -> onServerThread(() -> {
+            if (failure != null) {
+                reportJobError(player, "Could not read rollback job", failure);
+                return;
+            }
+            player.sendMessage(color("&8&m------&r &eFragGuard Rollback #" + job.id() + " &8&m------"));
+            player.sendMessage(color("&7Type: &f" + (job.isPlayerScope() ? "Player" : "Radius")
+                    + " &7| Status: &f" + job.status()));
+            player.sendMessage(color("&7Operator: &f" + job.actorName()));
+            if (job.isPlayerScope()) {
+                player.sendMessage(color("&7Target player: &f" + job.targetPlayerName()
+                        + " &8(" + job.targetPlayerUuid() + ")"));
+                player.sendMessage(color("&7World scope: &f"
+                        + (job.worldScopeName() == null ? "All worlds" : job.worldScopeName())
+                        + " &7| Worlds affected: &f" + job.affectedWorlds()));
+                player.sendMessage(color("&7Chunks: &f" + job.affectedChunks()
+                        + " &7| Historical conflicts protected: &e" + job.historicalConflicts()));
+            } else {
+                player.sendMessage(color("&7World: &f" + job.worldName()
+                        + " &7| Radius: &f" + job.radius()));
+            }
+            player.sendMessage(color("&7Time since: &f"
+                    + DATE_FORMAT.format(Instant.ofEpochMilli(job.targetTimestamp()))));
+            player.sendMessage(color("&7Processed: &f" + job.processedBlocks() + "/" + job.totalBlocks()
+                    + " &7| Applied: &f" + job.appliedBlocks()
+                    + " &7| Live conflicts: &f" + job.conflictBlocks()));
+            if (job.lastError() != null && !job.lastError().isBlank()) {
+                player.sendMessage(color("&cLast error: " + job.lastError()));
+            }
+        }));
     }
 
     private void sendDatabaseStatus(Player player) {
