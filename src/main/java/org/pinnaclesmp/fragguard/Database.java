@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 7;
+    static final int SCHEMA_VERSION = 8;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int MAX_PERSISTED_COALESCE_CANDIDATES = 4_096;
@@ -654,6 +654,15 @@ final class Database {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "Player rollback block and snapshot limits must be positive."));
         }
+        // Bukkit world access must stay on the caller thread, not the SQLite
+        // worker. Capturing loaded names by stable UUID also avoids executing
+        // the rollback in a reused/renamed historical world name.
+        Map<String, String> loadedWorldNames = new HashMap<>();
+        for (World world : plugin.getServer().getWorlds()) {
+            if (world.getUID() != null && world.getName() != null) {
+                loadedWorldNames.put(world.getUID().toString(), world.getName());
+            }
+        }
         return submit(databaseConnection -> {
             long now = System.currentTimeMillis();
             long upper = Math.min(snapshotTimestamp, now);
@@ -715,8 +724,13 @@ final class Database {
                 if (activeQuery != null && activeQuery.isDone()) {
                     throw new SQLTimeoutException("Player rollback planning exceeded its query deadline.");
                 }
+                String currentWorldName = loadedWorldNames.get(position.worldUuid());
+                if (currentWorldName == null) {
+                    unavailable++; // World unloaded or its UUID is not recognized.
+                    continue; // Never fall back to a historical/reused display name.
+                }
                 var scanner = new SelectivePlayerRollbackPlanner.CoordinateScanner(
-                        uuid, position.x(), position.y(), position.z());
+                        uuid, currentWorldName, position.x(), position.y(), position.z());
                 boolean exceededHistoryLimit = false;
                 boolean newerOtherActor = false;
                 boolean newerTargetActor = false;
@@ -1250,6 +1264,7 @@ final class Database {
                         case 4 -> migrateHistoricalActorIndexes(databaseConnection);
                         case 5 -> migrateCausalAttributionSchema(databaseConnection);
                         case 6 -> migrateCausalPlayerNameIndex(databaseConnection);
+                        case 7 -> migratePlayerRollbackCoordinateIndex(databaseConnection);
                         default -> throw new SQLException("No FragGuard database migration exists for schema version "
                                 + previousVersion + ".");
                     }
@@ -1638,6 +1653,22 @@ final class Database {
                     CREATE INDEX IF NOT EXISTS idx_fg_causal_name_uuid
                     ON block_changes(causal_player_name COLLATE NOCASE, causal_player_uuid)
                     WHERE causal_player_uuid IS NOT NULL
+                    """);
+        }
+    }
+
+    /**
+     * Coordinate history was previously scanning every record in a world
+     * for each selected player-rollback coordinate. This partial index makes
+     * newest-first history reconstruction an indexed coordinate/time seek.
+     */
+    private void migratePlayerRollbackCoordinateIndex(Connection databaseConnection) throws SQLException {
+        startupStage = "indexing block coordinates for safe player rollback planning";
+        try (Statement statement = databaseConnection.createStatement()) {
+            statement.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_coordinate_time
+                    ON block_changes(world_uuid, x, y, z, happened_at DESC, id DESC)
+                    WHERE rollback_pending = 0
                     """);
         }
     }
