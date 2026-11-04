@@ -76,8 +76,10 @@ reversible blocks, historical conflicts and force/live-conflict behavior.
 the command workflow; no artificial radius outline is drawn for player scope.
 The existing radius preview still draws its world boundary. Exiting or
 disconnecting invalidates GUI queries, and abandoning a GUI-owned preview
-cancels its outstanding token. Existing undo history distinguishes Player
-from Radius and shows target metadata.
+cancels its outstanding token. Player selection, history paging and filter
+queries actively interrupt their underlying SQLite statement on deadline,
+rather than allowing a timed-out scan to keep consuming database work.
+Existing undo history distinguishes Player from Radius and shows target metadata.
 
 Lookup History provides deterministic radius and time presets. Radius choices are bounded by `max-lookup-radius`, and time choices are bounded by the configured retention period.
 
