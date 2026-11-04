@@ -22,9 +22,13 @@
 - Added global player lookup by UUID/name with world, time, and page filters (#101).
 - Added selective player rollback planning with historical ownership protection (#102).
 - Added player rollback preview, confirmation, persistent multi-world jobs, undo, and chunk overlap protection (#103).
+- Added player-scoped lookup and rollback GUI screens with history-based selection, paging, filters, and safe previews (#104).
 
 ### Fixed
 
+- Fixed player-history GUI queries continuing to scan SQLite after their timeouts (#104).
+- Fixed GUI preview cancellation interfering with replacement radius searches (#104).
+- Fixed global player material filters disagreeing with displayed block transformations (#104).
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).
 

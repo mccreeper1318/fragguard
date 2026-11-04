@@ -431,6 +431,23 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }));
     }
 
+    /**
+     * GUI preview registration reuses the exact command token/expiration/cancel
+     * lifecycle instead of creating a second source of confirmation authority.
+     */
+    String registerPlayerGuiPreview(Player operator, PlayerRollbackArguments scope,
+                                    PlayerRollbackPlan plan) {
+        if (!operator.isOp() || !operator.hasPermission("fragguard.admin")) {
+            throw new IllegalStateException("Only operators can preview player rollbacks.");
+        }
+        previewPlayerRollback(operator, scope, plan);
+        return previews.values().stream()
+                .filter(preview -> preview.actorUuid().equals(operator.getUniqueId())
+                        && preview.isPlayerScope() && preview.playerPlan() == plan)
+                .map(RollbackPreview::token)
+                .findFirst().orElse(null);
+    }
+
     private void previewPlayerRollback(Player operator, PlayerRollbackArguments scope,
                                        PlayerRollbackPlan plan) {
         if (plan.targets().isEmpty()) {

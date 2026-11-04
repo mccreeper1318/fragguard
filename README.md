@@ -52,6 +52,35 @@ The GUI uses ordinary server-side Minecraft inventories and requires no client m
 
 ### GUI lookup setup
 
+**Scope selector (26.3-1.2.1):** Both Lookup History and Rollback now offer
+**Nearby Area** and **Player**. Nearby Area preserves the existing radius
+workflow and its separate Player/Action/Material result filters. Player scope
+opens a paginated alphabetically sorted list of identities present in retained
+FragGuard history (including causal-only identities). Each selection stores a
+stable UUID rather than a name.
+
+In **Player Lookup**, select a player, choose a time preset or **Full retained
+history**, and optionally restrict to one world (defaults to **All Worlds**).
+The event pages query SQLite instead of materializing an entire history.
+Their Action and Material filters query the entire selected history window,
+not merely the visible page. Each result shows the world, coordinates,
+before/after state and physical recorded actor. Indirect TNT/piston/mechanical
+events also explicitly identify the selected causal player and cause type.
+Click an exact event to load its block-entity details separately.
+
+In **Player Rollback**, choose a player, an obligatory time preset, an
+optional world (default All Worlds), and the existing Force toggle. **Preview**
+plans only safe changes and displays the target, time, worlds, chunks,
+reversible blocks, historical conflicts and force/live-conflict behavior.
+**Confirm** and **Cancel** use the same expiring operator-bound tokens as
+the command workflow; no artificial radius outline is drawn for player scope.
+The existing radius preview still draws its world boundary. Exiting or
+disconnecting invalidates GUI queries, and abandoning a GUI-owned preview
+cancels its outstanding token. Player selection, history paging and filter
+queries actively interrupt their underlying SQLite statement on deadline,
+rather than allowing a timed-out scan to keep consuming database work.
+Existing undo history distinguishes Player from Radius and shows target metadata.
+
 Lookup History provides deterministic radius and time presets. Radius choices are bounded by `max-lookup-radius`, and time choices are bounded by the configured retention period.
 
 The selected world, center, radius, cutoff time, and an upper database row boundary are captured for the investigation. This keeps paging deterministic even while new history continues to be written after the lookup begins.
@@ -396,10 +425,10 @@ across multiple worlds; the undo GUI and `/fg status <job-id>` display
 explicit scope information. Existing radius jobs remain readable and
 continue using the same workflow.
 
-The upcoming GUI issue #104 adds a dedicated **new player rollback
-configuration** screen; the undoable-job browser already identifies
-player-scoped jobs. Live Paper server tests remain deferred until the
-integrated 26.3-1.2.1 update is complete.
+The GUI now provides a player selection, global history, filtered event
+browsing, and dedicated player rollback preview/confirm/cancel screens
+(#104). The undoable-job browser identifies player-scoped jobs. Live Paper
+server tests remain deferred until the integrated 26.3-1.2.1 update is complete.
 
 ## Historical player identity and actor indexes
 
