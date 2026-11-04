@@ -81,10 +81,15 @@ final class FragGuardGui implements Listener {
         // The existing inventory stays visible during async loads, but its controls
         // must not initiate another transition from a partially staged lookup state.
         if (session.pendingTransition.isPending()) {
+            // Cancel must remain usable while a player preview is still being
+            // planned and has no command token. Invalidating its generation
+            // prevents an eventual query completion from registering a token.
+            boolean cancelPendingPreview = session.screen == Screen.ROLLBACK_SETUP
+                    && slot == 22;
             boolean editableSetup = (session.screen == Screen.SETUP
                     || session.screen == Screen.ROLLBACK_SETUP)
-                    && (slot == 4 || slot == 12 || slot == 14 || slot == 24);
-            if (!editableSetup) return;
+                    && (slot == 4 || slot == 10 || slot == 12 || slot == 14 || slot == 24);
+            if (!cancelPendingPreview && !editableSetup) return;
             session.lookupRequests.invalidate();
             session.playerRequests.invalidate();
             session.previewRequests.invalidate();
@@ -173,6 +178,12 @@ final class FragGuardGui implements Listener {
 
     private void openMain(Player player) {
         Session session = sessions.computeIfAbsent(player.getUniqueId(), ignored -> new Session());
+        // Returning to the main menu abandons a GUI-owned player rollback
+        // preview. Consume its token before reset clears ownership metadata.
+        String ownedToken = session.playerPreviewToken;
+        if (ownedToken != null && ownedToken.equals(activeRollbackToken(player))) {
+            player.performCommand("fg rollback cancel");
+        }
         session.reset(plugin.getRetentionDays(), maxRadius(), maxRollbackRadius());
         show(player, session, Screen.MAIN, FragGuardGuiRenderer::mainMenu, "main menu");
     }
