@@ -975,15 +975,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         List<PreparedWorldChange> candidates = new ArrayList<>();
         RuntimeException failure = null;
         try {
-            for (RollbackJobChange change : batch) {
+            for (RollbackJobChange queued : batch) {
                 if (!preparedBatch.isEmpty() && rollbackTickBudget.exhausted(System.nanoTime())) {
                     break;
                 }
-                World world = resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(change));
+                World world = resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(queued));
                 if (world == null) {
-                    throw new IllegalStateException("World '" + change.worldName()
+                    throw new IllegalStateException("World '" + queued.worldName()
                             + "' is not loaded or its saved UUID no longer matches.");
                 }
+                RollbackJobChange change = queued.withWorldName(world.getName());
                 String desiredData = undo ? change.beforeData() : change.targetData();
                 BlockData desired = Bukkit.createBlockData(Objects.requireNonNull(desiredData, "Missing saved block state"));
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
@@ -1415,12 +1416,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 if (index > startIndex && rollbackTickBudget.exhausted(System.nanoTime())) {
                     break;
                 }
-                RollbackJobChange change = changes.get(index);
-                World world = resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(change));
+                RollbackJobChange queued = changes.get(index);
+                World world = resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(queued));
                 if (world == null) {
-                    throw new IllegalStateException("World '" + change.worldName()
+                    throw new IllegalStateException("World '" + queued.worldName()
                             + "' is not loaded or its saved UUID no longer matches.");
                 }
+                RollbackJobChange change = queued.withWorldName(world.getName());
                 BlockData desired = Bukkit.createBlockData(
                         Objects.requireNonNull(change.targetData(), "Missing saved block state"));
                 Block block = world.getBlockAt(change.x(), change.y(), change.z());
