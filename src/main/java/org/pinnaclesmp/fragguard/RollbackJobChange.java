@@ -74,6 +74,15 @@ record RollbackJobChange(
                 null, null, null, false);
     }
 
+    RollbackJobChange withWorldName(String currentlyLoadedName) {
+        return new RollbackJobChange(sequence, currentlyLoadedName, x, y, z,
+                beforeData, targetData, expectedData, processed, applied, conflicted,
+                undone, beforeEntityData, targetEntityData, expectedEntityData,
+                appliedData, appliedEntityData, pendingAuditId, pendingAuditUndo,
+                worldUuid, physicalActorUuid, physicalActorName, causalPlayerUuid,
+                causalChainId, causalCauseType);
+    }
+
     RollbackJobChange withBeforeData(String blockData) {
         return withBeforeState(blockData, beforeEntityData);
     }
