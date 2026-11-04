@@ -31,20 +31,27 @@ final class GuiPlayerHistoryStore {
     static final int PLAYER_PAGE_SIZE = 45;
     static final int EVENT_PAGE_SIZE = 36;
     private static final String BASE_MATERIAL = """
-            CASE WHEN instr(before_data, '[') > 0
+            COALESCE(NULLIF(CASE WHEN instr(before_data, '[') > 0
                  THEN substr(before_data, 1, instr(before_data, '[') - 1)
-                 ELSE before_data END
+                 ELSE before_data END, ''), 'minecraft:air')
             """;
     private static final String AFTER_MATERIAL = """
-            CASE WHEN instr(after_data, '[') > 0
+            COALESCE(NULLIF(CASE WHEN instr(after_data, '[') > 0
                  THEN substr(after_data, 1, instr(after_data, '[') - 1)
-                 ELSE after_data END
+                 ELSE after_data END, ''), 'minecraft:air')
+            """;
+    // Match LookupActivityGrouper.materialKey: prefer the resulting block
+    // unless the result is air and the previous block was non-air. This
+    // includes changes between two different solid materials (e.g. logs
+    // becoming stripped logs), not just placement and removal.
+    private static final String AIR_MATERIALS = """
+            ('air','minecraft:air','cave_air','minecraft:cave_air',
+             'void_air','minecraft:void_air')
             """;
     private static final String MATERIAL = """
-            CASE WHEN (%1$s) IN ('air','minecraft:air','cave_air','minecraft:cave_air',
-                         'void_air','minecraft:void_air') THEN (%2$s)
+            CASE WHEN (%1$s) IN %3$s AND (%2$s) NOT IN %3$s THEN (%2$s)
                  ELSE (%1$s) END
-            """.formatted(BASE_MATERIAL, AFTER_MATERIAL);
+            """.formatted(AFTER_MATERIAL, BASE_MATERIAL, AIR_MATERIALS);
     private static final String OWNED = """
             rollback_pending = 0 AND happened_at >= ? AND happened_at <= ?
             AND (actor_uuid = ? OR causal_player_uuid = ?)
