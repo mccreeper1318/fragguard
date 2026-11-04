@@ -535,7 +535,7 @@ them, and no world blocks or entities change.
 
 Requires Java 25. The Gradle 9.8.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-The current development version is `26.3-1.2.1`. Development targets Paper API `26.3.build.177-stable`, with `api-version: '26.3'`.
+The current development version is `26.3-1.2.1`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
 
 ```bash
 ./gradlew build
