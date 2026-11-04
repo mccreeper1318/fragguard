@@ -19,6 +19,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -951,6 +953,7 @@ final class Database {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "The requested player rollback world is not loaded."));
         }
+        final String scopedWorldUuid = worldScopeUuid;
         Set<RollbackJobChunk> reservations = RollbackJobChunk.fromTargets(targets);
         int affectedWorlds = (int) reservations.stream().map(RollbackJobChunk::worldUuid).distinct().count();
         return submit(db -> inTransaction(db, () -> {
@@ -965,7 +968,7 @@ final class Database {
                     LIMIT 1
                     """)) {
                 for (RollbackTarget target : targets) {
-                    if (worldScopeUuid != null && !worldScopeUuid.equals(target.worldUuid())) {
+                    if (scopedWorldUuid != null && !scopedWorldUuid.equals(target.worldUuid())) {
                         throw new IllegalStateException("Target lies outside the requested world scope.");
                     }
                     changed.setString(1, target.worldUuid());
@@ -997,7 +1000,7 @@ final class Database {
                 statement.setLong(2, now);
                 statement.setString(3, operatorUuid);
                 statement.setString(4, operatorName);
-                statement.setString(5, worldScopeUuid == null ? "" : worldScopeUuid);
+                statement.setString(5, scopedWorldUuid == null ? "" : scopedWorldUuid);
                 statement.setString(6, worldScopeName == null ? "*" : worldScopeName);
                 statement.setLong(7, plan.targetTimestamp());
                 statement.setLong(8, plan.snapshotTimestamp());
@@ -1005,7 +1008,7 @@ final class Database {
                 statement.setInt(10, targets.size());
                 statement.setString(11, plan.player().uuid().toString());
                 statement.setString(12, plan.player().latestName());
-                statement.setString(13, worldScopeUuid);
+                statement.setString(13, scopedWorldUuid);
                 statement.setString(14, worldScopeName);
                 statement.setInt(15, plan.historicalConflicts());
                 statement.setInt(16, affectedWorlds);
