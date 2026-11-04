@@ -95,6 +95,10 @@ public final class FragGuardPlugin extends JavaPlugin {
         return Math.max(1, getConfig().getInt("rollback-job-retention-days", getRetentionDays()));
     }
 
+    FragGuardCommand getFragGuardCommand() {
+        return commandExecutor;
+    }
+
     int getGuiLookupFetchSize() {
         return guiLookupFetchSize;
     }
