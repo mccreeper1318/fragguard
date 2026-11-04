@@ -352,7 +352,13 @@ coordinate is skipped rather than being guessed.
 `rollback-max-blocks-per-command` bounds candidate coordinates,
 `rollback-max-snapshot-bytes-per-command` bounds saved target/expected
 block-entity data, and a per-coordinate history cap prevents unbounded
-reconstruction. The existing database worker's write barrier and query
+reconstruction. **Schema v8** adds an indexed world UUID/coordinate/time
+history lookup so each candidate is checked without a world-wide scan.
+World names in old history may be outdated after a rename, so targets
+use the **currently loaded world name resolved from its stable UUID**;
+unloaded or unrecognized worlds are classified as unavailable, never
+mapped by their potentially reused old display names.
+The existing database worker's write barrier and query
 timeouts remain in effect. The planner never overrides a known
 historical ownership boundary, **even when the eventual executor's
 normal `force` option is enabled**. Force only affects live-state
