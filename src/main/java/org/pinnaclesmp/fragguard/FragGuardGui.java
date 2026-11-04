@@ -875,6 +875,432 @@ final class FragGuardGui implements Listener {
         }
     }
 
+    private void openPlayerSelect(Player player, Session session, boolean rollback, int page) {
+        if (!session.pendingTransition.begin()) return;
+        long generation = session.playerRequests.begin();
+        UUID operator = player.getUniqueId();
+        Inventory previous = session.inventory;
+        database.awaitWritesAsync()
+                .thenCompose(ignored -> guiPlayerHistoryStore.identitiesAsync(page, plugin.getRetentionDays()))
+                .whenComplete((identities, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(operator) != session
+                            || !session.playerRequests.isCurrent(generation)
+                            || !sameDisplayedInventory(player, session, previous)) return;
+                    session.pendingTransition.complete();
+                    if (failure != null) {
+                        reportLookupFailure(player, failure);
+                        return;
+                    }
+                    String selected = rollback
+                            ? session.rollbackPlayer == null ? null : session.rollbackPlayer.uuid().toString()
+                            : session.lookupPlayer == null ? null : session.lookupPlayer.uuid().toString();
+                    if (show(player, session, Screen.PLAYER_SELECT,
+                            () -> FragGuardGuiRenderer.playerPicker(identities, selected, rollback),
+                            "player identity page " + (page + 1))) {
+                        session.selectorRollback = rollback;
+                        session.playerSelectPage = page;
+                        session.playerIdentityPage = identities;
+                    }
+                }));
+    }
+
+    private void clickPlayerSelect(Player player, Session session, int slot) {
+        GuiPlayerHistoryStore.IdentityPage identities = session.playerIdentityPage;
+        if (identities == null) return;
+        if (slot >= 0 && slot < GuiPlayerHistoryStore.PLAYER_PAGE_SIZE) {
+            if (slot < identities.identities().size()) {
+                GuiPlayerHistoryStore.PlayerIdentity chosen = identities.identities().get(slot);
+                if (session.selectorRollback) {
+                    session.rollbackPlayer = chosen;
+                    session.previewRequests.invalidate();
+                    openRollbackSetup(player, session);
+                } else {
+                    session.lookupPlayer = chosen;
+                    session.playerRequests.invalidate();
+                    openSetup(player, session);
+                }
+            }
+            return;
+        }
+        if (slot == 45) returnToPlayerSetup(player, session);
+        else if (slot == 48 && session.playerSelectPage > 0) {
+            openPlayerSelect(player, session, session.selectorRollback, session.playerSelectPage - 1);
+        } else if (slot == 50 && identities.hasNext()) {
+            openPlayerSelect(player, session, session.selectorRollback, session.playerSelectPage + 1);
+        } else if (slot == 53) player.closeInventory();
+    }
+
+    private void returnToPlayerSetup(Player player, Session session) {
+        if (session.selectorRollback) openRollbackSetup(player, session);
+        else openSetup(player, session);
+    }
+
+    private void openWorldSelect(Player player, Session session, boolean rollback, int page) {
+        List<String> worlds = plugin.getServer().getWorlds().stream()
+                .map(org.bukkit.World::getName)
+                .sorted(String.CASE_INSENSITIVE_ORDER)
+                .toList();
+        int clamped = Math.max(0, Math.min(page, Math.max(0, (worlds.size() - 1) / 36)));
+        String selected = rollback ? session.rollbackWorld : session.lookupWorld;
+        if (show(player, session, Screen.WORLD_SELECT,
+                () -> FragGuardGuiRenderer.worldPicker(worlds, clamped, selected, rollback),
+                "world selection")) {
+            session.selectorRollback = rollback;
+            session.visibleWorlds = worlds;
+            session.worldPage = clamped;
+        }
+    }
+
+    private void clickWorldSelect(Player player, Session session, int slot) {
+        if (slot == 4) {
+            setSelectedWorld(session, null);
+            returnToPlayerSetup(player, session);
+        } else if (slot >= 9 && slot < 45) {
+            int index = session.worldPage * 36 + slot - 9;
+            if (index < session.visibleWorlds.size()) {
+                setSelectedWorld(session, session.visibleWorlds.get(index));
+                returnToPlayerSetup(player, session);
+            }
+        } else if (slot == 45) returnToPlayerSetup(player, session);
+        else if (slot == 48 && session.worldPage > 0) {
+            openWorldSelect(player, session, session.selectorRollback, session.worldPage - 1);
+        } else if (slot == 50 && (session.worldPage + 1) * 36 < session.visibleWorlds.size()) {
+            openWorldSelect(player, session, session.selectorRollback, session.worldPage + 1);
+        } else if (slot == 53) player.closeInventory();
+    }
+
+    private void setSelectedWorld(Session session, String world) {
+        if (session.selectorRollback) {
+            session.rollbackWorld = world;
+            session.previewRequests.invalidate();
+        } else {
+            session.lookupWorld = world;
+            session.playerRequests.invalidate();
+        }
+    }
+
+    private void runPlayerLookup(Player player, Session session) {
+        GuiPlayerHistoryStore.PlayerIdentity selected = session.lookupPlayer;
+        if (selected == null) {
+            player.sendMessage(color("&cSelect a player from the retained history list first."));
+            return;
+        }
+        long snapshot = System.currentTimeMillis();
+        long millis = session.lookupFullHistory ? plugin.getRetentionDays() * 86_400_000L
+                : times().get(session.timeIndex).millis();
+        var query = new GuiPlayerHistoryStore.HistoryQuery(
+                selected.uuid(), selected.latestName(), session.lookupWorld,
+                snapshot - millis, snapshot, null, null);
+        session.playerFilterChoices = null;
+        loadPlayerResults(player, session, query, 1);
+    }
+
+    private void loadPlayerResults(Player player, Session session,
+                                   GuiPlayerHistoryStore.HistoryQuery query, int page) {
+        if (!session.pendingTransition.begin()) return;
+        long generation = session.playerRequests.begin();
+        UUID operator = player.getUniqueId();
+        Inventory previous = session.inventory;
+        player.sendMessage(color("&7Loading global player history..."));
+        database.awaitWritesAsync()
+                .thenCompose(ignored -> guiPlayerHistoryStore.historyAsync(query, page))
+                .whenComplete((results, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(operator) != session
+                            || !session.playerRequests.isCurrent(generation)
+                            || !sameDisplayedInventory(player, session, previous)) return;
+                    session.pendingTransition.complete();
+                    if (failure != null) {
+                        reportLookupFailure(player, failure);
+                        return;
+                    }
+                    if (show(player, session, Screen.PLAYER_RESULTS,
+                            () -> FragGuardGuiRenderer.playerHistoryResults(results, query),
+                            "player history page " + results.page())) {
+                        session.playerHistoryQuery = query;
+                        session.playerHistoryPage = results;
+                        session.selectedPlayerEvent = null;
+                        session.detailRequests.invalidate();
+                    }
+                }));
+    }
+
+    private void renderPlayerResults(Player player, Session session) {
+        if (session.playerHistoryQuery == null || session.playerHistoryPage == null) {
+            openSetup(player, session);
+            return;
+        }
+        show(player, session, Screen.PLAYER_RESULTS,
+                () -> FragGuardGuiRenderer.playerHistoryResults(
+                        session.playerHistoryPage, session.playerHistoryQuery),
+                "return to player history");
+    }
+
+    private void clickPlayerResults(Player player, Session session, int slot) {
+        if (session.playerHistoryPage == null) return;
+        if (slot >= 9 && slot < 45) {
+            int index = slot - 9;
+            if (index < session.playerHistoryPage.rows().size()) {
+                openPlayerEvent(player, session, session.playerHistoryPage.rows().get(index));
+            }
+        } else if (slot == 2) loadPlayerFilters(player, session);
+        else if (slot == 45) openSetup(player, session);
+        else if (slot == 48 && session.playerHistoryPage.page() > 1) {
+            loadPlayerResults(player, session, session.playerHistoryQuery,
+                    session.playerHistoryPage.page() - 1);
+        } else if (slot == 50 && session.playerHistoryPage.hasNext()) {
+            loadPlayerResults(player, session, session.playerHistoryQuery,
+                    session.playerHistoryPage.page() + 1);
+        } else if (slot == 8) player.closeInventory();
+    }
+
+    private void loadPlayerFilters(Player player, Session session) {
+        if (session.playerHistoryQuery == null) return;
+        if (session.playerFilterChoices != null) {
+            renderPlayerFilters(player, session);
+            return;
+        }
+        if (!session.pendingTransition.begin()) return;
+        long generation = session.playerRequests.begin();
+        UUID operator = player.getUniqueId();
+        Inventory previous = session.inventory;
+        guiPlayerHistoryStore.filterChoicesAsync(session.playerHistoryQuery)
+                .whenComplete((choices, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(operator) != session
+                            || !session.playerRequests.isCurrent(generation)
+                            || !sameDisplayedInventory(player, session, previous)) return;
+                    session.pendingTransition.complete();
+                    if (failure != null) {
+                        reportLookupFailure(player, failure);
+                        return;
+                    }
+                    session.playerFilterChoices = choices;
+                    renderPlayerFilters(player, session);
+                }));
+    }
+
+    private void renderPlayerFilters(Player player, Session session) {
+        if (session.playerHistoryQuery != null) {
+            show(player, session, Screen.PLAYER_FILTERS,
+                    () -> FragGuardGuiRenderer.playerHistoryFilters(session.playerHistoryQuery),
+                    "player action/material filters");
+        }
+    }
+
+    private void clickPlayerFilters(Player player, Session session, int slot) {
+        switch (slot) {
+            case 10 -> openPlayerFilterOptions(player, session, PlayerFilterKind.ACTION, 0);
+            case 12 -> openPlayerFilterOptions(player, session, PlayerFilterKind.MATERIAL, 0);
+            case 16 -> {
+                GuiPlayerHistoryStore.HistoryQuery query = session.playerHistoryQuery;
+                if (query != null) loadPlayerResults(player, session,
+                        query.withAction(null).withMaterial(null), 1);
+            }
+            case 18 -> renderPlayerResults(player, session);
+            case 26 -> player.closeInventory();
+            default -> { }
+        }
+    }
+
+    private void openPlayerFilterOptions(Player player, Session session, PlayerFilterKind kind, int page) {
+        if (session.playerFilterChoices == null || session.playerHistoryQuery == null) return;
+        List<String> labels = new ArrayList<>();
+        labels.add("Any");
+        if (kind == PlayerFilterKind.ACTION) {
+            labels.addAll(session.playerFilterChoices.actions().stream()
+                    .map(ChangeAction::displayPastTense).toList());
+        } else {
+            labels.addAll(session.playerFilterChoices.materials());
+        }
+        int selected = 0;
+        for (int i = 1; i < labels.size(); i++) {
+            if (kind == PlayerFilterKind.ACTION
+                    && session.playerHistoryQuery.action() == session.playerFilterChoices.actions().get(i - 1)
+                    || kind == PlayerFilterKind.MATERIAL
+                    && labels.get(i).equals(session.playerHistoryQuery.material())) {
+                selected = i;
+                break;
+            }
+        }
+        int selectedIndex = selected;
+        if (show(player, session, Screen.PLAYER_FILTER_OPTIONS,
+                () -> FragGuardGuiRenderer.playerFilterOptions(labels, page, selectedIndex),
+                "player filter options")) {
+            session.playerFilterKind = kind;
+            session.playerOptionLabels = List.copyOf(labels);
+            session.playerOptionPage = page;
+        }
+    }
+
+    private void clickPlayerFilterOptions(Player player, Session session, int slot) {
+        if (slot >= 0 && slot < 45) {
+            int index = session.playerOptionPage * 45 + slot;
+            if (index < session.playerOptionLabels.size() && session.playerHistoryQuery != null) {
+                GuiPlayerHistoryStore.HistoryQuery query = session.playerHistoryQuery;
+                if (session.playerFilterKind == PlayerFilterKind.ACTION) {
+                    ChangeAction action = index == 0 ? null
+                            : session.playerFilterChoices.actions().get(index - 1);
+                    query = query.withAction(action);
+                } else {
+                    query = query.withMaterial(index == 0 ? null : session.playerOptionLabels.get(index));
+                }
+                loadPlayerResults(player, session, query, 1);
+            }
+        } else if (slot == 45) renderPlayerFilters(player, session);
+        else if (slot == 48 && session.playerOptionPage > 0) {
+            openPlayerFilterOptions(player, session, session.playerFilterKind, session.playerOptionPage - 1);
+        } else if (slot == 50 && (session.playerOptionPage + 1) * 45 < session.playerOptionLabels.size()) {
+            openPlayerFilterOptions(player, session, session.playerFilterKind, session.playerOptionPage + 1);
+        } else if (slot == 53) player.closeInventory();
+    }
+
+    private void openPlayerEvent(Player player, Session session, PlayerLookupRow event) {
+        if (!event.blockEntityDataPresent()) {
+            session.detailRequests.invalidate();
+            session.selectedPlayerEvent = event;
+            session.playerBeforeEntity = null;
+            session.playerAfterEntity = null;
+            session.playerEntityChanged = false;
+            renderPlayerEvent(player, session);
+            return;
+        }
+        if (!session.pendingTransition.begin()) return;
+        long generation = session.detailRequests.begin();
+        UUID operator = player.getUniqueId();
+        Inventory previous = session.inventory;
+        guiLookupStore.loadEventPayloadAsync(event.id())
+                .thenApply(payload -> new PlayerEventDetail(event,
+                        BlockEntitySnapshot.describe(payload.beforeEntityData()),
+                        BlockEntitySnapshot.describe(payload.afterEntityData()),
+                        payload.changed()))
+                .whenComplete((prepared, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(operator) != session
+                            || !session.detailRequests.isCurrent(generation)
+                            || !sameDisplayedInventory(player, session, previous)) return;
+                    session.pendingTransition.complete();
+                    if (failure != null) {
+                        reportExactDetailFailure(player, failure);
+                        return;
+                    }
+                    if (show(player, session, Screen.PLAYER_EVENT,
+                            () -> FragGuardGuiRenderer.playerExactDetail(
+                                    prepared.row(), session.playerHistoryQuery.playerUuid().toString(),
+                                    prepared.before(), prepared.after(), prepared.changed()),
+                            "player event detail #" + event.id())) {
+                        session.selectedPlayerEvent = prepared.row();
+                        session.playerBeforeEntity = prepared.before();
+                        session.playerAfterEntity = prepared.after();
+                        session.playerEntityChanged = prepared.changed();
+                    }
+                }));
+    }
+
+    private void renderPlayerEvent(Player player, Session session) {
+        if (session.selectedPlayerEvent == null) {
+            renderPlayerResults(player, session);
+            return;
+        }
+        show(player, session, Screen.PLAYER_EVENT,
+                () -> FragGuardGuiRenderer.playerExactDetail(session.selectedPlayerEvent,
+                        session.playerHistoryQuery.playerUuid().toString(),
+                        session.playerBeforeEntity, session.playerAfterEntity,
+                        session.playerEntityChanged), "player event detail");
+    }
+
+    private void clickPlayerEvent(Player player, Session session, int slot) {
+        if (slot == 18) renderPlayerResults(player, session);
+        else if (slot == 26) player.closeInventory();
+    }
+
+    private record PlayerEventDetail(PlayerLookupRow row,
+                                     BlockEntitySnapshot.SnapshotDescription before,
+                                     BlockEntitySnapshot.SnapshotDescription after, boolean changed) {
+    }
+
+    private void runPlayerRollbackPreview(Player player, Session session) {
+        GuiPlayerHistoryStore.PlayerIdentity selected = session.rollbackPlayer;
+        if (selected == null) {
+            player.sendMessage(color("&cSelect a player from retained history first."));
+            return;
+        }
+        if (session.rollbackWorld != null && plugin.getServer().getWorld(session.rollbackWorld) == null) {
+            player.sendMessage(color("&cThe selected world is no longer loaded."));
+            return;
+        }
+        if (!session.pendingTransition.begin()) return;
+        long generation = session.previewRequests.begin();
+        UUID operator = player.getUniqueId();
+        Inventory previous = session.inventory;
+        TimePreset preset = times().get(session.rollbackTimeIndex);
+        long snapshot = System.currentTimeMillis();
+        PlayerRollbackArguments options = new PlayerRollbackArguments(
+                selected.uuid().toString(), session.rollbackWorld,
+                preset.millis(), session.rollbackForce);
+        player.sendMessage(color("&7Planning safe player rollback preview..."));
+        database.planPlayerRollbackAsync(options.playerArgument(), options.worldName(),
+                        snapshot - preset.millis(), snapshot,
+                        Math.max(1, plugin.getConfig().getInt("rollback-max-blocks-per-command", 50_000)),
+                        Math.max(1L, plugin.getConfig().getLong(
+                                "rollback-max-snapshot-bytes-per-command",
+                                Database.DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES)),
+                        plugin.getRetentionDays(), options.force())
+                .whenComplete((plan, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline() || sessions.get(operator) != session
+                            || !session.previewRequests.isCurrent(generation)
+                            || !sameDisplayedInventory(player, session, previous)) return;
+                    session.pendingTransition.complete();
+                    if (failure != null) {
+                        player.sendMessage(color("&cPlayer rollback preview failed: " + root(failure).getMessage()));
+                        return;
+                    }
+                    FragGuardCommand command = plugin.getFragGuardCommand();
+                    if (command == null) {
+                        player.sendMessage(color("&cFragGuard rollback commands are unavailable."));
+                        return;
+                    }
+                    String token;
+                    try {
+                        token = command.registerPlayerGuiPreview(player, options, plan);
+                    } catch (RuntimeException exception) {
+                        plugin.getLogger().log(Level.WARNING, "Could not register player rollback GUI preview", exception);
+                        player.sendMessage(color("&cCould not register rollback preview."));
+                        return;
+                    }
+                    if (token == null) return; // No eligible changes or chunk limit.
+                    if (show(player, session, Screen.PLAYER_ROLLBACK_PREVIEW,
+                            () -> FragGuardGuiRenderer.playerRollbackPreview(
+                                    token, plan, options.worldName(), options.force()),
+                            "player rollback preview")) {
+                        session.playerRollbackPlan = plan;
+                        session.playerPreviewToken = token;
+                    } else {
+                        player.performCommand("fg rollback cancel");
+                    }
+                }));
+    }
+
+    private void clickPlayerRollbackPreview(Player player, Session session, int slot) {
+        if (slot == 16) {
+            String token = session.playerPreviewToken;
+            if (token == null || !token.equals(activeRollbackToken(player))) {
+                player.sendMessage(color("&cThat rollback token expired. Run a new preview."));
+                session.playerPreviewToken = null;
+                session.playerRollbackPlan = null;
+                openRollbackSetup(player, session);
+                return;
+            }
+            session.playerPreviewToken = null;
+            session.playerRollbackPlan = null;
+            player.closeInventory();
+            player.performCommand("fg rollback confirm " + token);
+        } else if (slot == 22) {
+            session.playerPreviewToken = null;
+            session.playerRollbackPlan = null;
+            player.closeInventory();
+            player.performCommand("fg rollback cancel");
+        } else if (slot == 18) openRollbackSetup(player, session);
+        else if (slot == 26) player.closeInventory();
+    }
+
     private String activeRollbackToken(Player player) {
         var command = plugin.getCommand("fg");
         if (command == null) {
