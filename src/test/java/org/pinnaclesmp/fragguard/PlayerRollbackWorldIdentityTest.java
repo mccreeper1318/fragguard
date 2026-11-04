@@ -67,8 +67,8 @@ class PlayerRollbackWorldIdentityTest {
         int force = source.indexOf("private void retryForcedChangesSlice");
         assertTrue(prepare > 0 && force > prepare);
         assertTrue(source.substring(prepare, force).contains(
-                "resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(change))"));
+                "resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(queued))"));
         assertTrue(source.substring(force).contains(
-                "resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(change))"));
+                "resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(queued))"));
     }
 }
