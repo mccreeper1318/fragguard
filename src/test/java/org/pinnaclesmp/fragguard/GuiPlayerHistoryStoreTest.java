@@ -108,6 +108,58 @@ class GuiPlayerHistoryStoreTest {
     }
 
     @Test
+    void displayedMaterialFilterMatchesSqlForSolidTransformationsAndAirTransitions()
+            throws Exception {
+        initialize();
+        long now = System.currentTimeMillis();
+        record Change(String before, String after, String expected) {}
+        List<Change> changes = List.of(
+                new Change("minecraft:oak_log[axis=x]",
+                        "minecraft:stripped_oak_log[axis=y]", "minecraft:stripped_oak_log"),
+                new Change("minecraft:dirt", "minecraft:farmland[moisture=7]",
+                        "minecraft:farmland"),
+                new Change("minecraft:stone", "minecraft:air", "minecraft:stone"),
+                new Change("minecraft:air", "minecraft:granite", "minecraft:granite"),
+                new Change("minecraft:cave_air", "minecraft:air", "minecraft:air"),
+                new Change("minecraft:grass_block", "minecraft:coarse_dirt", "minecraft:coarse_dirt")
+        );
+        for (int i = 0; i < changes.size(); i++) {
+            Change change = changes.get(i);
+            insert(now - 30_000 + i * 1000L, BUILDER.toString(), "Builder",
+                    null, null, null, "world", ChangeAction.PLACE,
+                    change.before(), change.after());
+        }
+        var store = store();
+        var scope = new GuiPlayerHistoryStore.HistoryQuery(
+                BUILDER, "Builder", null, now - 35_000, now, null, null);
+        var rows = store.historyAsync(scope, 1).join().rows();
+        assertEquals(changes.size(), rows.size());
+        var choices = store.filterChoicesAsync(scope).join();
+        for (int i = 0; i < changes.size(); i++) {
+            Change change = changes.get(i);
+            PlayerLookupRow event = rows.stream()
+                    .filter(row -> change.after().equals(row.afterData()))
+                    .findFirst().orElseThrow();
+            LookupRow display = new LookupRow(event.id(), event.happenedAt(),
+                    event.actorUuid(), event.actorName(), event.worldName(),
+                    event.x(), event.y(), event.z(), event.action(),
+                    event.beforeData(), event.afterData(), event.blockEntityDataPresent());
+            assertEquals(change.expected(), LookupActivityGrouper.materialKey(display),
+                    "regression fixture must match the material shown by the GUI");
+            assertTrue(choices.materials().contains(change.expected()),
+                    "every displayed material must be offered in the filter catalog");
+            var filtered = store.historyAsync(scope.withMaterial(change.expected()), 1)
+                    .join().rows();
+            assertTrue(filtered.stream().anyMatch(row -> row.id() == event.id()),
+                    "filter for " + change.expected() + " must retain its rendered event");
+        }
+        assertEquals(0, store.historyAsync(scope.withMaterial("minecraft:oak_log"), 1)
+                .join().totalRows(), "old source log must not match the stripped-log event");
+        assertEquals(0, store.historyAsync(scope.withMaterial("minecraft:dirt"), 1)
+                .join().totalRows(), "old tilled dirt must not match displayed farmland");
+    }
+
+    @Test
     void exactPagesRemainBoundedAndDoNotDropLargeHistory() throws Exception {
         initialize();
         long now = System.currentTimeMillis();
