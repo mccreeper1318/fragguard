@@ -342,14 +342,23 @@ final class FragGuardGuiRenderer {
     }
 
     private static ItemStack undoJobItem(GuiRollbackJob job) {
-        List<String> lore = new ArrayList<>(List.of(
-                "&7Status: &f" + job.status(),
-                "&7Actor: &f" + actor(job.actorName()),
-                "&7World: &f" + actor(job.worldName()),
-                "&7Radius: &f" + job.radius(),
-                "&7Target: &f" + TIME.format(Instant.ofEpochMilli(job.targetTimestamp())),
-                "&7Applied: &f" + job.appliedBlocks() + "&7 / " + job.totalBlocks(),
-                "&7Conflicts: &f" + job.conflictBlocks()));
+        List<String> lore = new ArrayList<>();
+        lore.add("&7Type: &f" + (job.isPlayerScope() ? "Player" : "Radius"));
+        lore.add("&7Status: &f" + job.status());
+        lore.add("&7Operator: &f" + actor(job.actorName()));
+        if (job.isPlayerScope()) {
+            lore.add("&7Target player: &f" + actor(job.targetPlayerName()));
+            lore.add("&7World scope: &f" + (job.worldScopeName() == null
+                    ? "All" : actor(job.worldScopeName())));
+            lore.add("&7Worlds: &f" + job.affectedWorlds() + " &7| Chunks: &f" + job.affectedChunks());
+            lore.add("&7Historical conflicts: &e" + job.historicalConflicts());
+        } else {
+            lore.add("&7World: &f" + actor(job.worldName()));
+            lore.add("&7Radius: &f" + job.radius());
+        }
+        lore.add("&7Target: &f" + TIME.format(Instant.ofEpochMilli(job.targetTimestamp())));
+        lore.add("&7Applied: &f" + job.appliedBlocks() + "&7 / " + job.totalBlocks());
+        lore.add("&7Live conflicts: &f" + job.conflictBlocks());
         if (job.lastError() != null && !job.lastError().isBlank()) {
             lore.add("&cLast error: " + truncate(job.lastError()));
         }

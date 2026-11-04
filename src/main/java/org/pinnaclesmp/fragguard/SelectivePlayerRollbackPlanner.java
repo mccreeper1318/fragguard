@@ -23,7 +23,16 @@ final class SelectivePlayerRollbackPlanner {
 
     record HistoryRow(long id, String actorUuid, String causalPlayerUuid,
                       String worldName, String beforeData, String afterData,
-                      byte[] beforeEntityData, byte[] afterEntityData) {
+                      byte[] beforeEntityData, byte[] afterEntityData,
+                      String physicalActorName, String causalChainId,
+                      String causalCauseType) {
+        HistoryRow(long id, String actorUuid, String causalPlayerUuid,
+                   String worldName, String beforeData, String afterData,
+                   byte[] beforeEntityData, byte[] afterEntityData) {
+            this(id, actorUuid, causalPlayerUuid, worldName, beforeData, afterData,
+                    beforeEntityData, afterEntityData, null, null, null);
+        }
+
         boolean belongsTo(String playerUuid) {
             return playerUuid.equals(actorUuid) || playerUuid.equals(causalPlayerUuid);
         }
@@ -39,6 +48,7 @@ final class SelectivePlayerRollbackPlanner {
 
     static final class CoordinateScanner {
         private final String playerUuid;
+        private final String worldUuid;
         private final int x;
         private final int y;
         private final int z;
@@ -55,9 +65,14 @@ final class SelectivePlayerRollbackPlanner {
         private boolean protectedOlderChanges;
         private boolean invalidChain;
         private int rows;
+        private String physicalActorUuid;
+        private String physicalActorName;
+        private String causalPlayerUuid;
+        private String causalChainId;
+        private String causalCauseType;
 
         CoordinateScanner(String playerUuid, int x, int y, int z) {
-            this(playerUuid, null, x, y, z);
+            this(playerUuid, null, null, x, y, z);
         }
 
         /**
@@ -65,7 +80,13 @@ final class SelectivePlayerRollbackPlanner {
          * from its stable UUID. Retained rows may contain an obsolete name.
          */
         CoordinateScanner(String playerUuid, String currentWorldName, int x, int y, int z) {
+            this(playerUuid, currentWorldName, null, x, y, z);
+        }
+
+        CoordinateScanner(String playerUuid, String currentWorldName, String worldUuid,
+                          int x, int y, int z) {
             this.playerUuid = Objects.requireNonNull(playerUuid);
+            this.worldUuid = worldUuid;
             this.worldName = currentWorldName;
             this.x = x;
             this.y = y;
@@ -102,6 +123,11 @@ final class SelectivePlayerRollbackPlanner {
                 // Newest recorded change establishes the expected live state.
                 expectedBlock = row.afterData();
                 expectedEntity = row.afterEntityData();
+                physicalActorUuid = row.actorUuid();
+                physicalActorName = row.physicalActorName();
+                causalPlayerUuid = row.causalPlayerUuid();
+                causalChainId = row.causalChainId();
+                causalCauseType = row.causalCauseType();
                 hasOwnedSuffix = true;
             } else if (!sameState(row.afterData(), row.afterEntityData(),
                     nextNewerBeforeBlock, nextNewerBeforeEntity)) {
@@ -134,7 +160,9 @@ final class SelectivePlayerRollbackPlanner {
                 return new Decision(Status.NO_OP, null, protectedOlderChanges);
             }
             return new Decision(Status.REVERSIBLE, new RollbackTarget(worldName, x, y, z,
-                    desiredBlock, expectedBlock, desiredEntity, expectedEntity),
+                    desiredBlock, expectedBlock, desiredEntity, expectedEntity,
+                    worldUuid, physicalActorUuid, physicalActorName,
+                    causalPlayerUuid, causalChainId, causalCauseType),
                     protectedOlderChanges);
         }
     }
