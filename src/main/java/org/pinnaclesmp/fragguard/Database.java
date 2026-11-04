@@ -933,6 +933,141 @@ final class Database {
         }), false);
     }
 
+    /**
+     * Transactionally save player scope, operator/target identities, per-world
+     * target provenance, and chunk reservations before any world mutation.
+     * Refuse coordinates with recorded post-preview edits even with force.
+     */
+    CompletableFuture<RollbackJob> createPlayerRollbackJobAsync(
+            String operatorUuid, String operatorName, PlayerRollbackPlan plan,
+            String worldScopeName, boolean force) {
+        List<RollbackTarget> targets = List.copyOf(plan.targets());
+        if (targets.isEmpty()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "There are no safe player rollback targets to execute."));
+        }
+        String worldScopeUuid = worldScopeName == null ? null : resolveWorldUuid(worldScopeName);
+        if (worldScopeName != null && worldScopeUuid.equals(worldScopeName)) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "The requested player rollback world is not loaded."));
+        }
+        Set<RollbackJobChunk> reservations = RollbackJobChunk.fromTargets(targets);
+        int affectedWorlds = (int) reservations.stream().map(RollbackJobChunk::worldUuid).distinct().count();
+        return submit(db -> inTransaction(db, () -> {
+            rejectOverlappingChunks(db, reservations, -1L);
+            // Do not persist an unsafe/stale plan even if another operator
+            // changed the world after the original preview was displayed.
+            try (PreparedStatement changed = db.prepareStatement("""
+                    SELECT 1 FROM block_changes
+                    WHERE rollback_pending = 0 AND world_uuid = ?
+                      AND x = ? AND y = ? AND z = ?
+                      AND happened_at > ?
+                    LIMIT 1
+                    """)) {
+                for (RollbackTarget target : targets) {
+                    if (worldScopeUuid != null && !worldScopeUuid.equals(target.worldUuid())) {
+                        throw new IllegalStateException("Target lies outside the requested world scope.");
+                    }
+                    changed.setString(1, target.worldUuid());
+                    changed.setInt(2, target.x());
+                    changed.setInt(3, target.y());
+                    changed.setInt(4, target.z());
+                    changed.setLong(5, plan.snapshotTimestamp());
+                    try (ResultSet later = changed.executeQuery()) {
+                        if (later.next()) {
+                            throw new IllegalStateException("The player rollback preview is stale. "
+                                    + "New recorded changes require a fresh preview.");
+                        }
+                    }
+                }
+            }
+            long now = System.currentTimeMillis();
+            long jobId;
+            try (PreparedStatement statement = db.prepareStatement("""
+                    INSERT INTO rollback_jobs
+                    (created_at, updated_at, actor_uuid, actor_name, world_uuid, world,
+                     center_x, center_z, radius, target_timestamp, snapshot_timestamp,
+                     force, status, total_blocks, scope_type, target_player_uuid,
+                     target_player_name, world_scope_uuid, world_scope_name,
+                     historical_conflicts, affected_worlds, affected_chunks)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, 'RUNNING', ?,
+                            'PLAYER', ?, ?, ?, ?, ?, ?, ?)
+                    """, Statement.RETURN_GENERATED_KEYS)) {
+                statement.setLong(1, now);
+                statement.setLong(2, now);
+                statement.setString(3, operatorUuid);
+                statement.setString(4, operatorName);
+                statement.setString(5, worldScopeUuid == null ? "" : worldScopeUuid);
+                statement.setString(6, worldScopeName == null ? "*" : worldScopeName);
+                statement.setLong(7, plan.targetTimestamp());
+                statement.setLong(8, plan.snapshotTimestamp());
+                statement.setInt(9, force ? 1 : 0);
+                statement.setInt(10, targets.size());
+                statement.setString(11, plan.player().uuid().toString());
+                statement.setString(12, plan.player().latestName());
+                statement.setString(13, worldScopeUuid);
+                statement.setString(14, worldScopeName);
+                statement.setInt(15, plan.historicalConflicts());
+                statement.setInt(16, affectedWorlds);
+                statement.setInt(17, reservations.size());
+                statement.executeUpdate();
+                try (ResultSet keys = statement.getGeneratedKeys()) {
+                    if (!keys.next()) {
+                        throw new SQLException("SQLite did not return a player rollback job ID.");
+                    }
+                    jobId = keys.getLong(1);
+                }
+            }
+            try (PreparedStatement changes = db.prepareStatement("""
+                    INSERT INTO rollback_job_changes
+                    (job_id, sequence, world, world_uuid, x, y, z,
+                     expected_data, target_data, expected_entity_data, target_entity_data,
+                     physical_actor_uuid, physical_actor_name, causal_player_uuid,
+                     causal_chain_id, causal_cause_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """)) {
+                for (int i = 0; i < targets.size(); i++) {
+                    RollbackTarget target = targets.get(i);
+                    changes.setLong(1, jobId);
+                    changes.setInt(2, i);
+                    changes.setString(3, target.worldName());
+                    changes.setString(4, target.worldUuid());
+                    changes.setInt(5, target.x());
+                    changes.setInt(6, target.y());
+                    changes.setInt(7, target.z());
+                    changes.setString(8, target.expectedData());
+                    changes.setString(9, target.blockData());
+                    changes.setBytes(10, target.expectedEntityData());
+                    changes.setBytes(11, target.targetEntityData());
+                    changes.setString(12, target.physicalActorUuid());
+                    changes.setString(13, target.physicalActorName());
+                    changes.setString(14, target.causalPlayerUuid());
+                    changes.setString(15, target.causalChainId());
+                    changes.setString(16, target.causalCauseType());
+                    changes.addBatch();
+                    if ((i + 1) % batchSize == 0) {
+                        changes.executeBatch();
+                    }
+                }
+                changes.executeBatch();
+            }
+            try (PreparedStatement reserve = db.prepareStatement("""
+                    INSERT INTO rollback_job_chunks(job_id, world_uuid, chunk_x, chunk_z)
+                    VALUES (?, ?, ?, ?)
+                    """)) {
+                for (RollbackJobChunk key : reservations) {
+                    reserve.setLong(1, jobId);
+                    reserve.setString(2, key.worldUuid());
+                    reserve.setInt(3, key.x());
+                    reserve.setInt(4, key.z());
+                    reserve.addBatch();
+                }
+                reserve.executeBatch();
+            }
+            return loadJob(db, jobId);
+        }), false);
+    }
+
     CompletableFuture<List<RollbackJob>> loadResumableJobsAsync() {
         return submit(databaseConnection -> {
             List<RollbackJob> jobs = new ArrayList<>();
