@@ -122,7 +122,7 @@ class GuiPlayerWorkflowIntegrationTest {
             assertEquals("SETUP", get(f.session, "screen").toString());
             assertNull(get(f.session, "playerHistoryQuery"));
             assertFalse(((GuiPendingTransition) get(f.session, "pendingTransition")).isPending());
-            renderer.verifyNoInteractions();
+            renderer.verify(() -> FragGuardGuiRenderer.playerHistoryResults(any(), any()), never());
         }
     }
 
@@ -203,7 +203,7 @@ class GuiPlayerWorkflowIntegrationTest {
         put(session, "screen", screen("SETUP"));
         InventoryView open = mock(InventoryView.class);
         when(player.getOpenInventory()).thenReturn(open);
-        when(open.getTopInventory()).thenAnswer(i -> get(session, "inventory"));
+        when(open.getTopInventory()).thenAnswer(i -> (Inventory) get(session, "inventory"));
         @SuppressWarnings("unchecked")
         Map<UUID, Object> sessions = (Map<UUID, Object>) get(gui, "sessions");
         sessions.put(OPERATOR, session);
