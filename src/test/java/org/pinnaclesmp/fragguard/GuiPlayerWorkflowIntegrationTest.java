@@ -6,6 +6,7 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.scheduler.BukkitScheduler;
@@ -13,6 +14,7 @@ import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
+import org.mockito.InOrder;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -213,6 +215,56 @@ class GuiPlayerWorkflowIntegrationTest {
         verify(f.player).performCommand("fg rollback cancel");
         assertNull(get(f.session, "playerPreviewToken"));
         assertSame(mainMenu, get(f.session, "inventory"));
+    }
+
+    @Test
+    void replacementAreaSearchCancelsOnlyOldGuiPlayerTokenBeforeStartingNewQuery()
+            throws Exception {
+        Fixture f = fixture();
+        put(f.session, "screen", screen("ROLLBACK_SETUP"));
+        setScope(f.session, "rollbackScope", "AREA");
+        put(f.session, "playerPreviewToken", "old-player-token");
+        PluginCommand command = mock(PluginCommand.class);
+        when(f.plugin.getCommand("fg")).thenReturn(command);
+        when(command.tabComplete(eq(f.player), eq("fg"), any(String[].class)))
+                .thenReturn(List.of("old-player-token"));
+
+        f.gui.onClick(click(f.player, f.inventory, 16));
+
+        InOrder chronological = inOrder(f.player);
+        chronological.verify(f.player).performCommand("fg rollback cancel");
+        chronological.verify(f.player).closeInventory();
+        chronological.verify(f.player).performCommand(startsWith("fg rollback r:"));
+        assertNull(get(f.session, "playerPreviewToken"));
+        assertNull(get(f.session, "playerRollbackPlan"));
+
+        // InventoryCloseEvent is delivered after the replacement command
+        // starts. Its deferred cleanup must not cancel that new radius query.
+        InventoryCloseEvent close = mock(InventoryCloseEvent.class);
+        when(close.getPlayer()).thenReturn(f.player);
+        when(close.getInventory()).thenReturn(f.inventory);
+        when(f.player.getOpenInventory()).thenReturn(null);
+        f.gui.onClose(close);
+        verify(f.player, times(1)).performCommand("fg rollback cancel");
+        verify(f.player, times(1)).performCommand(startsWith("fg rollback r:"));
+    }
+
+    @Test
+    void replacementAreaSearchNeverCancelsAnUnownedCommandPreview() throws Exception {
+        Fixture f = fixture();
+        put(f.session, "screen", screen("ROLLBACK_SETUP"));
+        setScope(f.session, "rollbackScope", "AREA");
+        put(f.session, "playerPreviewToken", "old-player-token");
+        PluginCommand command = mock(PluginCommand.class);
+        when(f.plugin.getCommand("fg")).thenReturn(command);
+        when(command.tabComplete(eq(f.player), eq("fg"), any(String[].class)))
+                .thenReturn(List.of("different-command-token"));
+
+        f.gui.onClick(click(f.player, f.inventory, 16));
+
+        verify(f.player, never()).performCommand("fg rollback cancel");
+        verify(f.player).performCommand(startsWith("fg rollback r:"));
+        assertNull(get(f.session, "playerPreviewToken"));
     }
 
     private Fixture fixture() throws Exception {
