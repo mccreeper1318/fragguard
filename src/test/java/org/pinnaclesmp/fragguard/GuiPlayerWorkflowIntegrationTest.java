@@ -175,6 +175,46 @@ class GuiPlayerWorkflowIntegrationTest {
         }
     }
 
+    @Test
+    void cancelButtonInvalidatesInFlightPlayerPreviewBeforeItCanIssueAToken() throws Exception {
+        Fixture f = fixture();
+        put(f.session, "screen", screen("ROLLBACK_SETUP"));
+        setScope(f.session, "rollbackScope", "PLAYER");
+        GuiPendingTransition pending = (GuiPendingTransition) get(f.session, "pendingTransition");
+        LookupRequestGeneration requests = (LookupRequestGeneration) get(f.session, "previewRequests");
+        long generation = requests.begin();
+        assertTrue(pending.begin());
+
+        f.gui.onClick(click(f.player, f.inventory, 22));
+        assertFalse(pending.isPending());
+        assertFalse(requests.isCurrent(generation),
+                "a cancelled async plan cannot register a later confirmation token");
+        verify(f.player).closeInventory();
+        verify(f.player).performCommand("fg rollback cancel");
+    }
+
+    @Test
+    void returningMainMenuCancelsGuiOwnedPlayerTokenBeforeReset() throws Exception {
+        Fixture f = fixture();
+        put(f.session, "screen", screen("ROLLBACK_SETUP"));
+        put(f.session, "playerPreviewToken", "abc123");
+        PluginCommand pluginCommand = mock(PluginCommand.class);
+        when(f.plugin.getCommand("fg")).thenReturn(pluginCommand);
+        when(pluginCommand.tabComplete(eq(f.player), eq("fg"), any(String[].class)))
+                .thenReturn(List.of("abc123"));
+        Inventory mainMenu = mock(Inventory.class);
+
+        try (MockedStatic<FragGuardGuiRenderer> renderer = mockStatic(FragGuardGuiRenderer.class)) {
+            renderer.when(FragGuardGuiRenderer::mainMenu).thenReturn(mainMenu);
+            var method = FragGuardGui.class.getDeclaredMethod("openMain", Player.class);
+            method.setAccessible(true);
+            method.invoke(f.gui, f.player);
+        }
+        verify(f.player).performCommand("fg rollback cancel");
+        assertNull(get(f.session, "playerPreviewToken"));
+        assertSame(mainMenu, get(f.session, "inventory"));
+    }
+
     private Fixture fixture() throws Exception {
         FragGuardPlugin plugin = mock(FragGuardPlugin.class);
         Database database = mock(Database.class);
