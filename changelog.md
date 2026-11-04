@@ -22,6 +22,7 @@
 - Added global player lookup by UUID/name with world, time, and page filters (#101).
 - Added selective player rollback planning with historical ownership protection (#102).
 - Added player rollback preview, confirmation, persistent multi-world jobs, undo, and chunk overlap protection (#103).
+- Added player-scoped lookup and rollback GUI screens with history-based selection, paging, filters, and safe previews (#104).
 
 ### Fixed
 
