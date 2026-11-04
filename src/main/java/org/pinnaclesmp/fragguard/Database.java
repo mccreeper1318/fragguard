@@ -1071,6 +1071,10 @@ final class Database {
         }), false);
     }
 
+    CompletableFuture<RollbackJob> loadRollbackJobAsync(long jobId) {
+        return submit(db -> loadJob(db, jobId), true);
+    }
+
     CompletableFuture<List<RollbackJob>> loadResumableJobsAsync() {
         return submit(databaseConnection -> {
             List<RollbackJob> jobs = new ArrayList<>();
