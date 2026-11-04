@@ -26,6 +26,7 @@
 
 ### Fixed
 
+- Fixed player-history GUI queries continuing to scan SQLite after their timeouts (#104).
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).
 
