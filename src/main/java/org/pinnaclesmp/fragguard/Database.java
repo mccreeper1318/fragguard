@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 final class Database {
-    static final int SCHEMA_VERSION = 8;
+    static final int SCHEMA_VERSION = 9;
     static final long DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES = 64L * 1024L * 1024L;
     private static final long WARNING_INTERVAL_MILLIS = 10_000L;
     private static final int MAX_PERSISTED_COALESCE_CANDIDATES = 4_096;
@@ -1269,6 +1269,7 @@ final class Database {
                         case 5 -> migrateCausalAttributionSchema(databaseConnection);
                         case 6 -> migrateCausalPlayerNameIndex(databaseConnection);
                         case 7 -> migratePlayerRollbackCoordinateIndex(databaseConnection);
+                        case 8 -> migratePlayerRollbackJobsSchema(databaseConnection);
                         default -> throw new SQLException("No FragGuard database migration exists for schema version "
                                 + previousVersion + ".");
                     }
@@ -1682,6 +1683,50 @@ final class Database {
         return "(actor_uuid = ? OR causal_player_uuid = ?)";
     }
 
+    /**
+     * Explicit scope metadata and durable per-world target identity. Existing
+     * radius records retain their operator, radius and stored history unchanged.
+     */
+    private void migratePlayerRollbackJobsSchema(Connection db) throws SQLException {
+        startupStage = "adding player rollback job scope, provenance and chunk reservations";
+        addColumnIfMissing(db, "rollback_jobs", "scope_type", "TEXT NOT NULL DEFAULT 'RADIUS'");
+        addColumnIfMissing(db, "rollback_jobs", "target_player_uuid", "TEXT");
+        addColumnIfMissing(db, "rollback_jobs", "target_player_name", "TEXT");
+        addColumnIfMissing(db, "rollback_jobs", "world_scope_uuid", "TEXT");
+        addColumnIfMissing(db, "rollback_jobs", "world_scope_name", "TEXT");
+        addColumnIfMissing(db, "rollback_jobs", "historical_conflicts", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, "rollback_jobs", "affected_worlds", "INTEGER NOT NULL DEFAULT 1");
+        addColumnIfMissing(db, "rollback_jobs", "affected_chunks", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, "rollback_job_changes", "world_uuid", "TEXT");
+        addColumnIfMissing(db, "rollback_job_changes", "physical_actor_uuid", "TEXT");
+        addColumnIfMissing(db, "rollback_job_changes", "physical_actor_name", "TEXT");
+        addColumnIfMissing(db, "rollback_job_changes", "causal_player_uuid", "TEXT");
+        addColumnIfMissing(db, "rollback_job_changes", "causal_chain_id", "TEXT");
+        addColumnIfMissing(db, "rollback_job_changes", "causal_cause_type", "TEXT");
+        try (Statement sql = db.createStatement()) {
+            sql.executeUpdate("""
+                    CREATE TABLE IF NOT EXISTS rollback_job_chunks (
+                        job_id INTEGER NOT NULL,
+                        world_uuid TEXT NOT NULL,
+                        chunk_x INTEGER NOT NULL,
+                        chunk_z INTEGER NOT NULL,
+                        PRIMARY KEY(job_id, world_uuid, chunk_x, chunk_z),
+                        FOREIGN KEY(job_id) REFERENCES rollback_jobs(id) ON DELETE CASCADE
+                    )
+                    """);
+            sql.executeUpdate("""
+                    CREATE INDEX IF NOT EXISTS idx_fg_job_chunk_overlap
+                    ON rollback_job_chunks(world_uuid, chunk_x, chunk_z, job_id)
+                    """);
+            sql.executeUpdate("""
+                    UPDATE rollback_job_changes
+                    SET world_uuid = (SELECT world_uuid FROM rollback_jobs
+                                      WHERE rollback_jobs.id = rollback_job_changes.job_id)
+                    WHERE world_uuid IS NULL
+                    """);
+        }
+    }
+
     private void migrateWorldIdentities(Connection databaseConnection, List<WorldIdentity> loadedWorlds)
             throws SQLException {
         try (PreparedStatement changes = databaseConnection.prepareStatement("""
@@ -1723,7 +1768,7 @@ final class Database {
              PreparedStatement changes = databaseConnection.prepareStatement("""
                      UPDATE rollback_job_changes SET world = ?
                      WHERE world <> ?
-                       AND job_id IN (SELECT id FROM rollback_jobs WHERE world_uuid = ?)
+                       AND world_uuid = ?
                      """)) {
             for (WorldIdentity world : loadedWorlds) {
                 jobs.setString(1, world.name());
