@@ -138,7 +138,8 @@ class GuiPlayerHistoryStoreTest {
         for (int i = 0; i < changes.size(); i++) {
             Change change = changes.get(i);
             PlayerLookupRow event = rows.stream()
-                    .filter(row -> change.after().equals(row.afterData()))
+                    .filter(row -> change.before().equals(row.beforeData())
+                            && change.after().equals(row.afterData()))
                     .findFirst().orElseThrow();
             LookupRow display = new LookupRow(event.id(), event.happenedAt(),
                     event.actorUuid(), event.actorName(), event.worldName(),
