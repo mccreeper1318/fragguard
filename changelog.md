@@ -13,6 +13,7 @@
 - Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
 - Improved rollback boundary visibility, sampling, and configuration (#99).
 - Added UUID-based historical player resolution and actor query indexes (#100).
+- Added per-index SQLite migration diagnostics for storage failures (#138).
 - Added bounded causal player attribution for traceable TNT and machinery chains (#106).
 
 ### Added
