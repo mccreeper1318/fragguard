@@ -36,6 +36,10 @@ class GuiPlayerHistoryStoreTest {
                 "minecraft:stone", "minecraft:air");
         insert(now - 1000, "SYSTEM", "System", null, null, null, "world",
                 ChangeAction.FIRE_BURN, "minecraft:oak_log", "minecraft:air");
+        UUID physicalEntity = UUID.fromString("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        insert(now - 500, physicalEntity.toString(), "Explosion: TNT",
+                null, null, null, "world", ChangeAction.EXPLOSION,
+                "minecraft:stone", "minecraft:air");
         var store = store();
         var page0 = store.identitiesAsync(0, 30).join();
         var page1 = store.identitiesAsync(1, 30).join();
@@ -51,6 +55,8 @@ class GuiPlayerHistoryStoreTest {
                 .findFirst().orElseThrow().latestName());
         assertEquals("Builder", all.getFirst().latestName());
         assertTrue(all.stream().noneMatch(p -> p.latestName().equals("System")));
+        assertTrue(all.stream().noneMatch(p -> p.uuid().equals(physicalEntity)),
+                "a UUID-bearing physical TNT entity must not appear as a player");
     }
 
     @Test
