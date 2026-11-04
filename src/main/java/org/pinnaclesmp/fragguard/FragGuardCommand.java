@@ -979,9 +979,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 if (!preparedBatch.isEmpty() && rollbackTickBudget.exhausted(System.nanoTime())) {
                     break;
                 }
-                World world = Bukkit.getWorld(change.worldName());
+                World world = resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(change));
                 if (world == null) {
-                    throw new IllegalStateException("World '" + change.worldName() + "' is not loaded.");
+                    throw new IllegalStateException("World '" + change.worldName()
+                            + "' is not loaded or its saved UUID no longer matches.");
                 }
                 String desiredData = undo ? change.beforeData() : change.targetData();
                 BlockData desired = Bukkit.createBlockData(Objects.requireNonNull(desiredData, "Missing saved block state"));
@@ -1415,9 +1416,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     break;
                 }
                 RollbackJobChange change = changes.get(index);
-                World world = Bukkit.getWorld(change.worldName());
+                World world = resolveChunkWorld(RollbackChunkPlan.ChunkKey.from(change));
                 if (world == null) {
-                    throw new IllegalStateException("World '" + change.worldName() + "' is not loaded.");
+                    throw new IllegalStateException("World '" + change.worldName()
+                            + "' is not loaded or its saved UUID no longer matches.");
                 }
                 BlockData desired = Bukkit.createBlockData(
                         Objects.requireNonNull(change.targetData(), "Missing saved block state"));
