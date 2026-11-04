@@ -27,6 +27,8 @@
 ### Fixed
 
 - Fixed player-history GUI queries continuing to scan SQLite after their timeouts (#104).
+- Fixed GUI preview cancellation interfering with replacement radius searches (#104).
+- Fixed global player material filters disagreeing with displayed block transformations (#104).
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).
 
