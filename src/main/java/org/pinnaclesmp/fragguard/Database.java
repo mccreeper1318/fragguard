@@ -650,6 +650,14 @@ final class Database {
     CompletableFuture<PlayerRollbackPlan> planPlayerRollbackAsync(
             String playerArgument, long targetTimestamp, long snapshotTimestamp,
             int maxBlocks, long maxSnapshotBytes, int retentionDays, boolean force) {
+        return planPlayerRollbackAsync(playerArgument, null, targetTimestamp, snapshotTimestamp,
+                maxBlocks, maxSnapshotBytes, retentionDays, force);
+    }
+
+    CompletableFuture<PlayerRollbackPlan> planPlayerRollbackAsync(
+            String playerArgument, String worldScopeName,
+            long targetTimestamp, long snapshotTimestamp,
+            int maxBlocks, long maxSnapshotBytes, int retentionDays, boolean force) {
         if (maxBlocks <= 0 || maxSnapshotBytes <= 0) {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "Player rollback block and snapshot limits must be positive."));
@@ -663,6 +671,20 @@ final class Database {
                 loadedWorldNames.put(world.getUID().toString(), world.getName());
             }
         }
+        String worldScopeUuid = null;
+        if (worldScopeName != null) {
+            for (Map.Entry<String, String> loaded : loadedWorldNames.entrySet()) {
+                if (worldScopeName.equals(loaded.getValue())) {
+                    worldScopeUuid = loaded.getKey();
+                    break;
+                }
+            }
+            if (worldScopeUuid == null) {
+                return CompletableFuture.failedFuture(new IllegalArgumentException(
+                        "World '" + worldScopeName + "' is not loaded."));
+            }
+        }
+        final String scopedUuid = worldScopeUuid;
         return submit(databaseConnection -> {
             long now = System.currentTimeMillis();
             long upper = Math.min(snapshotTimestamp, now);
@@ -684,15 +706,19 @@ final class Database {
                     WHERE rollback_pending = 0
                       AND happened_at > ? AND happened_at <= ?
                       AND (actor_uuid = ? OR causal_player_uuid = ?)
+                      %s
                     GROUP BY world_uuid, x, y, z
                     LIMIT ?
-                    """;
+                    """.formatted(scopedUuid == null ? "" : "AND world_uuid = ?");
             try (PreparedStatement candidates = queryStatement(databaseConnection, candidatesSql)) {
                 candidates.setLong(1, cutoff);
                 candidates.setLong(2, upper);
                 candidates.setString(3, uuid);
                 candidates.setString(4, uuid);
-                candidates.setLong(5, (long) maxBlocks + 1L);
+                if (scopedUuid != null) {
+                    candidates.setString(5, scopedUuid);
+                }
+                candidates.setLong(scopedUuid == null ? 5 : 6, (long) maxBlocks + 1L);
                 try (ResultSet rows = candidates.executeQuery()) {
                     while (rows.next()) {
                         positions.add(new Position(rows.getString("world_uuid"),
