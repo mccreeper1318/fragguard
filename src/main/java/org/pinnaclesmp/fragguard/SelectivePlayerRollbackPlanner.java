@@ -57,7 +57,16 @@ final class SelectivePlayerRollbackPlanner {
         private int rows;
 
         CoordinateScanner(String playerUuid, int x, int y, int z) {
+            this(playerUuid, null, x, y, z);
+        }
+
+        /**
+         * Production callers supply the currently loaded world name resolved
+         * from its stable UUID. Retained rows may contain an obsolete name.
+         */
+        CoordinateScanner(String playerUuid, String currentWorldName, int x, int y, int z) {
             this.playerUuid = Objects.requireNonNull(playerUuid);
+            this.worldName = currentWorldName;
             this.x = x;
             this.y = y;
             this.z = z;
