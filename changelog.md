@@ -14,6 +14,7 @@
 - Improved rollback boundary visibility, sampling, and configuration (#99).
 - Added UUID-based historical player resolution and actor query indexes (#100).
 - Added per-index SQLite migration diagnostics for storage failures (#138).
+- Reduced historical actor index size and made index migration restartable (#139).
 - Added bounded causal player attribution for traceable TNT and machinery chains (#106).
 
 ### Added

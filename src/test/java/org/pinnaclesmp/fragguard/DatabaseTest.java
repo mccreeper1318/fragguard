@@ -1194,6 +1194,49 @@ class DatabaseTest {
         assertTrue(database.loadRollbackChangesAsync(job.id(), true).join().isEmpty());
     }
 
+    @Test
+    void migratesVersionFourActorIndexesInRestartableTransactionsWithoutRemovingHistory() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        // Downgrade only schema metadata and indexes. Other v5+ objects already
+        // exist here; this checks the actual startup migration path, not just
+        // isolated SQL statements, without a production-sized fixture.
+        try (Connection connection = openDatabase(); Statement stmt = connection.createStatement()) {
+            stmt.execute("DROP INDEX IF EXISTS idx_fg_actor_time");
+            stmt.execute("DROP INDEX IF EXISTS idx_fg_actor_world_time");
+            stmt.execute("DROP INDEX IF EXISTS idx_fg_actor_name_uuid");
+            stmt.execute("PRAGMA user_version=4");
+        }
+
+        database = startDatabase();
+        try (Connection connection = openDatabase(); Statement stmt = connection.createStatement()) {
+            try (ResultSet version = stmt.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
+            }
+            try (ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+            }
+            try (ResultSet indexes = stmt.executeQuery("""
+                    SELECT sql FROM sqlite_master
+                    WHERE type='index' AND name LIKE 'idx_fg_actor_%'
+                    """)) {
+                int count = 0;
+                while (indexes.next()) {
+                    count++;
+                    assertTrue(indexes.getString(1).contains(
+                            HistoricalActorIndexPlan.PLAYER_ACTOR_PREDICATE));
+                }
+                assertEquals(3, count);
+            }
+        }
+    }
+
     private Database startDatabase() throws Exception {
         return startDatabase("world");
     }
