@@ -129,7 +129,7 @@ class LargeHistoryMigrationIntegrationTest {
                                 "validation-chain", "TNT_ENTITY")))).join();
 
         assertEquals(3, db.lookupPlayerAsync("OldBuilder", null, 1, 20, 0, 30).join().totalRows());
-        PlayerRollbackPlan plan = db.planPlayerRollbackAsync("OldBuilder", null, now - 60_000, now,
+        PlayerRollbackPlan plan = db.planPlayerRollbackAsync("OldBuilder", null, now - 5_000, now,
                 20, 1024 * 1024, 30, false).join();
         assertEquals(1, plan.targets().size(),
                 "new causal event must be visible as a valid player-owned rollback candidate");
