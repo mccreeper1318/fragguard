@@ -57,10 +57,10 @@ final class HistoricalPlayerResolver {
         NameCandidate direct = latestName(connection, uuid, statements, """
                 SELECT actor_name AS recorded_name, happened_at, id
                 FROM block_changes
-                WHERE actor_uuid = ?
+                WHERE actor_uuid = ? AND %s
                 ORDER BY happened_at DESC, id DESC
                 LIMIT 1
-                """);
+                """.formatted(HistoricalActorIndexPlan.PLAYER_ACTOR_PREDICATE));
         NameCandidate causal = latestName(connection, uuid, statements, """
                 SELECT causal_player_name AS recorded_name, happened_at, id
                 FROM block_changes
@@ -102,12 +102,12 @@ final class HistoricalPlayerResolver {
         // only indirect events and no directly authored block changes.
         try (PreparedStatement statement = statements.prepare(connection, """
                 SELECT actor_uuid AS player_uuid FROM block_changes
-                WHERE actor_name = ? COLLATE NOCASE
+                WHERE actor_name = ? COLLATE NOCASE AND %s
                 UNION
                 SELECT causal_player_uuid AS player_uuid FROM block_changes
                 WHERE causal_player_name = ? COLLATE NOCASE
                   AND causal_player_uuid IS NOT NULL
-                """)) {
+                """.formatted(HistoricalActorIndexPlan.PLAYER_ACTOR_PREDICATE))) {
             statement.setString(1, name);
             statement.setString(2, name);
             try (ResultSet rows = statement.executeQuery()) {
