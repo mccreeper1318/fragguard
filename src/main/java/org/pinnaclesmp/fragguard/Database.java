@@ -1805,21 +1805,23 @@ final class Database {
     }
 
     private void migrateHistoricalActorIndexes(Connection databaseConnection) throws SQLException {
-        startupStage = "creating historical actor and timestamp indexes for schema v4 to v5";
-        try (Statement statement = databaseConnection.createStatement()) {
-            statement.executeUpdate("""
-                    CREATE INDEX IF NOT EXISTS idx_fg_actor_time
-                    ON block_changes(actor_uuid, happened_at DESC, id DESC)
-                    """);
-            statement.executeUpdate("""
-                    CREATE INDEX IF NOT EXISTS idx_fg_actor_world_time
-                    ON block_changes(actor_uuid, world_uuid, happened_at DESC, id DESC)
-                    """);
-            statement.executeUpdate("""
-                    CREATE INDEX IF NOT EXISTS idx_fg_actor_name_uuid
-                    ON block_changes(actor_name COLLATE NOCASE, actor_uuid)
-                    """);
-        }
+        // Each CREATE INDEX is individually timed and diagnosed; the outer migration
+        // transaction still controls rollback and user_version advancement.
+        startupStage = "schema v4 to v5 index idx_fg_actor_time";
+        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_time", """
+                CREATE INDEX IF NOT EXISTS idx_fg_actor_time
+                ON block_changes(actor_uuid, happened_at DESC, id DESC)
+                """, plugin.getLogger()::info, plugin.getLogger()::warning);
+        startupStage = "schema v4 to v5 index idx_fg_actor_world_time";
+        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_world_time", """
+                CREATE INDEX IF NOT EXISTS idx_fg_actor_world_time
+                ON block_changes(actor_uuid, world_uuid, happened_at DESC, id DESC)
+                """, plugin.getLogger()::info, plugin.getLogger()::warning);
+        startupStage = "schema v4 to v5 index idx_fg_actor_name_uuid";
+        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_name_uuid", """
+                CREATE INDEX IF NOT EXISTS idx_fg_actor_name_uuid
+                ON block_changes(actor_name COLLATE NOCASE, actor_uuid)
+                """, plugin.getLogger()::info, plugin.getLogger()::warning);
     }
 
     private void migrateCausalAttributionSchema(Connection databaseConnection) throws SQLException {
