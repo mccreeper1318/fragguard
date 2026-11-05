@@ -154,7 +154,7 @@ class HistoricalActorIndexPlanTest {
                     CREATE TABLE block_changes(
                       id INTEGER PRIMARY KEY AUTOINCREMENT, happened_at INTEGER NOT NULL,
                       actor_uuid TEXT NOT NULL, actor_name TEXT NOT NULL,
-                      world_uuid TEXT NOT NULL, causal_player_uuid TEXT,
+                      world_uuid TEXT NOT NULL, causal_player_uuid TEXT, causal_player_name TEXT,
                       rollback_pending INTEGER NOT NULL DEFAULT 0)
                     """);
             stmt.execute("PRAGMA user_version=4");
