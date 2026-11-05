@@ -1449,6 +1449,18 @@ final class Database {
         int startingVersion = schemaVersion;
         while (schemaVersion < SCHEMA_VERSION) {
             int previousVersion = schemaVersion;
+            try {
+                // Index-only and metadata changes still need WAL/sort headroom.
+                // v4 is checked per missing index below to make retries cheap.
+                if (existingSchema && previousVersion != 4) {
+                    startupStage = "checking space for SQLite schema v" + previousVersion
+                            + " to v" + (previousVersion + 1);
+                    preflightIndexMigrationSpace(databaseConnection, previousVersion, "schema step");
+                }
+            } catch (SQLException exception) {
+                throw explainMigrationFailure(previousVersion, exception);
+            }
+            try {
             if (previousVersion == 3) {
                 migrateAttributionCoalescingSchema(databaseConnection);
             } else if (previousVersion == 4) {
@@ -1456,7 +1468,7 @@ final class Database {
                 // Commit each index separately, checkpoint between them, and only
                 // advance user_version once all three exist. A failed startup
                 // retains v4 and resumes any completed indexes via IF NOT EXISTS.
-                migrateHistoricalActorIndexes(databaseConnection);
+                migrateHistoricalActorIndexes(databaseConnection, existingSchema);
                 inTransaction(databaseConnection, () -> {
                     try (Statement statement = databaseConnection.createStatement()) {
                         statement.execute("PRAGMA user_version=5");
@@ -1481,6 +1493,16 @@ final class Database {
                     }
                     return null;
                 });
+            }
+                if (previousVersion >= 5 && previousVersion <= 7) {
+                    // These later schema stages create additional indexes. Never
+                    // carry their completed WAL growth into the next index stage.
+                    startupStage = "checkpointing schema v" + previousVersion
+                            + " to v" + (previousVersion + 1);
+                    HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
+                }
+            } catch (SQLException exception) {
+                throw explainMigrationFailure(previousVersion, exception);
             }
             schemaVersion++;
             plugin.getLogger().info("Migrated FragGuard's SQLite schema from version " + previousVersion
@@ -1573,35 +1595,117 @@ final class Database {
         }
     }
 
+    private void preflightIndexMigrationSpace(Connection databaseConnection, int fromVersion, String step)
+            throws SQLException {
+        long pageSize = readMigrationPragma(databaseConnection, "page_size");
+        long pageCount = readMigrationPragma(databaseConnection, "page_count");
+        long freelist = readMigrationPragma(databaseConnection, "freelist_count");
+        long logicalBytes = MigrationStoragePolicy.logicalDatabaseBytes(pageSize, pageCount, freelist);
+        long estimate = MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logicalBytes, fromVersion);
+        preflightMigrationSpace(databaseFile.getParentFile(), estimate,
+                "SQLite schema v" + fromVersion + " to v" + (fromVersion + 1) + " " + step);
+    }
+
+    private long readMigrationPragma(Connection connection, String pragma) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("PRAGMA " + pragma)) {
+            if (!rows.next()) {
+                throw new SQLException("SQLite did not return PRAGMA " + pragma + " for migration planning.");
+            }
+            return rows.getLong(1);
+        }
+    }
+
+    private boolean sqliteIndexExists(Connection connection, String name) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1")) {
+            statement.setString(1, name);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next();
+            }
+        }
+    }
+
     private void preflightMigrationSpace(File destination, long estimatedWorkingBytes, String step)
             throws SQLException {
+        long safetyMiB = Math.max(0L, plugin.getConfig().getLong(
+                "database-migration-space-safety-mib", 256L));
+        long required = MigrationStoragePolicy.requiredFreeBytes(estimatedWorkingBytes, safetyMiB);
+        long filesystemFree = destination.getUsableSpace();
+        // Optional operator-entered *free* capacities, not total plan sizes.
+        // 0 means unknown. Managed hosts often hide quotas from File.getUsableSpace.
+        long accountFree = MigrationStoragePolicy.mibToBytes(plugin.getConfig().getLong(
+                "database-migration-account-free-mib", 0L));
+        long sqliteTempFree = MigrationStoragePolicy.mibToBytes(plugin.getConfig().getLong(
+                "database-migration-sqlite-temp-free-mib", 0L));
+
+        String dataFreeText = filesystemFree > 0L
+                ? MigrationStoragePolicy.formatBytes(filesystemFree) : "unknown";
+        String accountText = accountFree > 0L
+                ? MigrationStoragePolicy.formatBytes(accountFree) + " (operator-reported)" : "unknown";
+        String sqliteTempText = sqliteTempFree > 0L
+                ? MigrationStoragePolicy.formatBytes(sqliteTempFree) + " (operator-reported)" : "unknown";
+        File javaTemp = new File(System.getProperty("java.io.tmpdir", ""));
+        long javaTempHostFree = javaTemp.isDirectory() ? javaTemp.getUsableSpace() : 0L;
+        String javaTempText = javaTempHostFree > 0L
+                ? MigrationStoragePolicy.formatBytes(javaTempHostFree) + " (advisory only)" : "unknown";
+
+        String description = step + ": database=" + MigrationStoragePolicy.formatBytes(databaseFile.length())
+                + ", estimated working space=" + MigrationStoragePolicy.formatBytes(estimatedWorkingBytes)
+                + ", safety margin=" + MigrationStoragePolicy.formatBytes(
+                        MigrationStoragePolicy.mibToBytes(safetyMiB))
+                + ", estimated minimum free=" + MigrationStoragePolicy.formatBytes(required)
+                + ", data-filesystem-reported available=" + dataFreeText
+                + ", account free=" + accountText + ", SQLite-native-temp free=" + sqliteTempText
+                + ", Java-temp-filesystem-reported available=" + javaTempText + ".";
+
         if (!plugin.getConfig().getBoolean("database-migration-space-preflight-enabled", true)) {
-            plugin.getLogger().warning("FragGuard migration disk-space preflight is disabled for: " + step
-                    + ". SQLite storage failures will still abort the migration safely.");
+            plugin.getLogger().warning("FragGuard migration preflight was explicitly disabled for "
+                    + description + " This does not disable SQLite storage failures or make the migration safe.");
             return;
         }
-        long safetyMiB = Math.max(0L,
-                plugin.getConfig().getLong("database-migration-space-safety-mib", 256L));
-        long required = MigrationStoragePolicy.requiredFreeBytes(estimatedWorkingBytes, safetyMiB);
-        long usable = destination.getUsableSpace();
-        if (usable <= 0L) {
-            throw new SQLException("Cannot safely begin " + step + " because FragGuard could not determine usable "
-                    + "space at " + destination.getAbsolutePath() + ". Set database-migration-space-preflight-enabled "
-                    + "to false only if you intentionally want to override this safety check.");
+
+        try {
+            MigrationStoragePolicy.checkCapacity(required, filesystemFree, accountFree, sqliteTempFree);
+        } catch (SQLException failure) {
+            throw new SQLException("FragGuard migration storage preflight refused " + description + " "
+                    + failure.getMessage() + ". No schema changes were made by this preflight. "
+                    + "Verify actual hosting account and SQLite native temp quotas; "
+                    + "keep verified backups and do not delete database WAL/SHM files.", failure);
         }
-        if (usable < required) {
-            throw new SQLException("Cannot safely begin " + step + ": database="
-                    + MigrationStoragePolicy.formatBytes(databaseFile.length()) + ", filesystem-reported available="
-                    + MigrationStoragePolicy.formatBytes(usable) + ", estimated minimum free="
-                    + MigrationStoragePolicy.formatBytes(required) + ", path=" + destination.getAbsolutePath()
-                    + ". Archive old verified migration backups or increase storage before retrying. "
-                    + "You may explicitly disable database-migration-space-preflight-enabled only if the host reports "
-                    + "filesystem free space inaccurately.");
+
+        plugin.getLogger().info("FragGuard migration preflight passed for " + description
+                + " Host-reported space does NOT prove account/container or native SQLite temp capacity. "
+                + "Unknown quotas remain unverified, and SQLite can still fail with SQLITE_FULL.");
+    }
+
+    private SQLException explainMigrationFailure(int fromVersion, SQLException failure) {
+        if (!MigrationStoragePolicy.isSqliteFull(failure)) {
+            return failure;
         }
-        plugin.getLogger().info("FragGuard migration storage preflight passed for " + step
-                + ": filesystem-reported available=" + MigrationStoragePolicy.formatBytes(usable)
-                + ", estimated minimum free=" + MigrationStoragePolicy.formatBytes(required)
-                + ". Managed-host account quotas can be lower than the filesystem value.");
+        String step = startupStage;
+        long dataFree = databaseFile.getParentFile().getUsableSpace();
+        String dataText = dataFree > 0L ? MigrationStoragePolicy.formatBytes(dataFree) : "unknown";
+        String accountText = plugin.getConfig().getLong("database-migration-account-free-mib", 0L) > 0
+                ? "operator-provided (may be stale)" : "unknown";
+        String message = "FragGuard schema v" + fromVersion + " to v" + (fromVersion + 1)
+                + " failed at '" + step + "' with SQLITE_FULL. "
+                + "Database=" + MigrationStoragePolicy.formatBytes(databaseFile.length())
+                + ", WAL=" + migrationSidecarSize("-wal")
+                + ", journal=" + migrationSidecarSize("-journal")
+                + ", data filesystem reported free=" + dataText
+                + ", account quota=" + accountText
+                + ". The failing write location is not proven (database/WAL/SQLite temp/quota). "
+                + "Migration stopped without deleting history or WAL files. "
+                + "Keep the prior verified backup and ask the host to verify account, native temp, "
+                + "inode and file-size limits before retrying.";
+        plugin.getLogger().severe(message);
+        return new SQLException(message, failure.getSQLState(), failure.getErrorCode(), failure);
+    }
+
+    private String migrationSidecarSize(String suffix) {
+        File sidecar = new File(databaseFile.getPath() + suffix);
+        return sidecar.isFile() ? MigrationStoragePolicy.formatBytes(sidecar.length()) : "absent";
     }
 
     private String cleanupFailedMigrationBackup(File backupFile) {
@@ -1816,25 +1920,37 @@ final class Database {
         });
     }
 
-    private void migrateHistoricalActorIndexes(Connection databaseConnection) throws SQLException {
+    private void migrateHistoricalActorIndexes(Connection databaseConnection, boolean preflightNeeded) throws SQLException {
         // An interrupted v4->v5 migration can retain earlier completed indexes
         // while user_version remains 4; each CREATE INDEX is restartable.
         startupStage = "schema v4 to v5 index idx_fg_actor_time";
+        if (preflightNeeded && !sqliteIndexExists(databaseConnection, "idx_fg_actor_time")) {
+            preflightIndexMigrationSpace(databaseConnection, 4, "index idx_fg_actor_time");
+        }
         HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_time",
                 HistoricalActorIndexPlan.ACTOR_TIME_SQL,
                 plugin.getLogger()::info, plugin.getLogger()::warning);
+        startupStage = "checkpointing schema v4 to v5 index idx_fg_actor_time";
         HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
 
         startupStage = "schema v4 to v5 index idx_fg_actor_world_time";
+        if (preflightNeeded && !sqliteIndexExists(databaseConnection, "idx_fg_actor_world_time")) {
+            preflightIndexMigrationSpace(databaseConnection, 4, "index idx_fg_actor_world_time");
+        }
         HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_world_time",
                 HistoricalActorIndexPlan.ACTOR_WORLD_TIME_SQL,
                 plugin.getLogger()::info, plugin.getLogger()::warning);
+        startupStage = "checkpointing schema v4 to v5 index idx_fg_actor_world_time";
         HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
 
         startupStage = "schema v4 to v5 index idx_fg_actor_name_uuid";
+        if (preflightNeeded && !sqliteIndexExists(databaseConnection, "idx_fg_actor_name_uuid")) {
+            preflightIndexMigrationSpace(databaseConnection, 4, "index idx_fg_actor_name_uuid");
+        }
         HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_name_uuid",
                 HistoricalActorIndexPlan.ACTOR_NAME_SQL,
                 plugin.getLogger()::info, plugin.getLogger()::warning);
+        startupStage = "checkpointing schema v4 to v5 index idx_fg_actor_name_uuid";
         HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
     }
 
@@ -2606,7 +2722,13 @@ final class Database {
             databaseConnection.commit();
             return result;
         } catch (SQLException | RuntimeException exception) {
-            databaseConnection.rollback();
+            try {
+                databaseConnection.rollback();
+            } catch (SQLException rollbackFailure) {
+                // Preserve the root SQL failure (e.g. SQLITE_FULL) instead of
+                // allowing a second rollback error to hide its cause.
+                exception.addSuppressed(rollbackFailure);
+            }
             throw exception;
         } finally {
             databaseConnection.setAutoCommit(previousAutoCommit);

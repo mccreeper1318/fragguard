@@ -868,6 +868,82 @@ class DatabaseTest {
     }
 
     @Test
+    void storagePreflightFailsClosedBeforeIndexCreationAndKeepsSchemaFourHistory() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L,
+                4, 65, 4, "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.execute("DROP INDEX IF EXISTS idx_fg_actor_time");
+            statement.execute("DROP INDEX IF EXISTS idx_fg_actor_world_time");
+            statement.execute("DROP INDEX IF EXISTS idx_fg_actor_name_uuid");
+            statement.execute("PRAGMA user_version=4");
+        }
+
+        // The filesystem has ordinary free space. Only the explicitly declared
+        // *account* free-space budget is too small for the estimated index work.
+        SQLException failure = assertThrows(SQLException.class,
+                () -> startDatabase("world", 1L, 0L));
+        assertNotNull(failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("account free"),
+                "preflight should explain operator-reported quota rather than guessing disk-full root cause");
+        assertTrue(failure.getCause().getMessage().contains("v4 to v5"));
+        assertTrue(failure.getCause().getMessage().contains("data-filesystem-reported"));
+        assertTrue(failure.getCause().getMessage().contains("quota"));
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(4, version.getInt(1));
+            }
+            try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1), "a rejected migration must not drop retained block history");
+            }
+            try (ResultSet indexes = statement.executeQuery("""
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index' AND name LIKE 'idx_fg_actor_%'
+                    """)) {
+                assertFalse(indexes.next(), "index creation must not start after a failed preflight");
+            }
+        }
+        assertFalse(Files.exists(temporaryDirectory.resolve("backups")),
+                "schema-v4 migration should not duplicate the database as a backup");
+    }
+
+    @Test
+    void storagePreflightRespectsExplicitNativeTempBudgetOnLaterIndexStage() throws Exception {
+        database = startDatabase();
+        database.shutdown();
+        database = null;
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.execute("DROP INDEX IF EXISTS idx_fg_coordinate_time");
+            statement.execute("PRAGMA user_version=7");
+        }
+
+        SQLException failure = assertThrows(SQLException.class,
+                () -> startDatabase("world", 0L, 1L));
+        assertNotNull(failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("SQLite native temp"));
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+            assertTrue(version.next());
+            assertEquals(7, version.getInt(1));
+        }
+    }
+
+    @Test
+    void currentSchemaStartsWithoutMigrationQuotaPreflight() throws Exception {
+        database = startDatabase("world", 1L, 1L);
+        database.shutdown();
+        database = null;
+        database = startDatabase("world", 1L, 1L);
+        assertTrue(database.health().healthy(), "no migration should require new index headroom");
+    }
+
+    @Test
     void refusesToOpenNewerDatabaseSchemasWithoutChangingThem() throws Exception {
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA user_version=99");
@@ -1242,6 +1318,11 @@ class DatabaseTest {
     }
 
     private Database startDatabase(String worldName) throws Exception {
+        return startDatabase(worldName, 0L, 0L);
+    }
+
+    private Database startDatabase(String worldName, long knownAccountFreeMiB,
+                                   long knownSqliteTempFreeMiB) throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);
         World world = mock(World.class);
@@ -1249,6 +1330,12 @@ class DatabaseTest {
         configuration.set("database-write-queue-capacity", 64);
         configuration.set("database-write-batch-size", 16);
         configuration.set("database-query-timeout-seconds", 5);
+        if (knownAccountFreeMiB > 0L) {
+            configuration.set("database-migration-account-free-mib", knownAccountFreeMiB);
+        }
+        if (knownSqliteTempFreeMiB > 0L) {
+            configuration.set("database-migration-sqlite-temp-free-mib", knownSqliteTempFreeMiB);
+        }
         when(plugin.getDataFolder()).thenReturn(temporaryDirectory.toFile());
         when(plugin.getConfig()).thenReturn(configuration);
         when(plugin.getServer()).thenReturn(server);
