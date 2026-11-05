@@ -707,11 +707,12 @@ final class Database {
                     FROM block_changes
                     WHERE rollback_pending = 0
                       AND happened_at > ? AND happened_at <= ?
-                      AND (actor_uuid = ? OR causal_player_uuid = ?)
+                      AND %s
                       %s
                     GROUP BY world_uuid, x, y, z
                     LIMIT ?
-                    """.formatted(scopedUuid == null ? "" : "AND world_uuid = ?");
+                    """.formatted(playerOwnershipPredicate(),
+                    scopedUuid == null ? "" : "AND world_uuid = ?");
             try (PreparedStatement candidates = queryStatement(databaseConnection, candidatesSql)) {
                 candidates.setLong(1, cutoff);
                 candidates.setLong(2, upper);
@@ -1450,13 +1451,24 @@ final class Database {
             int previousVersion = schemaVersion;
             if (previousVersion == 3) {
                 migrateAttributionCoalescingSchema(databaseConnection);
+            } else if (previousVersion == 4) {
+                // SQLite index creation can require multi-gigabyte WAL/sort space.
+                // Commit each index separately, checkpoint between them, and only
+                // advance user_version once all three exist. A failed startup
+                // retains v4 and resumes any completed indexes via IF NOT EXISTS.
+                migrateHistoricalActorIndexes(databaseConnection);
+                inTransaction(databaseConnection, () -> {
+                    try (Statement statement = databaseConnection.createStatement()) {
+                        statement.execute("PRAGMA user_version=5");
+                    }
+                    return null;
+                });
             } else {
                 inTransaction(databaseConnection, () -> {
                     switch (previousVersion) {
                         case 0 -> migrateUnversionedSchema(databaseConnection, loadedWorlds);
                         case 1 -> migrateBlockEntitySchema(databaseConnection);
                         case 2 -> migrateRollbackSafetySchema(databaseConnection);
-                        case 4 -> migrateHistoricalActorIndexes(databaseConnection);
                         case 5 -> migrateCausalAttributionSchema(databaseConnection);
                         case 6 -> migrateCausalPlayerNameIndex(databaseConnection);
                         case 7 -> migratePlayerRollbackCoordinateIndex(databaseConnection);
@@ -1805,23 +1817,25 @@ final class Database {
     }
 
     private void migrateHistoricalActorIndexes(Connection databaseConnection) throws SQLException {
-        // Each CREATE INDEX is individually timed and diagnosed; the outer migration
-        // transaction still controls rollback and user_version advancement.
+        // An interrupted v4->v5 migration can retain earlier completed indexes
+        // while user_version remains 4; each CREATE INDEX is restartable.
         startupStage = "schema v4 to v5 index idx_fg_actor_time";
-        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_time", """
-                CREATE INDEX IF NOT EXISTS idx_fg_actor_time
-                ON block_changes(actor_uuid, happened_at DESC, id DESC)
-                """, plugin.getLogger()::info, plugin.getLogger()::warning);
+        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_time",
+                HistoricalActorIndexPlan.ACTOR_TIME_SQL,
+                plugin.getLogger()::info, plugin.getLogger()::warning);
+        HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
+
         startupStage = "schema v4 to v5 index idx_fg_actor_world_time";
-        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_world_time", """
-                CREATE INDEX IF NOT EXISTS idx_fg_actor_world_time
-                ON block_changes(actor_uuid, world_uuid, happened_at DESC, id DESC)
-                """, plugin.getLogger()::info, plugin.getLogger()::warning);
+        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_world_time",
+                HistoricalActorIndexPlan.ACTOR_WORLD_TIME_SQL,
+                plugin.getLogger()::info, plugin.getLogger()::warning);
+        HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
+
         startupStage = "schema v4 to v5 index idx_fg_actor_name_uuid";
-        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_name_uuid", """
-                CREATE INDEX IF NOT EXISTS idx_fg_actor_name_uuid
-                ON block_changes(actor_name COLLATE NOCASE, actor_uuid)
-                """, plugin.getLogger()::info, plugin.getLogger()::warning);
+        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_name_uuid",
+                HistoricalActorIndexPlan.ACTOR_NAME_SQL,
+                plugin.getLogger()::info, plugin.getLogger()::warning);
+        HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
     }
 
     private void migrateCausalAttributionSchema(Connection databaseConnection) throws SQLException {
@@ -1873,7 +1887,8 @@ final class Database {
 
     /** Shared ownership condition for player lookup/rollback in #101/#102. */
     static String playerOwnershipPredicate() {
-        return "(actor_uuid = ? OR causal_player_uuid = ?)";
+        return "((actor_uuid = ? AND " + HistoricalActorIndexPlan.PLAYER_ACTOR_PREDICATE
+                + ") OR causal_player_uuid = ?)";
     }
 
     /**
