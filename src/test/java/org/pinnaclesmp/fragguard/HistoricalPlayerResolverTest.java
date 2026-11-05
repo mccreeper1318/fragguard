@@ -156,6 +156,7 @@ class HistoricalPlayerResolverTest {
             try (ResultSet plan = statement.executeQuery("""
                     EXPLAIN QUERY PLAN SELECT id FROM block_changes
                     WHERE actor_uuid = '11111111-2222-3333-4444-555555555555'
+                      AND length(actor_uuid) IN (32, 36)
                       AND happened_at >= 0 ORDER BY happened_at DESC, id DESC
                     """)) {
                 assertTrue(plan.next());
@@ -165,6 +166,7 @@ class HistoricalPlayerResolverTest {
             try (ResultSet plan = statement.executeQuery("""
                     EXPLAIN QUERY PLAN SELECT id FROM block_changes
                     WHERE actor_uuid = '11111111-2222-3333-4444-555555555555'
+                      AND length(actor_uuid) IN (32, 36)
                       AND world_uuid = '99999999-2222-3333-4444-555555555555'
                       AND happened_at >= 0
                     ORDER BY happened_at DESC, id DESC
@@ -175,6 +177,7 @@ class HistoricalPlayerResolverTest {
             try (ResultSet plan = statement.executeQuery("""
                     EXPLAIN QUERY PLAN SELECT DISTINCT actor_uuid FROM block_changes
                     WHERE actor_name = 'OlderName' COLLATE NOCASE
+                      AND length(actor_uuid) IN (32, 36)
                     """)) {
                 assertTrue(plan.next());
                 assertTrue(plan.getString("detail").contains("idx_fg_actor_name_uuid"));
