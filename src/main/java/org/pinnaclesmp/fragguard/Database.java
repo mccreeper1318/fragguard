@@ -1468,7 +1468,7 @@ final class Database {
                 // Commit each index separately, checkpoint between them, and only
                 // advance user_version once all three exist. A failed startup
                 // retains v4 and resumes any completed indexes via IF NOT EXISTS.
-                migrateHistoricalActorIndexes(databaseConnection);
+                migrateHistoricalActorIndexes(databaseConnection, existingSchema);
                 inTransaction(databaseConnection, () -> {
                     try (Statement statement = databaseConnection.createStatement()) {
                         statement.execute("PRAGMA user_version=5");
@@ -1920,11 +1920,11 @@ final class Database {
         });
     }
 
-    private void migrateHistoricalActorIndexes(Connection databaseConnection) throws SQLException {
+    private void migrateHistoricalActorIndexes(Connection databaseConnection, boolean preflightNeeded) throws SQLException {
         // An interrupted v4->v5 migration can retain earlier completed indexes
         // while user_version remains 4; each CREATE INDEX is restartable.
         startupStage = "schema v4 to v5 index idx_fg_actor_time";
-        if (!sqliteIndexExists(databaseConnection, "idx_fg_actor_time")) {
+        if (preflightNeeded && !sqliteIndexExists(databaseConnection, "idx_fg_actor_time")) {
             preflightIndexMigrationSpace(databaseConnection, 4, "index idx_fg_actor_time");
         }
         HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_time",
@@ -1934,7 +1934,7 @@ final class Database {
         HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
 
         startupStage = "schema v4 to v5 index idx_fg_actor_world_time";
-        if (!sqliteIndexExists(databaseConnection, "idx_fg_actor_world_time")) {
+        if (preflightNeeded && !sqliteIndexExists(databaseConnection, "idx_fg_actor_world_time")) {
             preflightIndexMigrationSpace(databaseConnection, 4, "index idx_fg_actor_world_time");
         }
         HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_world_time",
@@ -1944,7 +1944,7 @@ final class Database {
         HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
 
         startupStage = "schema v4 to v5 index idx_fg_actor_name_uuid";
-        if (!sqliteIndexExists(databaseConnection, "idx_fg_actor_name_uuid")) {
+        if (preflightNeeded && !sqliteIndexExists(databaseConnection, "idx_fg_actor_name_uuid")) {
             preflightIndexMigrationSpace(databaseConnection, 4, "index idx_fg_actor_name_uuid");
         }
         HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile, "idx_fg_actor_name_uuid",
