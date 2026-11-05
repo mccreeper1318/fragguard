@@ -74,7 +74,8 @@ class MigrationStoragePolicyTest {
         assertTrue(temp.getMessage().contains("SQLite native temp"));
         SQLException unknown = assertThrows(SQLException.class,
                 () -> MigrationStoragePolicy.checkCapacity(2L * GIB, 0, 0, 0));
-        assertTrue(unknown.getMessage().contains("unknown"));
+        assertTrue(unknown.getMessage().contains("no known writable free space")
+                || unknown.getMessage().contains("free space is known"));
         assertDoesNotThrow(() -> MigrationStoragePolicy.checkCapacity(2L * GIB, 0, 3L * GIB, 0));
     }
 
