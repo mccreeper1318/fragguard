@@ -1494,6 +1494,13 @@ final class Database {
                     return null;
                 });
             }
+                if (previousVersion >= 5 && previousVersion <= 7) {
+                    // These later schema stages create additional indexes. Never
+                    // carry their completed WAL growth into the next index stage.
+                    startupStage = "checkpointing schema v" + previousVersion
+                            + " to v" + (previousVersion + 1);
+                    HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
+                }
             } catch (SQLException exception) {
                 throw explainMigrationFailure(previousVersion, exception);
             }
