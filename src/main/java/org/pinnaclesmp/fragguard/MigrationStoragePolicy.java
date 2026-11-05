@@ -84,6 +84,22 @@ final class MigrationStoragePolicy {
         }
     }
 
+    static boolean isSqliteFull(SQLException failure) {
+        for (SQLException current = failure; current != null; current = current.getNextException()) {
+            if (current.getErrorCode() == 13
+                    || current.getMessage() != null && current.getMessage().contains("SQLITE_FULL")) {
+                return true;
+            }
+            for (Throwable cause = current.getCause(); cause != null; cause = cause.getCause()) {
+                if (cause instanceof SQLException sqlCause && sqlCause.getErrorCode() == 13
+                        || cause.getMessage() != null && cause.getMessage().contains("SQLITE_FULL")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     static String formatBytes(long bytes) {
         if (bytes < MIB) {
             return bytes + " B";
