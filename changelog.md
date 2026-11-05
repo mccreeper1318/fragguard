@@ -16,6 +16,7 @@
 - Added per-index SQLite migration diagnostics for storage failures (#138).
 - Reduced historical actor index size and made index migration restartable (#139).
 - Added storage-aware migration checks and safer SQLite failure recovery (#140).
+- Added large-history SQLite migration regression tests and release checklist (#141).
 - Added bounded causal player attribution for traceable TNT and machinery chains (#106).
 
 ### Added
