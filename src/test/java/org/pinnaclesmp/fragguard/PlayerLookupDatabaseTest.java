@@ -207,6 +207,7 @@ class PlayerLookupDatabaseTest {
             for (String[] plan : new String[][]{
                     {"EXPLAIN QUERY PLAN SELECT actor_name, happened_at, id FROM block_changes "
                             + "WHERE actor_uuid = '" + PLAYER + "' "
+                            + "AND length(actor_uuid) IN (32, 36) "
                             + "ORDER BY happened_at DESC, id DESC LIMIT 1", "idx_fg_actor_time"},
                     {"EXPLAIN QUERY PLAN SELECT causal_player_name, happened_at, id FROM block_changes "
                             + "WHERE causal_player_uuid = '" + PLAYER + "' AND causal_player_name IS NOT NULL "
