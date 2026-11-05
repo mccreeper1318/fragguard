@@ -16,11 +16,11 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -32,7 +32,7 @@ import static org.mockito.Mockito.*;
  *
  * The normal CI fixture is bounded. Override -Dfg.validation.rows=200000
  * (or more) in a deliberately provisioned, NON-PRODUCTION test environment
- * to measure migration performance, space, and peak WAL size at larger scale.
+ * to measure migration performance, main-DB and visible WAL peak size on larger fixtures.
  */
 class LargeHistoryMigrationIntegrationTest {
     private static final String WORLD_UUID = "99999999-2222-3333-4444-555555555555";
@@ -54,7 +54,9 @@ class LargeHistoryMigrationIntegrationTest {
 
     @Test
     void realV4HistoryMigratesThroughV9AndRetainsPlayersWorldsAndRollbackSnapshots() throws Exception {
-        int rows = Integer.getInteger("fg.validation.rows", DEFAULT_ROWS);
+        String requested = System.getenv("FG_VALIDATION_ROWS");
+        int rows = requested == null || requested.isBlank()
+                ? DEFAULT_ROWS : Integer.parseInt(requested);
         assertTrue(rows >= 100 && rows <= 2_000_000,
                 "Choose 100..2000000 synthetic history rows only in a provisioned test environment");
         long started = System.nanoTime();
@@ -72,9 +74,19 @@ class LargeHistoryMigrationIntegrationTest {
                     "genuine v4 has no player-scope job metadata");
         }
 
-        db = start(0);
-        assertTrue(db.health().healthy());
-        long migratedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+        long migrationStarted = System.nanoTime();
+        long peakDb;
+        long peakWal;
+        long peakJournal;
+        try (FilePeakProbe probe = new FilePeakProbe(databasePath())) {
+            db = start(0);
+            assertTrue(db.health().healthy());
+            probe.sample();
+            peakDb = probe.peakDb.get();
+            peakWal = probe.peakWal.get();
+            peakJournal = probe.peakJournal.get();
+        }
+        long migratedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - migrationStarted);
 
         try (Connection sql = raw()) {
             assertEquals(9L, scalar(sql, "PRAGMA user_version"));
@@ -148,9 +160,12 @@ class LargeHistoryMigrationIntegrationTest {
             System.out.println("FG synthetic v4->v9 migration: fixtureRows=" + rows
                     + ", baselineDbBytes=" + baselineBytes
                     + ", finalDbBytes=" + finalBytes
-                    + ", totalElapsedMillis=" + migratedMillis
+                    + ", migrationElapsedMillis=" + migratedMillis
+                    + ", peakVisibleDbBytes=" + peakDb
+                    + ", peakVisibleWalBytes=" + peakWal
+                    + ", peakVisibleJournalBytes=" + peakJournal
                     + ", walAfterShutdownBytes=" + sidecarBytes("-wal")
-                    + " (peak WAL/temp not observable from this test)");
+                    + " (native temp and hosting quota cannot be measured here)");
         }
         // Reopen upgraded v9 without running any further migrations.
         db = start(0);
@@ -298,6 +313,59 @@ class LargeHistoryMigrationIntegrationTest {
                 change.executeUpdate();
             }
             sql.commit();
+        }
+    }
+
+    /**
+     * Best-effort visible-file high-water marks. SQLite's native temporary
+     * sort files may be unlinked while open, so these cannot prove peak total
+     * storage or a managed hosting quota.
+     */
+    private static final class FilePeakProbe implements AutoCloseable {
+        private final Path database;
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final AtomicLong peakDb = new AtomicLong();
+        private final AtomicLong peakWal = new AtomicLong();
+        private final AtomicLong peakJournal = new AtomicLong();
+        private final Thread sampler;
+
+        private FilePeakProbe(Path database) {
+            this.database = database;
+            sample();
+            sampler = new Thread(() -> {
+                while (running.get()) {
+                    sample();
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException ignored) {
+                        break;
+                    }
+                }
+            }, "FG-Migration-Fixture-Sampler");
+            sampler.setDaemon(true);
+            sampler.start();
+        }
+
+        private void sample() {
+            peakDb.accumulateAndGet(size(database), Math::max);
+            peakWal.accumulateAndGet(size(Path.of(database.toString() + "-wal")), Math::max);
+            peakJournal.accumulateAndGet(size(Path.of(database.toString() + "-journal")), Math::max);
+        }
+
+        private static long size(Path path) {
+            try {
+                return Files.exists(path) ? Files.size(path) : 0L;
+            } catch (Exception ignored) {
+                return 0L;
+            }
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            running.set(false);
+            sampler.interrupt();
+            sampler.join(2_000L);
+            sample();
         }
     }
 
