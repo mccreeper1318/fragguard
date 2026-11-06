@@ -22,16 +22,21 @@ final class CausalChainTracker {
     static final long IDLE_MILLIS = 4_000L;
     static final long MAX_AGE_MILLIS = 30_000L;
     static final long PRIME_MATCH_MILLIS = 500L;
+    static final long TNT_MOVEMENT_MATCH_MILLIS = 500L;
     // An observed TNT entity is a concrete cause even with a slower-than-20 TPS fuse.
     static final long TNT_ENTITY_LIFETIME_MILLIS = 60_000L;
     static final int MAX_BLOCK_LINKS = 2_048;
     static final int MAX_ENTITY_LINKS = 512;
     static final int MAX_PRIME_LINKS = 256;
+    static final int MAX_TNT_MOVEMENT_LINKS = 256;
     static final int MAX_DISPLACEMENT = 96;
 
     private final Map<Position, Link> blocks = new HashMap<>();
     private final Map<UUID, Link> entities = new HashMap<>();
     private final Map<Position, Link> recentPrimes = new HashMap<>();
+    // Only positions of TNT blocks actually observed moving with a piston.
+    // A linked piston moving stone or slime must never authorize TNT entities.
+    private final Map<Position, Link> recentMovedTnt = new HashMap<>();
 
     record Position(String world, int x, int y, int z) {
         Position shift(int dx, int dy, int dz) {
@@ -111,6 +116,12 @@ final class CausalChainTracker {
 
     CausalAttribution piston(Position piston, List<Position> moved,
                             int dx, int dy, int dz, long now) {
+        return piston(piston, moved, List.of(), dx, dy, dz, now);
+    }
+
+    /** TNT evidence comes from moved blocks whose material was actually TNT. */
+    CausalAttribution piston(Position piston, List<Position> moved, List<Position> movedTnt,
+                            int dx, int dy, int dz, long now) {
         sweep(now);
         Link link = uniqueConnected(piston, now);
         if (link == null) {
@@ -145,6 +156,21 @@ final class CausalChainTracker {
         }
         for (Position position : touched) {
             remember(position, link.touch(now, "PISTON"), now);
+        }
+        // A TNT duper may spawn primed TNT at the original or destination
+        // coordinate of a TNT block moved in this exact piston event. Only
+        // actual TNT materials may seed this brief, one-shot handoff.
+        for (Position tntSource : movedTnt) {
+            if (!moved.contains(tntSource)) {
+                continue;
+            }
+            if (recentMovedTnt.size() + 2 > MAX_TNT_MOVEMENT_LINKS) {
+                recentMovedTnt.clear(); // Do not infer ownership from an overflow.
+                break;
+            }
+            Link tntEvidence = link.touch(now, "PISTON_TNT");
+            recentMovedTnt.put(tntSource, tntEvidence);
+            recentMovedTnt.put(tntSource.shift(dx, dy, dz), tntEvidence);
         }
         return link.attribution;
     }
@@ -188,9 +214,10 @@ final class CausalChainTracker {
         sweep(now);
         Link link = recentPrimes.remove(position);
         if (link == null || now - link.lastObserved > PRIME_MATCH_MILLIS || !active(link, position, now)) {
-            // A duper may spawn TNT from a directly tracked moving block.
-            link = blocks.get(position);
-            if (link == null || !link.attribution.causeType().equals("PISTON")
+            // A TNT duper needs observed movement of an actual TNT block.
+            // Never infer TNT ownership from any ordinary piston-touched tile.
+            link = recentMovedTnt.remove(position);
+            if (link == null || now - link.lastObserved > TNT_MOVEMENT_MATCH_MILLIS
                     || !active(link, position, now)) {
                 return null;
             }
@@ -230,6 +257,7 @@ final class CausalChainTracker {
     void unloadWorld(String world) {
         blocks.keySet().removeIf(p -> p.world.equals(world));
         recentPrimes.keySet().removeIf(p -> p.world.equals(world));
+        recentMovedTnt.keySet().removeIf(p -> p.world.equals(world));
         entities.values().removeIf(link -> link.origin.world.equals(world));
     }
 
@@ -237,10 +265,11 @@ final class CausalChainTracker {
         blocks.clear();
         entities.clear();
         recentPrimes.clear();
+        recentMovedTnt.clear();
     }
 
     int trackedCount() {
-        return blocks.size() + entities.size() + recentPrimes.size();
+        return blocks.size() + entities.size() + recentPrimes.size() + recentMovedTnt.size();
     }
 
     private void remember(Position position, Link link, long now) {
@@ -306,6 +335,7 @@ final class CausalChainTracker {
     private void invalidateChain(String chainId) {
         blocks.values().removeIf(link -> link.attribution.chainId().equals(chainId));
         recentPrimes.values().removeIf(link -> link.attribution.chainId().equals(chainId));
+        recentMovedTnt.values().removeIf(link -> link.attribution.chainId().equals(chainId));
         entities.values().removeIf(link -> link.attribution.chainId().equals(chainId));
     }
 
@@ -313,6 +343,8 @@ final class CausalChainTracker {
         blocks.entrySet().removeIf(entry -> !active(entry.getValue(), entry.getKey(), now));
         recentPrimes.entrySet().removeIf(entry -> !active(entry.getValue(), entry.getKey(), now)
                 || now - entry.getValue().lastObserved > PRIME_MATCH_MILLIS);
+        recentMovedTnt.entrySet().removeIf(entry -> !active(entry.getValue(), entry.getKey(), now)
+                || now - entry.getValue().lastObserved > TNT_MOVEMENT_MATCH_MILLIS);
         entities.values().removeIf(link -> !entityActive(link, now));
     }
 }
