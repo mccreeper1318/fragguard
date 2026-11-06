@@ -18,10 +18,13 @@ java {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:26.3.build.241-stable")
-    implementation("org.xerial:sqlite-jdbc:3.54.1.0")
+    // Paper provides SQLite JDBC at server runtime; do not shade a conflicting
+    // copy into FragGuard. Compile/test with a pinned version for local CI.
+    compileOnly("org.xerial:sqlite-jdbc:3.54.1.0")
     implementation("org.slf4j:slf4j-nop:2.0.20")
 
     testImplementation("io.papermc.paper:paper-api:26.3.build.241-stable")
+    testImplementation("org.xerial:sqlite-jdbc:3.54.1.0")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
     testImplementation("org.mockito:mockito-core:5.24.0")
