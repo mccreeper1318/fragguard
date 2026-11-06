@@ -39,6 +39,7 @@
 - Fixed Shadow JAR service merging (#87).
 - Fixed unrelated TNT inheriting piston ownership without observed TNT movement (PR #146).
 - Fixed GUI player history queries missing the partial-index condition (PR #146).
+- Fixed offline validation output safety for hard links and required historical index checks (#151).
 
 ## 26.3-1.2.0
 
