@@ -679,6 +679,8 @@ final class BlockChangeListener implements Listener {
                 event.getBlock(), event.getDirection(), event.getBlocks());
         CausalAttribution attributed = causalChains.piston(causalPosition(event.getBlock()),
                 event.getBlocks().stream().map(this::causalPosition).toList(),
+                event.getBlocks().stream().filter(block -> block.getType() == Material.TNT)
+                        .map(this::causalPosition).toList(),
                 event.getDirection().getModX(), event.getDirection().getModY(),
                 event.getDirection().getModZ(), System.currentTimeMillis());
         logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_EXTEND,
@@ -698,6 +700,8 @@ final class BlockChangeListener implements Listener {
                 event.getBlock(), event.getDirection(), event.getBlocks());
         CausalAttribution attributed = causalChains.piston(causalPosition(event.getBlock()),
                 event.getBlocks().stream().map(this::causalPosition).toList(),
+                event.getBlocks().stream().filter(block -> block.getType() == Material.TNT)
+                        .map(this::causalPosition).toList(),
                 event.getDirection().getModX(), event.getDirection().getModY(),
                 event.getDirection().getModZ(), System.currentTimeMillis());
         logAfterServerAppliesChange(beforeStates, ChangeAction.PISTON_RETRACT,
