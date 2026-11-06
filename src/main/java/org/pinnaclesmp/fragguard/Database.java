@@ -739,17 +739,7 @@ final class Database {
             int unavailable = 0;
             long snapshotBytes = 0L;
 
-            String timelineSql = """
-                    SELECT id, happened_at, actor_uuid, actor_name, causal_player_uuid,
-                           causal_chain_id, causal_cause_type, world, before_data,
-                           after_data, before_entity_data, after_entity_data
-                    FROM block_changes
-                    WHERE rollback_pending = 0 AND world_uuid = ?
-                      AND x = ? AND y = ? AND z = ?
-                      AND happened_at > ? AND happened_at <= ?
-                    ORDER BY happened_at DESC, id DESC
-                    LIMIT ?
-                    """;
+            String timelineSql = CoordinateHistoryIndexPlan.TIMELINE_SQL;
             for (Position position : positions) {
                 if (activeQuery != null && activeQuery.isDone()) {
                     throw new SQLTimeoutException("Player rollback planning exceeded its query deadline.");
@@ -767,12 +757,14 @@ final class Database {
                 boolean newerTargetActor = false;
                 try (PreparedStatement history = queryStatement(databaseConnection, timelineSql)) {
                     history.setString(1, position.worldUuid());
-                    history.setInt(2, position.x());
-                    history.setInt(3, position.y());
-                    history.setInt(4, position.z());
-                    history.setLong(5, cutoff);
-                    history.setLong(6, now);
-                    history.setInt(7, SelectivePlayerRollbackPlanner.MAX_HISTORY_ROWS_PER_COORDINATE + 1);
+                    history.setInt(2, position.x() >> 4);
+                    history.setInt(3, position.z() >> 4);
+                    history.setInt(4, position.x());
+                    history.setInt(5, position.y());
+                    history.setInt(6, position.z());
+                    history.setLong(7, cutoff);
+                    history.setLong(8, now);
+                    history.setInt(9, SelectivePlayerRollbackPlanner.MAX_HISTORY_ROWS_PER_COORDINATE + 1);
                     try (ResultSet rows = history.executeQuery()) {
                         while (rows.next()) {
                             if (activeQuery != null && activeQuery.isDone()) {
@@ -980,22 +972,19 @@ final class Database {
             rejectOverlappingChunks(db, reservations, -1L);
             // Do not persist an unsafe/stale plan even if another operator
             // changed the world after the original preview was displayed.
-            try (PreparedStatement changed = db.prepareStatement("""
-                    SELECT 1 FROM block_changes
-                    WHERE rollback_pending = 0 AND world_uuid = ?
-                      AND x = ? AND y = ? AND z = ?
-                      AND happened_at > ?
-                    LIMIT 1
-                    """)) {
+            try (PreparedStatement changed =
+                         db.prepareStatement(CoordinateHistoryIndexPlan.STALE_CHECK_SQL)) {
                 for (RollbackTarget target : targets) {
                     if (scopedWorldUuid != null && !scopedWorldUuid.equals(target.worldUuid())) {
                         throw new IllegalStateException("Target lies outside the requested world scope.");
                     }
                     changed.setString(1, target.worldUuid());
-                    changed.setInt(2, target.x());
-                    changed.setInt(3, target.y());
-                    changed.setInt(4, target.z());
-                    changed.setLong(5, plan.snapshotTimestamp());
+                    changed.setInt(2, target.x() >> 4);
+                    changed.setInt(3, target.z() >> 4);
+                    changed.setInt(4, target.x());
+                    changed.setInt(5, target.y());
+                    changed.setInt(6, target.z());
+                    changed.setLong(7, plan.snapshotTimestamp());
                     try (ResultSet later = changed.executeQuery()) {
                         if (later.next()) {
                             throw new IllegalStateException("The player rollback preview is stale. "
@@ -1986,20 +1975,16 @@ final class Database {
     }
 
     /**
-     * Coordinate history was previously scanning every record in a world
-     * for each selected player-rollback coordinate. This partial index makes
-     * newest-first history reconstruction an indexed coordinate/time seek.
+     * v7->v8 no longer creates a second, multi-gigabyte index over nearly
+     * every historic change. The pre-existing chunk/time index contains all
+     * physical actors and indirect changes and can seek exact chunks.
+     * A full read-only consistency scan protects against stale legacy chunks.
      */
     private void migratePlayerRollbackCoordinateIndex(Connection databaseConnection) throws SQLException {
-        startupStage = "indexing block coordinates for safe player rollback planning";
-        // Diagnostic only (#147). Keep v7->v8 index DDL within the current
-        // migration transaction, so SQLITE_FULL still rolls back safely.
-        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile,
-                "Schema v7->v8", "idx_fg_coordinate_time", """
-                        CREATE INDEX IF NOT EXISTS idx_fg_coordinate_time
-                        ON block_changes(y, world_uuid, x, z, happened_at DESC, id DESC)
-                        WHERE rollback_pending = 0
-                        """, plugin.getLogger()::info, plugin.getLogger()::warning);
+        startupStage = "verifying existing chunk/time index for safe player rollback planning";
+        CoordinateHistoryIndexPlan.verifyExistingHistory(databaseConnection);
+        plugin.getLogger().info("Schema v7->v8: verified existing idx_fg_spatial_time and "
+                + "historical chunk coordinates; no new all-history coordinate index was needed.");
     }
 
     /** Shared ownership condition for player lookup/rollback in #101/#102. */
