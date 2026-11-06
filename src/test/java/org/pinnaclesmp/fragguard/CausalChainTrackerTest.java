@@ -65,7 +65,8 @@ class CausalChainTrackerTest {
         var pushed = t.piston(at(1,64,0), List.of(at(2,64,0), at(3,64,0)),
                 1, 0, 0, 1100);
         assertEquals(FIRST, pushed.playerUuid());
-        var further = t.piston(at(4,64,0), List.of(at(5,64,0)), 1, 0, 0, 1200);
+        var further = t.piston(at(4,64,0), List.of(at(5,64,0)), List.of(at(5,64,0)),
+                1, 0, 0, 1200);
         assertEquals(pushed.chainId(), further.chainId());
         // A TNT duper spawning at an observed piston-moved coordinate.
         UUID spawned = UUID.randomUUID();
@@ -79,7 +80,8 @@ class CausalChainTrackerTest {
     void anotherPlayerTakeoverRemovesOldMachineAndTntOwnership() {
         var t = new CausalChainTracker();
         t.playerActivated(at(0,64,0), FIRST, "First", 1000);
-        t.piston(at(1,64,0), List.of(at(2,64,0)), 1, 0, 0, 1100);
+        t.piston(at(1,64,0), List.of(at(2,64,0)), List.of(at(2,64,0)),
+                1, 0, 0, 1100);
         UUID tnt = UUID.randomUUID();
         t.spawnedTnt(at(3,64,0), tnt, 1150);
         assertNotNull(t.entityCause(tnt, 1160));
@@ -87,6 +89,65 @@ class CausalChainTrackerTest {
         assertNull(t.entityCause(tnt, 1180));
         assertEquals(SECOND, t.piston(at(2,64,0), List.of(at(3,64,0)),
                 1, 0, 0, 1200).playerUuid());
+    }
+
+    @Test
+    void ordinaryPistonMovementNeverClaimsUnrelatedDispenserTnt() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 1_000);
+        assertNotNull(t.piston(at(1,64,0), List.of(at(2,64,0)), 1, 0, 0, 1_100));
+        // Before the fix, either source or destination could spuriously claim
+        // a separate dispenser's TNT entity for four seconds.
+        UUID unrelated = UUID.randomUUID();
+        assertNull(t.spawnedTnt(at(3,64,0), unrelated, 1_110));
+        assertNull(t.spawnedTnt(at(2,64,0), UUID.randomUUID(), 1_120));
+        assertNull(t.entityCause(unrelated, 1_200));
+        assertNull(t.spawnedTnt(at(1,64,0), UUID.randomUUID(), 1_130),
+                "touching the piston itself is not TNT-specific evidence");
+    }
+
+    @Test
+    void observedTntBlockMovementCanClaimOnlyItsSourceOrDestinationBriefly() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 1_000);
+        t.piston(at(1,64,0), List.of(at(2,64,0), at(3,64,0)),
+                List.of(at(3,64,0)), 1, 0, 0, 1_100);
+        assertNull(t.spawnedTnt(at(2,64,0), UUID.randomUUID(), 1_110),
+                "moving an adjacent ordinary block does not prove TNT ownership");
+        UUID spawned = UUID.randomUUID();
+        assertEquals(FIRST, t.spawnedTnt(at(4,64,0), spawned, 1_120).playerUuid());
+        assertEquals(FIRST, t.entityCause(spawned, 1_500).playerUuid());
+        assertNull(t.spawnedTnt(at(4,64,0), UUID.randomUUID(), 1_130),
+                "a movement handoff is one-shot, not permanent ownership");
+        assertEquals(FIRST, t.spawnedTnt(at(3,64,0), UUID.randomUUID(), 1_140).playerUuid(),
+                "TNT moved from its original coordinate is also direct evidence");
+    }
+
+    @Test
+    void tntMovementEvidenceExpiresAndRequiresActualMovedTnt() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 1_000);
+        t.piston(at(1,64,0), List.of(at(2,64,0)), List.of(at(2,64,0)),
+                1, 0, 0, 1_100);
+        assertNull(t.spawnedTnt(at(3,64,0), UUID.randomUUID(),
+                        1_100 + CausalChainTracker.TNT_MOVEMENT_MATCH_MILLIS + 1),
+                "unrelated TNT spawned later must not inherit piston ownership");
+
+        // A caller cannot seed evidence at a point not in the moved block set.
+        t.piston(at(1,64,0), List.of(at(2,64,0)), List.of(at(20,64,0)),
+                1, 0, 0, 2_000);
+        assertNull(t.spawnedTnt(at(20,64,0), UUID.randomUUID(), 2_010));
+    }
+
+    @Test
+    void newPlayerActivationInvalidatesPendingTntMovementEvidence() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "First", 1_000);
+        t.piston(at(1,64,0), List.of(at(2,64,0)), List.of(at(2,64,0)),
+                1, 0, 0, 1_100);
+        t.playerActivated(at(1,64,0), SECOND, "Second", 1_120);
+        assertNull(t.spawnedTnt(at(3,64,0), UUID.randomUUID(), 1_130),
+                "invalidating the original machine removes its unconsumed TNT evidence");
     }
 
     @Test
