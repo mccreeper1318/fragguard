@@ -23,6 +23,9 @@ final class CausalChainTracker {
     static final long MAX_AGE_MILLIS = 30_000L;
     static final long PRIME_MATCH_MILLIS = 500L;
     static final long TNT_MOVEMENT_MATCH_MILLIS = 500L;
+    // An observed player switch-off may power down a redstone chain before a
+    // piston retracts. Never let unrelated later falling edges refresh it.
+    static final long FALLING_EDGE_HANDOFF_MILLIS = 500L;
     // An observed TNT entity is a concrete cause even with a slower-than-20 TPS fuse.
     static final long TNT_ENTITY_LIFETIME_MILLIS = 60_000L;
     static final int MAX_BLOCK_LINKS = 2_048;
@@ -45,11 +48,17 @@ final class CausalChainTracker {
     }
 
     private record Link(CausalAttribution attribution, long createdAt, long lastObserved,
-                        Position origin) {
+                        Position origin, long lastDirectActivationAt) {
         Link touch(long now, String cause) {
             return new Link(new CausalAttribution(attribution.playerUuid(),
                     attribution.playerName(), attribution.chainId(), cause),
-                    createdAt, now, origin);
+                    createdAt, now, origin, lastDirectActivationAt);
+        }
+
+        Link directlyActivated(long now) {
+            Link refreshed = touch(now, "PLAYER_ACTIVATION");
+            return new Link(refreshed.attribution, refreshed.createdAt, now,
+                    refreshed.origin, now);
         }
     }
 
@@ -69,14 +78,14 @@ final class CausalChainTracker {
         }
         Link existing = blocks.get(position);
         if (existing != null && existing.attribution.playerUuid().equals(uuid) && active(existing, position, now)) {
-            blocks.put(position, existing.touch(now, "PLAYER_ACTIVATION"));
+            blocks.put(position, existing.directlyActivated(now));
             return; // Repeat pressure-plate events must not split the same causal chain.
         }
         if (blocks.size() >= MAX_BLOCK_LINKS) {
             clear(); // fail closed under load, never evict into arbitrary ownership
         }
         blocks.put(position, new Link(new CausalAttribution(uuid, name, UUID.randomUUID().toString(),
-                "PLAYER_ACTIVATION"), now, now, position));
+                "PLAYER_ACTIVATION"), now, now, position, now));
     }
 
     void playerModified(Position position, String uuid, String name, long now,
@@ -103,6 +112,22 @@ final class CausalChainTracker {
     CausalAttribution redstone(Position source, long now, boolean powered) {
         sweep(now);
         if (!powered) {
+            // The player is the *observed* cause of this falling edge. Keep
+            // their just-refreshed activation through connected power-off
+            // updates so the subsequent piston retraction can inherit it.
+            // Never revive an old/ambiguous machine or an unobserved switch.
+            Link selected = uniqueConnected(source, now);
+            if (selected != null) {
+                for (Position adjacent : connected(source)) {
+                    Link candidate = blocks.get(adjacent);
+                    if (active(candidate, source, now)
+                            && candidate.attribution.chainId().equals(selected.attribution.chainId())
+                            && freshFallingEdge(candidate, now)) {
+                        remember(source, candidate.touch(now, "REDSTONE_OFF"), now);
+                        return candidate.attribution;
+                    }
+                }
+            }
             blocks.remove(source);
             return null;
         }
@@ -189,7 +214,7 @@ final class CausalChainTracker {
         // Paper's recursive getSource() also resolves to the original player.
         causal = primingEntity == null ? null : entities.get(primingEntity);
         if (causal == null && directPlayer != null) {
-            causal = new Link(directPlayer, now, now, tntBlock);
+            causal = new Link(directPlayer, now, now, tntBlock, -1L);
         }
         if (causal == null && primingBlock != null) {
             causal = blocks.get(primingBlock);
@@ -205,7 +230,7 @@ final class CausalChainTracker {
         }
         // Prime is a new observed physical event: reset its short handoff
         // window even when the source TNT burned a long fuse.
-        recentPrimes.put(tntBlock, new Link(result, now, now, tntBlock));
+        recentPrimes.put(tntBlock, new Link(result, now, now, tntBlock, -1L));
         return result;
     }
 
@@ -228,7 +253,7 @@ final class CausalChainTracker {
         }
         link = new Link(new CausalAttribution(link.attribution.playerUuid(),
                 link.attribution.playerName(), link.attribution.chainId(), "TNT_ENTITY"),
-                now, now, position);
+                now, now, position, -1L);
         entities.put(entityId, link);
         return link.attribution;
     }
@@ -249,7 +274,7 @@ final class CausalChainTracker {
         }
         Link childLink = new Link(new CausalAttribution(link.attribution.playerUuid(),
                 link.attribution.playerName(), link.attribution.chainId(), "TNT_CHAIN"),
-                now, now, position);
+                now, now, position, -1L);
         entities.put(child, childLink);
         return childLink.attribution;
     }
@@ -308,9 +333,17 @@ final class CausalChainTracker {
                 pos.shift(0, 0, 1), pos.shift(0, 0, -1));
     }
 
+    private static boolean freshFallingEdge(Link link, long now) {
+        return link != null && link.lastDirectActivationAt >= 0
+                && now >= link.lastDirectActivationAt
+                && now - link.lastDirectActivationAt <= FALLING_EDGE_HANDOFF_MILLIS;
+    }
+
     private static boolean active(Link link, Position at, long now) {
         if (link == null || now < link.createdAt || now - link.createdAt > MAX_AGE_MILLIS
-                || now - link.lastObserved > IDLE_MILLIS) {
+                || now - link.lastObserved > IDLE_MILLIS
+                || ("REDSTONE_OFF".equals(link.attribution.causeType())
+                    && !freshFallingEdge(link, now))) {
             return false;
         }
         Position origin = link.origin;
