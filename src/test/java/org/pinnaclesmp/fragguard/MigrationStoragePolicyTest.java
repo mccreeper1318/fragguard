@@ -39,14 +39,16 @@ class MigrationStoragePolicyTest {
     @Test
     void everyIndexStageGetsAWorkingSpaceEstimateButMetadataIsSmaller() {
         long logical = 17L * GIB;
-        for (int version = 4; version <= 7; version++) {
+        for (int version = 4; version <= 6; version++) {
             assertTrue(MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logical, version)
                     >= 34L * GIB, "index-heavy schema v" + version + " needs WAL and sort headroom");
         }
+        assertEquals(128L * MIB, MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logical, 7),
+                "v7→v8 validates an existing index and needs no new 57M-row index");
         assertTrue(MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logical, 3) > 0L);
         assertTrue(MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logical, 8) > 0L);
         assertTrue(MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logical, 8)
-                < MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logical, 7));
+                > MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(logical, 7));
         assertEquals(512L * MIB, MigrationStoragePolicy.estimateIndexMigrationWorkingBytes(1, 4));
     }
 
