@@ -53,7 +53,7 @@ final class SqliteDriverProvenance {
         try {
             jdbcOrigin = classOrigin(Class.forName("org.sqlite.JDBC", false,
                     SqliteDriverProvenance.class.getClassLoader()));
-        } catch (ClassNotFoundException | LinkageError | SecurityException e) {
+        } catch (ClassNotFoundException | LinkageError | RuntimeException e) {
             jdbcOrigin = "unknown";
         }
         String connectionOrigin = classOrigin(connection.getClass());
@@ -75,7 +75,7 @@ final class SqliteDriverProvenance {
                 warning.accept("FragGuard SQLite driver originated from the plugin JAR; "
                         + "expected Paper-provided SQLite. Check the shaded artifact and runtime classpath.");
             }
-        } catch (SQLException | SecurityException | RuntimeException | LinkageError e) {
+        } catch (SQLException | RuntimeException | LinkageError e) {
             warning.accept("FragGuard could not inspect SQLite runtime provenance ("
                     + e.getClass().getSimpleName() + "). "
                     + "This diagnostic does not establish a migration or driver failure.");
@@ -87,7 +87,7 @@ final class SqliteDriverProvenance {
             ProtectionDomain domain = type.getProtectionDomain();
             CodeSource source = domain == null ? null : domain.getCodeSource();
             return source == null ? "unknown" : sanitizedJarName(source.getLocation());
-        } catch (SecurityException | RuntimeException e) {
+        } catch (RuntimeException e) {
             return "unknown";
         }
     }
