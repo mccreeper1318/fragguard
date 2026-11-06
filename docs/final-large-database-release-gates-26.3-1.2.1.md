@@ -46,6 +46,12 @@ Comparison **fails closed** if the original schema was not v4/v7/v8, target is n
 
 The manifests exclude raw player history but may include file sizes and schema metadata; avoid posting internal host quota details publicly.
 
+### Codex review safeguards for the offline checker (PR #156)
+
+- Report destinations must be independent filesystem files, not path aliases, symbolic links, or **hard links** to an input database, matching WAL/SHM sidecar, or either input manifest. The tool checks filesystem identity (`samefile`) in addition to resolved paths and writes reports through a temporary file plus atomic replacement to avoid truncating a source inode.
+- Final v9 migration comparison requires **all eight historical/rollback indexes**: `idx_fg_spatial_time`, `idx_fg_actor_time`, `idx_fg_actor_world_time`, `idx_fg_actor_name_uuid`, `idx_fg_causal_actor_time`, `idx_fg_causal_actor_world_time`, `idx_fg_causal_name_uuid`, and `idx_fg_job_chunk_overlap`. Missing any index fails the gate, even if history counts and hashes agree.
+- Regression tests intentionally create database, WAL/SHM and manifest hard links and verify unchanged input bytes; they also remove each required index individually and confirm release validation fails.
+
 ## Gate C — Bounded automated migration suites (CI underway)
 
 The normal CI suite includes:
