@@ -935,6 +935,61 @@ class DatabaseTest {
     }
 
     @Test
+    void versionSevenUpgradeRejectsMissingChunkIndexWithoutAlteringHistory() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis() - 2000,
+                100L, -17, 64, -33, "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            sql.execute("DROP INDEX idx_fg_spatial_time");
+            sql.execute("PRAGMA user_version=7");
+        }
+        SQLException failure = assertThrows(SQLException.class, this::startDatabase);
+        assertTrue(failure.getCause().getMessage().contains("idx_fg_spatial_time"));
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            try (ResultSet result = sql.executeQuery("PRAGMA user_version")) {
+                assertTrue(result.next());
+                assertEquals(7, result.getInt(1));
+            }
+            try (ResultSet result = sql.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+                assertTrue(result.next());
+                assertEquals(1, result.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void versionSevenUpgradeRejectsInconsistentChunkHistoryWithoutAlteringRecords() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis() - 2000,
+                100L, -17, 64, -33, "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            sql.execute("UPDATE block_changes SET chunk_x=1234");
+            sql.execute("PRAGMA user_version=7");
+        }
+        SQLException failure = assertThrows(SQLException.class, this::startDatabase);
+        assertTrue(failure.getCause().getMessage().contains("inconsistent historical chunk coordinates"));
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            try (ResultSet version = sql.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(7, version.getInt(1));
+            }
+            try (ResultSet history = sql.executeQuery("SELECT chunk_x, x, z FROM block_changes")) {
+                assertTrue(history.next());
+                assertEquals(1234, history.getInt("chunk_x"),
+                        "failed migration must not rewrite or delete historical events");
+                assertEquals(-17, history.getInt("x"));
+                assertEquals(-33, history.getInt("z"));
+            }
+        }
+    }
+
+    @Test
     void currentSchemaStartsWithoutMigrationQuotaPreflight() throws Exception {
         database = startDatabase("world", 1L, 1L);
         database.shutdown();
