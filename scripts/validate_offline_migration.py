@@ -217,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     inspect_parser = subcommands.add_parser("inspect", help="Manifest an isolated SQLite copy")
     inspect_parser.add_argument("--db", type=Path, required=True)
     inspect_parser.add_argument("--output", type=Path, required=True)
-    inspect_parser.add_argument("--i-confirm-isolated-copy", action="store_true", required=True)
+    inspect_parser.add_argument("--i-confirm-isolated-copy", action="store_true")
     compare_parser = subcommands.add_parser("compare", help="Compare two offline manifests")
     compare_parser.add_argument("--before", type=Path, required=True)
     compare_parser.add_argument("--after", type=Path, required=True)
