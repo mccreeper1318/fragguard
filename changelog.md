@@ -11,6 +11,7 @@
 - Updated Java setup to 6.1.0 and Gradle setup to 6.4.1 in GitHub Actions (#132).
 - Updated SQLite JDBC compile/test dependency to 3.54.1.0 (#133).
 - Used Paper's SQLite JDBC at runtime and added driver diagnostics (#149).
+- Improved schema-v7 forward migration recovery without an older backup (#150).
 - Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
 - Improved rollback boundary visibility, sampling, and configuration (#99).
 - Added UUID-based historical player resolution and actor query indexes (#100).

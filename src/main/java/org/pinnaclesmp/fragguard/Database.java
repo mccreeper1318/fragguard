@@ -1420,10 +1420,22 @@ final class Database {
         if (schemaVersion > SCHEMA_VERSION) {
             throw new SQLException("FragGuard database schema version " + schemaVersion
                     + " is newer than the supported version " + SCHEMA_VERSION
-                    + ". Upgrade FragGuard instead of opening this database with an older plugin.");
+                    + ". This plugin cannot downgrade a newer SQLite database. "
+                + "Do not edit PRAGMA user_version, delete matching WAL/SHM files, "
+                + "or overwrite history. Use a compatible newer FG build for forward "
+                + "recovery, or restore an independently verified matching-schema "
+                + "backup only if one actually exists.");
         }
 
         boolean existingSchema = schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection);
+        if (existingSchema && schemaVersion == 7) {
+            plugin.getLogger().warning("FragGuard detected existing schema v7 and will resume "
+                    + "a forward migration to v" + SCHEMA_VERSION + ". This is not a downgrade. "
+                    + "No automatic full-history backup is created for this metadata-only migration. "
+                    + "Preserve a coherent offline copy of the database with matching SQLite sidecars "
+                    + "before proceeding; an older FG 1.2.0 JAR cannot open schema v7. "
+                    + "Never change PRAGMA user_version manually.");
+        }
         File migrationBackup = null;
         if (existingSchema && MigrationStoragePolicy.requiresFullBackup(schemaVersion)) {
             migrationBackup = createMigrationBackup(databaseConnection, schemaVersion);
@@ -1486,9 +1498,10 @@ final class Database {
                     return null;
                 });
             }
-                if (previousVersion >= 5 && previousVersion <= 7) {
-                    // These later schema stages create additional indexes. Never
-                    // carry their completed WAL growth into the next index stage.
+                if (previousVersion >= 5 && previousVersion <= 6) {
+                    // v5->v6 and v6->v7 create indexes. The new v7->v8 only
+                    // validates existing spatial history without allocating
+                    // another index; no extra checkpoint is needed for it.
                     startupStage = "checkpointing schema v" + previousVersion
                             + " to v" + (previousVersion + 1);
                     HistoricalActorIndexPlan.checkpointBetweenIndexes(databaseConnection);
@@ -1689,8 +1702,10 @@ final class Database {
                 + ", account quota=" + accountText
                 + ". The failing write location is not proven (database/WAL/SQLite temp/quota). "
                 + "Migration stopped without deleting history or WAL files. "
-                + "Keep the prior verified backup and ask the host to verify account, native temp, "
-                + "inode and file-size limits before retrying.";
+                + "Preserve the existing database and matching WAL/SHM files unchanged. "
+                + "If no verified old-schema backup exists, recover forward from the "
+                + "current committed schema on an isolated copy using a corrected FG build. "
+                + "Ask the host to verify account, native temp, inode and file-size limits.";
         plugin.getLogger().severe(message);
         return new SQLException(message, failure.getSQLState(), failure.getErrorCode(), failure);
     }
