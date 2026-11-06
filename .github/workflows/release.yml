@@ -215,9 +215,16 @@ jobs:
             exit 1
           fi
 
-          # Keep verification available when rebuilding older tags whose source
-          # does not include the verifier script. Historical artifacts predate #87.
-          python3 - "$EXPECTED_JAR" "$VERSION" <<'PY'
+          # Use the verifier bundled with the release tag. Old releases may
+          # have shipped a JDBC provider inside the plugin JAR, while newer
+          # releases use Paper's SQLite JDBC and deliberately omit it (#149).
+          # Keeping this check in the tag's verifier ensures build and release
+          # packaging validate the same requirements for that release.
+          if [[ -f scripts/verify_shaded_services.py ]]; then
+            python3 scripts/verify_shaded_services.py "$EXPECTED_JAR"
+          else
+            # Legacy fallback for releases from before the verifier was added.
+            python3 - "$EXPECTED_JAR" "$VERSION" <<'PY'
           import re
           import sys
           from collections import Counter
@@ -258,6 +265,7 @@ jobs:
                       )
                   print(f"Verified {descriptor}: {provider}")
           PY
+          fi
 
           RELEASE_DIR="build/release"
           mkdir -p "$RELEASE_DIR"
