@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -25,14 +26,31 @@ class OfflineMigrationManifestTests(unittest.TestCase):
         self.after = self.path / "after-v9.db"
         self._seed(self.before)
         shutil.copyfile(self.before, self.after)
+        self.index_definitions = {
+            "idx_fg_spatial_time":
+                "CREATE INDEX idx_fg_spatial_time ON block_changes(world_uuid, chunk_x, chunk_z, happened_at)",
+            "idx_fg_actor_time":
+                "CREATE INDEX idx_fg_actor_time ON block_changes(actor_uuid, happened_at)",
+            "idx_fg_actor_world_time":
+                "CREATE INDEX idx_fg_actor_world_time ON block_changes(actor_uuid, world_uuid, happened_at)",
+            "idx_fg_actor_name_uuid":
+                "CREATE INDEX idx_fg_actor_name_uuid ON block_changes(actor_name, actor_uuid)",
+            "idx_fg_causal_actor_time":
+                "CREATE INDEX idx_fg_causal_actor_time ON block_changes(causal_player_uuid, happened_at)",
+            "idx_fg_causal_actor_world_time":
+                "CREATE INDEX idx_fg_causal_actor_world_time ON block_changes(causal_player_uuid, world_uuid, happened_at)",
+            "idx_fg_causal_name_uuid":
+                "CREATE INDEX idx_fg_causal_name_uuid ON block_changes(causal_player_name, causal_player_uuid)",
+            "idx_fg_job_chunk_overlap":
+                "CREATE INDEX idx_fg_job_chunk_overlap ON rollback_job_chunks(job_id, world_uuid)",
+        }
+        self.assertEqual(set(validator.REQUIRED_V9_INDEXES), set(self.index_definitions))
         with sqlite3.connect(self.after) as db:
             db.execute("ALTER TABLE rollback_jobs ADD COLUMN scope_type TEXT DEFAULT 'RADIUS'")
             db.execute("ALTER TABLE rollback_job_changes ADD COLUMN world_uuid TEXT")
             db.execute("CREATE TABLE rollback_job_chunks (job_id INTEGER, world_uuid TEXT)")
-            db.execute("CREATE INDEX idx_fg_job_chunk_overlap ON rollback_job_chunks(job_id, world_uuid)")
-            db.execute("CREATE INDEX idx_fg_spatial_time ON block_changes(world_uuid, chunk_x, chunk_z, happened_at)")
-            db.execute("CREATE INDEX idx_fg_actor_time ON block_changes(actor_uuid, happened_at)")
-            db.execute("CREATE INDEX idx_fg_causal_actor_time ON block_changes(causal_player_uuid, happened_at)")
+            for index in self.index_definitions.values():
+                db.execute(index)
             db.execute("PRAGMA user_version=9")
 
     @staticmethod
@@ -110,11 +128,20 @@ class OfflineMigrationManifestTests(unittest.TestCase):
             db.execute("UPDATE block_changes SET causal_player_uuid='different'")
         self.assertFalse(validator.compare(before, validator.inspect(self.after))["passed"])
 
-    def test_missing_target_index_is_release_gate_failure(self):
+    def test_every_required_v9_index_is_individually_a_release_gate(self):
         before = validator.inspect(self.before)
-        with sqlite3.connect(self.after) as db:
-            db.execute("DROP INDEX idx_fg_spatial_time")
-        self.assertFalse(validator.compare(before, validator.inspect(self.after))["passed"])
+        for name, create_sql in self.index_definitions.items():
+            with self.subTest(missing_index=name):
+                with sqlite3.connect(self.after) as db:
+                    db.execute(f"DROP INDEX {name}")
+                result = validator.compare(before, validator.inspect(self.after))
+                self.assertFalse(result["passed"], f"Missing {name} must fail")
+                self.assertIn("v9-index-present-" + name,
+                              [item["check"] for item in result["checks"]
+                               if not item["passed"]])
+                with sqlite3.connect(self.after) as db:
+                    db.execute(create_sql)
+        self.assertTrue(validator.compare(before, validator.inspect(self.after))["passed"])
 
     def test_no_approval_flag_refuses_inspection(self):
         report = self.path / "manifest.json"
@@ -131,6 +158,73 @@ class OfflineMigrationManifestTests(unittest.TestCase):
         ])
         self.assertNotEqual(0, code)
         self.assertEqual(before_bytes, self.before.read_bytes())
+
+    def test_manifest_hard_link_to_db_is_rejected_and_source_kept_intact(self):
+        report = self.path / "hardlinked-report.json"
+        os.link(self.before, report)
+        initial = self.before.read_bytes()
+        self.assertEqual(2, validator.main([
+            "inspect", "--db", str(self.before), "--output", str(report),
+            "--i-confirm-isolated-copy",
+        ]))
+        self.assertEqual(initial, self.before.read_bytes())
+        self.assertEqual(initial, report.read_bytes())
+        with sqlite3.connect(self.before) as db:
+            self.assertEqual(7, db.execute("PRAGMA user_version").fetchone()[0])
+
+    def test_manifest_hard_link_to_matching_sqlite_sidecars_is_rejected(self):
+        for sidecar_name in ("-wal", "-shm"):
+            with self.subTest(sidecar=sidecar_name):
+                sidecar = Path(str(self.before) + sidecar_name)
+                sidecar.write_bytes(b"protected-sidecar-bytes")
+                report = self.path / "sidecar-report.json"
+                os.link(sidecar, report)
+                try:
+                    self.assertEqual(2, validator.main([
+                        "inspect", "--db", str(self.before), "--output", str(report),
+                        "--i-confirm-isolated-copy",
+                    ]))
+                    self.assertEqual(b"protected-sidecar-bytes", sidecar.read_bytes())
+                    self.assertEqual(b"protected-sidecar-bytes", report.read_bytes())
+                finally:
+                    report.unlink()
+                    sidecar.unlink()
+
+    def test_compare_hard_link_to_input_manifest_is_rejected(self):
+        before = self.path / "baseline.json"
+        after = self.path / "upgraded.json"
+        self.assertEqual(0, validator.main([
+            "inspect", "--db", str(self.before), "--output", str(before),
+            "--i-confirm-isolated-copy",
+        ]))
+        self.assertEqual(0, validator.main([
+            "inspect", "--db", str(self.after), "--output", str(after),
+            "--i-confirm-isolated-copy",
+        ]))
+        for target in (before, after):
+            with self.subTest(source_manifest=target.name):
+                output = self.path / "hardlinked-comparison.json"
+                os.link(target, output)
+                saved = target.read_bytes()
+                try:
+                    self.assertEqual(2, validator.main([
+                        "compare", "--before", str(before), "--after", str(after),
+                        "--output", str(output),
+                    ]))
+                    self.assertEqual(saved, target.read_bytes())
+                    self.assertEqual(saved, output.read_bytes())
+                finally:
+                    output.unlink()
+
+    def test_manifest_symlink_to_db_is_rejected(self):
+        report = self.path / "report-symlink.json"
+        report.symlink_to(self.before)
+        original = self.before.read_bytes()
+        self.assertEqual(2, validator.main([
+            "inspect", "--db", str(self.before), "--output", str(report),
+            "--i-confirm-isolated-copy",
+        ]))
+        self.assertEqual(original, self.before.read_bytes())
 
     def test_manifest_cli_contains_no_database_path_or_raw_actor_values(self):
         report = self.path / "baseline.json"
