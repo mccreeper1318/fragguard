@@ -8,6 +8,7 @@ schema checks, and file-size metrics. Use matching stopped-server WAL/SHM files.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import sqlite3
@@ -109,7 +110,7 @@ def inspect(db: Path) -> dict[str, Any]:
         raise ValueError("Database path is not an existing file")
     # No file writes, checkpoints, auto-migrations, or PRAGMA user_version edits.
     uri = db.absolute().as_uri() + "?mode=ro"
-    with sqlite3.connect(uri, uri=True, timeout=5.0) as connection:
+    with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as connection:
         connection.execute("PRAGMA query_only=ON")
         schema = int(_scalar(connection, "PRAGMA user_version"))
         if schema not in (4, 7, 8, 9):
@@ -224,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "inspect":
+            protected = {args.db.resolve(), Path(str(args.db) + "-wal").resolve(),
+                         Path(str(args.db) + "-shm").resolve()}
+            if args.output.resolve() in protected:
+                raise ValueError("Output must not overwrite the source SQLite database or sidecars")
             if not args.i_confirm_isolated_copy:
                 raise ValueError("Refusing inspection without explicit isolated-copy acknowledgement")
             report = inspect(args.db)
@@ -231,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Schema v{report['schema_version']} manifest written; "
                   "source copy opened read-only; no history values logged.")
         else:
+            if args.output.resolve() in (args.before.resolve(), args.after.resolve()):
+                raise ValueError("Comparison report must not overwrite either input manifest")
             report = compare(_json_read(args.before), _json_read(args.after))
             _json_write(args.output, report)
             print(f"Offline migration comparison: {'PASS' if report['passed'] else 'FAIL'}; "
