@@ -12,6 +12,7 @@
 - Updated SQLite JDBC compile/test dependency to 3.54.1.0 (#133).
 - Used Paper's SQLite JDBC at runtime and added driver diagnostics (#149).
 - Improved schema-v7 forward migration recovery without an older backup (#150).
+- Added offline full-history migration checks and final release validation gates (#151).
 - Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
 - Improved rollback boundary visibility, sampling, and configuration (#99).
 - Added UUID-based historical player resolution and actor query indexes (#100).
