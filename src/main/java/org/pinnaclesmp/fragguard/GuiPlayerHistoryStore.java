@@ -52,10 +52,12 @@ final class GuiPlayerHistoryStore {
             CASE WHEN (%1$s) IN %3$s AND (%2$s) NOT IN %3$s THEN (%2$s)
                  ELSE (%1$s) END
             """.formatted(AFTER_MATERIAL, BASE_MATERIAL, AIR_MATERIALS);
-    private static final String OWNED = """
+    // The shared direct-actor predicate matches schema-v5 partial indexes.
+    // Keep the causal branch unfiltered so TNT/piston player ownership remains visible.
+    static final String OWNED = """
             rollback_pending = 0 AND happened_at >= ? AND happened_at <= ?
-            AND (actor_uuid = ? OR causal_player_uuid = ?)
-            """;
+            AND %s
+            """.formatted(Database.playerOwnershipPredicate());
     private final File databaseFile;
     private final int timeoutSeconds;
     private final Logger logger = Logger.getLogger("FragGuard GUI Player History");
