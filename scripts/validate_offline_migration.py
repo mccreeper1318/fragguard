@@ -11,8 +11,10 @@ import argparse
 from contextlib import closing
 import hashlib
 import json
+import os
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,20 @@ SORT_KEYS: dict[str, tuple[str, ...]] = {
 CAUSAL_FIELDS = ("id", "causal_player_uuid", "causal_player_name",
                  "causal_chain_id", "causal_cause_type")
 MAX_ROWS_BATCH = 512
+
+# All indexes required by the production schema-v9 release gate. In
+# particular, historical name and world-scoped queries on large datasets
+# must not silently pass with their migration-created indexes missing.
+REQUIRED_V9_INDEXES = frozenset((
+    "idx_fg_spatial_time",
+    "idx_fg_actor_time",
+    "idx_fg_actor_world_time",
+    "idx_fg_actor_name_uuid",
+    "idx_fg_causal_actor_time",
+    "idx_fg_causal_actor_world_time",
+    "idx_fg_causal_name_uuid",
+    "idx_fg_job_chunk_overlap",
+))
 
 
 def _sql_ident(name: str) -> str:
@@ -184,9 +200,9 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
                   isinstance(baseline.get("causal"), str)
                   and len(baseline["causal"]) == 64
                   and baseline["causal"] == target.get("causal"))
-    required = {"idx_fg_spatial_time", "idx_fg_actor_time",
-                "idx_fg_causal_actor_time", "idx_fg_job_chunk_overlap"}
-    check("v9-critical-indexes-present", required <= set(after.get("indexes", [])))
+    indexed = set(after.get("indexes", []))
+    for name in sorted(REQUIRED_V9_INDEXES):
+        check("v9-index-present-" + name, name in indexed)
     return {
         "format": 1,
         "passed": all(item["passed"] for item in checks),
@@ -206,9 +222,46 @@ def _json_read(file: Path) -> dict[str, Any]:
     return data
 
 
-def _json_write(file: Path, data: dict[str, Any]) -> None:
+def _reject_alias_to_input(output: Path, protected: tuple[Path, ...]) -> None:
+    """Fail closed for equal paths, symlinks, and existing hard links.
+
+    resolve() alone cannot detect a different filename for the same inode.
+    samefile() compares actual filesystem identity when both paths exist.
+    An unexpected stat error aborts instead of risking any input file.
+    """
+    resolved_output = output.resolve()
+    for source in protected:
+        if resolved_output == source.resolve():
+            raise ValueError("Output must not overwrite source database/sidecar/manifest")
+        try:
+            if output.samefile(source):
+                raise ValueError("Output hard link points to a protected source file")
+        except FileNotFoundError:
+            # A new report or an absent WAL/SHM sidecar has no inode yet.
+            continue
+
+
+def _json_write(file: Path, data: dict[str, Any],
+                protected: tuple[Path, ...]) -> None:
+    # Recheck before writing, even if the CLI checked earlier. Write to a
+    # freshly created temporary file, then atomically replace the report
+    # path: no existing hard-linked or symlinked inode is ever truncated.
+    _reject_alias_to_input(file, protected)
     file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    staged: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=file.parent,
+            prefix="." + file.name + ".", suffix=".tmp", delete=False
+        ) as stream:
+            staged = Path(stream.name)
+            json.dump(data, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        _reject_alias_to_input(file, protected)
+        os.replace(staged, file)
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -225,21 +278,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "inspect":
-            protected = {args.db.resolve(), Path(str(args.db) + "-wal").resolve(),
-                         Path(str(args.db) + "-shm").resolve()}
-            if args.output.resolve() in protected:
-                raise ValueError("Output must not overwrite the source SQLite database or sidecars")
+            protected = (args.db, Path(str(args.db) + "-wal"),
+                         Path(str(args.db) + "-shm"))
+            _reject_alias_to_input(args.output, protected)
             if not args.i_confirm_isolated_copy:
                 raise ValueError("Refusing inspection without explicit isolated-copy acknowledgement")
             report = inspect(args.db)
-            _json_write(args.output, report)
+            _json_write(args.output, report, protected)
             print(f"Schema v{report['schema_version']} manifest written; "
                   "source copy opened read-only; no history values logged.")
         else:
-            if args.output.resolve() in (args.before.resolve(), args.after.resolve()):
-                raise ValueError("Comparison report must not overwrite either input manifest")
+            protected = (args.before, args.after)
+            _reject_alias_to_input(args.output, protected)
             report = compare(_json_read(args.before), _json_read(args.after))
-            _json_write(args.output, report)
+            _json_write(args.output, report, protected)
             print(f"Offline migration comparison: {'PASS' if report['passed'] else 'FAIL'}; "
                   f"{len(report['checks'])} checks.")
             if not report["passed"]:
