@@ -826,14 +826,14 @@ class DatabaseTest {
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
             try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
                 assertTrue(version.next());
-                assertEquals(4, version.getInt(1));
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
             }
             try (ResultSet indexes = statement.executeQuery("""
                     SELECT 1 FROM sqlite_master
                     WHERE type = 'index' AND name = 'idx_fg_tick_coalesce'
                     """)) {
                 assertFalse(indexes.next(),
-                        "schema v4 must not retain or rebuild the persistent same-tick coalescing index");
+                        "schema v5 must not retain or rebuild the persistent same-tick coalescing index");
             }
         }
     }
@@ -855,7 +855,7 @@ class DatabaseTest {
         try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
             try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
                 assertTrue(version.next());
-                assertEquals(4, version.getInt(1));
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
             }
             try (ResultSet indexes = statement.executeQuery("""
                     SELECT 1 FROM sqlite_master
@@ -865,6 +865,137 @@ class DatabaseTest {
                         "the exact interrupted production state must upgrade without recreating the large index");
             }
         }
+    }
+
+    @Test
+    void storagePreflightFailsClosedBeforeIndexCreationAndKeepsSchemaFourHistory() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L,
+                4, 65, 4, "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.execute("DROP INDEX IF EXISTS idx_fg_actor_time");
+            statement.execute("DROP INDEX IF EXISTS idx_fg_actor_world_time");
+            statement.execute("DROP INDEX IF EXISTS idx_fg_actor_name_uuid");
+            statement.execute("PRAGMA user_version=4");
+        }
+
+        // The filesystem has ordinary free space. Only the explicitly declared
+        // *account* free-space budget is too small for the estimated index work.
+        SQLException failure = assertThrows(SQLException.class,
+                () -> startDatabase("world", 1L, 0L));
+        assertNotNull(failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("account free"),
+                "preflight should explain operator-reported quota rather than guessing disk-full root cause");
+        assertTrue(failure.getCause().getMessage().contains("v4 to v5"));
+        assertTrue(failure.getCause().getMessage().contains("data-filesystem-reported"));
+        assertTrue(failure.getCause().getMessage().contains("quota"));
+
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(4, version.getInt(1));
+            }
+            try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1), "a rejected migration must not drop retained block history");
+            }
+            try (ResultSet indexes = statement.executeQuery("""
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index' AND name LIKE 'idx_fg_actor_%'
+                    """)) {
+                assertFalse(indexes.next(), "index creation must not start after a failed preflight");
+            }
+        }
+        assertFalse(Files.exists(temporaryDirectory.resolve("backups")),
+                "schema-v4 migration should not duplicate the database as a backup");
+    }
+
+    @Test
+    void storagePreflightRespectsExplicitNativeTempBudgetOnLaterIndexStage() throws Exception {
+        database = startDatabase();
+        database.shutdown();
+        database = null;
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement()) {
+            statement.execute("DROP INDEX IF EXISTS idx_fg_coordinate_time");
+            statement.execute("PRAGMA user_version=7");
+        }
+
+        SQLException failure = assertThrows(SQLException.class,
+                () -> startDatabase("world", 0L, 1L));
+        assertNotNull(failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("SQLite native temp"));
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+            assertTrue(version.next());
+            assertEquals(7, version.getInt(1));
+        }
+    }
+
+    @Test
+    void versionSevenUpgradeRejectsMissingChunkIndexWithoutAlteringHistory() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis() - 2000,
+                100L, -17, 64, -33, "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            sql.execute("DROP INDEX idx_fg_spatial_time");
+            sql.execute("PRAGMA user_version=7");
+        }
+        SQLException failure = assertThrows(SQLException.class, this::startDatabase);
+        assertTrue(failure.getCause().getMessage().contains("idx_fg_spatial_time"));
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            try (ResultSet result = sql.executeQuery("PRAGMA user_version")) {
+                assertTrue(result.next());
+                assertEquals(7, result.getInt(1));
+            }
+            try (ResultSet result = sql.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+                assertTrue(result.next());
+                assertEquals(1, result.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void versionSevenUpgradeRejectsInconsistentChunkHistoryWithoutAlteringRecords() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis() - 2000,
+                100L, -17, 64, -33, "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            sql.execute("UPDATE block_changes SET chunk_x=1234");
+            sql.execute("PRAGMA user_version=7");
+        }
+        SQLException failure = assertThrows(SQLException.class, this::startDatabase);
+        assertTrue(failure.getCause().getMessage().contains("inconsistent historical chunk coordinates"));
+        try (Connection connection = openDatabase(); Statement sql = connection.createStatement()) {
+            try (ResultSet version = sql.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(7, version.getInt(1));
+            }
+            try (ResultSet history = sql.executeQuery("SELECT chunk_x, x, z FROM block_changes")) {
+                assertTrue(history.next());
+                assertEquals(1234, history.getInt("chunk_x"),
+                        "failed migration must not rewrite or delete historical events");
+                assertEquals(-17, history.getInt("x"));
+                assertEquals(-33, history.getInt("z"));
+            }
+        }
+    }
+
+    @Test
+    void currentSchemaStartsWithoutMigrationQuotaPreflight() throws Exception {
+        database = startDatabase("world", 1L, 1L);
+        database.shutdown();
+        database = null;
+        database = startDatabase("world", 1L, 1L);
+        assertTrue(database.health().healthy(), "no migration should require new index headroom");
     }
 
     @Test
@@ -1194,11 +1325,59 @@ class DatabaseTest {
         assertTrue(database.loadRollbackChangesAsync(job.id(), true).join().isEmpty());
     }
 
+    @Test
+    void migratesVersionFourActorIndexesInRestartableTransactionsWithoutRemovingHistory() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = null;
+
+        // Downgrade only schema metadata and indexes. Other v5+ objects already
+        // exist here; this checks the actual startup migration path, not just
+        // isolated SQL statements, without a production-sized fixture.
+        try (Connection connection = openDatabase(); Statement stmt = connection.createStatement()) {
+            stmt.execute("DROP INDEX IF EXISTS idx_fg_actor_time");
+            stmt.execute("DROP INDEX IF EXISTS idx_fg_actor_world_time");
+            stmt.execute("DROP INDEX IF EXISTS idx_fg_actor_name_uuid");
+            stmt.execute("PRAGMA user_version=4");
+        }
+
+        database = startDatabase();
+        try (Connection connection = openDatabase(); Statement stmt = connection.createStatement()) {
+            try (ResultSet version = stmt.executeQuery("PRAGMA user_version")) {
+                assertTrue(version.next());
+                assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
+            }
+            try (ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1));
+            }
+            try (ResultSet indexes = stmt.executeQuery("""
+                    SELECT sql FROM sqlite_master
+                    WHERE type='index' AND name LIKE 'idx_fg_actor_%'
+                    """)) {
+                int count = 0;
+                while (indexes.next()) {
+                    count++;
+                    assertTrue(indexes.getString(1).contains(
+                            HistoricalActorIndexPlan.PLAYER_ACTOR_PREDICATE));
+                }
+                assertEquals(3, count);
+            }
+        }
+    }
+
     private Database startDatabase() throws Exception {
         return startDatabase("world");
     }
 
     private Database startDatabase(String worldName) throws Exception {
+        return startDatabase(worldName, 0L, 0L);
+    }
+
+    private Database startDatabase(String worldName, long knownAccountFreeMiB,
+                                   long knownSqliteTempFreeMiB) throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);
         World world = mock(World.class);
@@ -1206,6 +1385,12 @@ class DatabaseTest {
         configuration.set("database-write-queue-capacity", 64);
         configuration.set("database-write-batch-size", 16);
         configuration.set("database-query-timeout-seconds", 5);
+        if (knownAccountFreeMiB > 0L) {
+            configuration.set("database-migration-account-free-mib", knownAccountFreeMiB);
+        }
+        if (knownSqliteTempFreeMiB > 0L) {
+            configuration.set("database-migration-sqlite-temp-free-mib", knownSqliteTempFreeMiB);
+        }
         when(plugin.getDataFolder()).thenReturn(temporaryDirectory.toFile());
         when(plugin.getConfig()).thenReturn(configuration);
         when(plugin.getServer()).thenReturn(server);

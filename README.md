@@ -35,6 +35,9 @@ Only server operators with `fragguard.admin` can use FragGuard administration co
 /fg help
 /fg lookup r:30
 /fg lookup r:30 p:2
+/fg lookup u:Builder p:2
+/fg lookup u:Builder t:2d p:2
+/fg lookup u:Builder w:world_nether t:6h
 /fg rollback r:30 t:2d 7h 15m
 /fg rollback confirm <token>
 /fg undo <job-id>
@@ -48,6 +51,35 @@ Only server operators with `fragguard.admin` can use FragGuard administration co
 The GUI uses ordinary server-side Minecraft inventories and requires no client mod or resource pack. The main menu provides access to history lookup, rollback setup/confirmation, undoable rollback jobs, storage status, and command help.
 
 ### GUI lookup setup
+
+**Scope selector (26.3-1.2.1):** Both Lookup History and Rollback now offer
+**Nearby Area** and **Player**. Nearby Area preserves the existing radius
+workflow and its separate Player/Action/Material result filters. Player scope
+opens a paginated alphabetically sorted list of identities present in retained
+FragGuard history (including causal-only identities). Each selection stores a
+stable UUID rather than a name.
+
+In **Player Lookup**, select a player, choose a time preset or **Full retained
+history**, and optionally restrict to one world (defaults to **All Worlds**).
+The event pages query SQLite instead of materializing an entire history.
+Their Action and Material filters query the entire selected history window,
+not merely the visible page. Each result shows the world, coordinates,
+before/after state and physical recorded actor. Indirect TNT/piston/mechanical
+events also explicitly identify the selected causal player and cause type.
+Click an exact event to load its block-entity details separately.
+
+In **Player Rollback**, choose a player, an obligatory time preset, an
+optional world (default All Worlds), and the existing Force toggle. **Preview**
+plans only safe changes and displays the target, time, worlds, chunks,
+reversible blocks, historical conflicts and force/live-conflict behavior.
+**Confirm** and **Cancel** use the same expiring operator-bound tokens as
+the command workflow; no artificial radius outline is drawn for player scope.
+The existing radius preview still draws its world boundary. Exiting or
+disconnecting invalidates GUI queries, and abandoning a GUI-owned preview
+cancels its outstanding token. Player selection, history paging and filter
+queries actively interrupt their underlying SQLite statement on deadline,
+rather than allowing a timed-out scan to keep consuming database work.
+Existing undo history distinguishes Player from Radius and shows target metadata.
 
 Lookup History provides deterministic radius and time presets. Radius choices are bounded by `max-lookup-radius`, and time choices are bounded by the configured retention period.
 
@@ -103,6 +135,43 @@ Shows recent block-change logs in a full-height cylinder around the current posi
 ```text
 /fg lookup r:30 p:2
 ```
+
+### Global player lookup
+
+Player scope is separate from nearby radius lookup. Use **one** scope at a time:
+`r:<radius>` or `u:<username-or-uuid>`; combining them is rejected.
+
+```text
+/fg lookup u:Builder
+/fg lookup u:Builder p:2
+/fg lookup u:Builder t:2d p:2
+/fg lookup u:Builder w:world_nether t:6h
+/fg lookup u:11111111-2222-3333-4444-555555555555
+```
+
+A player lookup searches all worlds by default, regardless of the operator's location.
+`w:<world>` limits it to one world and `t:<duration>` limits it to a recent
+period (such as `t:1d` or `t:6h`); when `t:` is omitted, the full retained
+history is searched, **never older than `retention-days`**. `p:<page>` selects
+a page. Subsequent-page suggestions keep the same player, world and time scope.
+Names are case-insensitive, include historical renames, and can be replaced with
+canonical or compact UUIDs. An ambiguous reused username is rejected so
+FragGuard never selects a player by guesswork.
+
+Results include the latest player name, world, coordinates, action, before/after
+block transition, timestamp and age. They include both directly authored
+changes and **confidently attributed indirect changes** from TNT, projectiles
+and supported piston/flying-machine chains. Indirect rows show the immediate
+physical actor (for example, `Explosion: TNT` or `Piston Extend`) and the
+stored causal type instead of pretending that the player directly broke blocks.
+
+The global player query runs on FragGuard's bounded, cancellable database
+worker after earlier writes are flushed. It uses UUID/time indexes, deterministic
+timestamp+row-ID ordering, and bounded lightweight pages without fetching
+container/other block-entity BLOBs. A new query or logout invalidates an older
+player-lookup completion. It does not alter the existing radius lookup or
+the GUI area lookup's separate Player/Action/Material filters. A future issue
+(#104) will add a dedicated global-player scope to the GUI.
 
 ## Rollback
 
@@ -223,11 +292,263 @@ The old `gui-lookup-max-rows` hard refusal is no longer used. Existing server co
 
 Changing grouping thresholds changes only presentation. Exact raw history remains stored and reachable.
 
+## Causal player attribution for TNT and machinery
+
+FragGuard's schema **v6** preserves the immediate physical source in
+`actor_uuid`/`actor_name` and records optional, separate
+`causal_player_uuid`, `causal_player_name`, `causal_chain_id`, and
+`causal_cause_type`. The v5-to-v6 migration adds nullable columns and
+indexed causal UUID/time queries **without rewriting older history or rollback jobs**.
+Unattributed historical rows remain valid and their causal fields are null.
+Player-wide lookup and rollback in follow-up issues #101/#102 will match both
+the direct actor UUID and the causal player UUID; the persisted physical cause
+will remain available for inspection.
+
+Supported evidence includes direct player TNT ignition, player-launched
+projectiles, TNT-to-TNT priming with an observable entity source, and TNT
+entities spawned at an **exact** recently observed priming location.
+Actual player-operated levers, buttons and pressure plates (not passive
+right-clicks on pistons or observers), directly altered mechanism components,
+live redstone updates, and piston movements form a bounded graph of
+actual component and block movement positions. An active, connected component
+can attribute a piston or directly observed TNT priming at that component.
+For piston-driven TNT duplicators, TNT entity ownership requires the piston
+event to have actually moved a TNT block at the spawn's exact source or
+destination coordinate within 500 ms. Movement of ordinary blocks (including
+stone, slime, or the piston itself) is **not** enough to attribute TNT spawned
+by an unrelated dispenser. A detached or ambiguously powered machine, a
+different player's restart/modification, or a source absent from Paper's events
+fails closed to system/physical attribution. Merely being near a player, or
+happening after an earlier interaction, does not confer ownership.
+
+Causal links are maintained **only in memory**; they are never resumed after
+restart. Mechanism links expire after 4 seconds idle or 30 seconds total.
+An individually observed TNT entity is retained up to 60 seconds from its
+own spawn to accommodate slow fuse progression at reduced TPS. No entity
+can restart expired mechanism ownership merely by existing nearby.
+Tracked mechanisms cannot extend farther than 96 blocks on any axis from
+the original activation, and are capped to 2,048 block links, 512 TNT
+entity links, 256 recent prime locations, and 256 recent TNT-movement coordinates.
+A world unload, plugin reload/disable or memory pressure
+clears relevant links. Cross-session or conflicting ownership invalidates the
+claim instead of guessing. Fires, unobservable redstone components,
+untraceable TNT duper cycles, and delayed environmental propagation are not
+automatically assigned to the triggering player. Missing attribution is
+preferable to blaming the wrong player.
+
+Causal attribution is now included in command-based global player lookup.
+Player-scoped rollback, historical conflict protection, and the dedicated
+global-player GUI workflow follow in later 26.3-1.2.1 issues. Final integration tests on the
+live Paper server are reserved for the end of the update.
+
+## Selective player rollback planning (26.3-1.2.1)
+
+The new **planning API** is used by the upcoming player-scoped rollback
+commands (#103). Planning alone **does not change any blocks**. It resolves
+a player's current/previous username or UUID to a stable historical UUID,
+then inspects direct and confidently causally attributed events from the
+chosen time window, across all worlds. This includes traceable TNT chains,
+projectile-ignited TNT, and supported piston/flying-machine consequences.
+
+For each affected coordinate, the planner reads the retained history in
+reverse chronological order. It can reverse only the **newest uninterrupted
+suffix owned by that player**. Another player's edit, an unattributed
+environmental edit, or other recorded work ends the reversible suffix.
+
+For example, given the following chronology:
+
+```text
+10:00 Steve: air -> stone
+10:05 Alex:  stone -> dirt
+10:10 Steve: dirt -> glass
+```
+
+Selective planning for Steve produces **glass -> dirt**, never
+**glass -> air**. If Alex is the latest editor, the coordinate is
+historically protected and no rollback target is generated. Both
+direct edits and attributed TNT/piston effects obey this same rule.
+
+Planning also refuses a stale preview when another recorded change has
+occurred at a selected coordinate **after its snapshot timestamp**. A known
+later edit by another actor is reported as a historical conflict; even a
+later target-player edit requires a fresh plan rather than silently changing
+the preview's scope. Normal `force` does not bypass these protections.
+
+Planning reports reversible coordinates, historical ownership conflicts,
+no-op coordinates, and unavailable/inconsistent history separately.
+The planner checks continuity of block states **and block-entity snapshots**
+to avoid crossing changes to inventory, sign text, and other supported
+tile data. Missing legacy snapshots for a block-entity are not treated as
+empty inventories. When retained history is too long to verify safely,
+an incomplete snapshot is detected, or historical states disagree, the
+coordinate is skipped rather than being guessed.
+
+`rollback-max-blocks-per-command` bounds candidate coordinates,
+`rollback-max-snapshot-bytes-per-command` bounds saved target/expected
+block-entity data, and a per-coordinate history cap prevents unbounded
+reconstruction. **Schema v8** adds an indexed world UUID/coordinate/time
+history lookup so each candidate is checked without a world-wide scan.
+World names in old history may be outdated after a rename, so targets
+use the **currently loaded world name resolved from its stable UUID**;
+unloaded or unrecognized worlds are classified as unavailable, never
+mapped by their potentially reused old display names.
+The existing database worker's write barrier and query
+timeouts remain in effect. The planner never overrides a known
+historical ownership boundary, **even when the eventual executor's
+normal `force` option is enabled**. Force only affects live-state
+conflict handling and cannot make older another-player work eligible.
+
+The player-scoped command and job workflow is now available:
+
+```text
+/fg rollback u:Builder t:1h
+/fg rollback u:Builder t:2d w:world_nether
+/fg rollback u:Builder t:6h force
+/fg rollback confirm <token>
+/fg rollback cancel
+/fg status <job-id>
+/fg undo <job-id>
+```
+
+A player rollback **always requires `t:`** and rejects any combination of
+`u:` and `r:`. Without `w:` it includes all loaded worlds. The preview
+shows target identity, time, scope, reversible block/chunk/world counts, and
+historically protected conflicts. The player scope never draws a misleading
+radius outline. Confirmation requires the unexpired owner-specific token;
+cancellation and logout invalidate it without modifying blocks.
+
+Schema **v9** persists explicit `PLAYER`/`RADIUS` job scope, operator versus
+target-player identities, optional world selection, protected-history counts,
+per-target stable world UUIDs, physical cause and causal-chain provenance,
+and durable world/chunk overlap reservations. Other active rollback/undo
+jobs reserving a shared world/chunk are rejected across all scope pairs.
+Missing or renamed worlds are checked by UUID to prevent execution in an
+unrelated world that reused the old name. Fresh changes after preview are
+rejected when persisting player jobs. The existing resumable execution,
+chunk ticket lifecycle and undo conflict checks are reused, including
+across multiple worlds; the undo GUI and `/fg status <job-id>` display
+explicit scope information. Existing radius jobs remain readable and
+continue using the same workflow.
+
+The GUI now provides a player selection, global history, filtered event
+browsing, and dedicated player rollback preview/confirm/cancel screens
+(#104). The undoable-job browser identifies player-scoped jobs. Live Paper
+server tests remain deferred until the integrated 26.3-1.2.1 update is complete.
+
+## Historical player identity and actor indexes
+
+FragGuard resolves players from **retained block history** rather than online player
+sessions. Its shared database resolver accepts `u:PlayerName`, `PlayerName`, a
+hyphenated UUID, or a 32-character UUID. Historical names resolve to the player's
+canonical UUID, and the latest recorded name is returned for display. Reused
+names belonging to more than one UUID are rejected instead of guessed; unknown
+players also produce a clear error. Environmental/system actors are not treated
+as players.
+
+Database schema **v5** added actor UUID/time, actor UUID/world/time,
+and case-insensitive direct usernames. Schema **v6** added nullable causal
+identity fields and indexed causal UUID/time lookups. Schema **v7** adds an
+index for historical causal usernames. Each migration preserves existing
+history, container snapshots and saved rollback jobs.
+Index creation may take time on large databases; a normal startup migration
+must complete before the server begins using FragGuard's database.
+
+The shared resolver now supports command-based global player lookup with
+`u:`, including names appearing only in causal history. Selective player
+rollback commands remain part of later 26.3-1.2.1 issues.
+
+## SQLite native access on Java 24+
+
+Paper bundles Xerial SQLite JDBC for plugins. FragGuard **does not shade its own
+SQLite driver**; the Gradle SQLite version is only a compile/test dependency.
+The loaded JDBC driver version, native SQLite engine version and sanitized
+library origin are recorded once when FragGuard opens the database, before
+any schema migrations. A Paper version may use a different driver than the
+Gradle test dependency; this alone does not imply database corruption.
+See `docs/sqlite-runtime-driver-provenance-26.3-1.2.1.md` for details.
+
+FragGuard uses Xerial SQLite JDBC's JNI-based native SQLite library. Java 24 and later
+warn when code on the class path loads a native library without explicit permission.
+Java 25 still permits the call with a warning by default, but a future Java version
+may deny it. Upgrading SQLite JDBC does not remove this requirement.
+
+For Paper servers running Java 24+, include **`--enable-native-access=ALL-UNNAMED`**
+as a **Java launcher option before `-jar`**:
+
+```bash
+java --enable-native-access=ALL-UNNAMED -jar paper.jar nogui
+```
+
+Use your server's actual Paper JAR filename and keep your existing memory and
+other startup options. If a hosting panel cannot edit Java launcher arguments,
+the equivalent `JDK_JAVA_OPTIONS` environment variable can be used where supported.
+This option authorizes unnamed-module native access for the **whole JVM**, not only
+FragGuard. It cannot be enabled by placing a manifest entry inside the plugin JAR:
+Paper starts the JVM, and FragGuard is loaded afterward as a plugin.
+
+On Java 24/25, leaving the option out causes a warning rather than an immediate
+SQLite failure under the default JVM policy. The precise future Java release
+that will deny access by default has **not** been announced. To verify the
+future stricter policy today, launch with both
+`--illegal-native-access=deny` and `--enable-native-access=ALL-UNNAMED`.
+Gradle tests run with both options on Java 25, checking that SQLite initializes
+and supports normal reads and writes with native-access denial enabled.
+
+## Rollback area boundary preview
+
+After a successful rollback preview from `/fg rollback` or the rollback GUI,
+FragGuard displays a **player-only** circular particle boundary in the previewed
+world. Cyan marks the radius, yellow guides show its full vertical extent,
+and green marks the original rollback center. The preview is a cylinder:
+the radius is measured on X/Z and applies throughout the world's build height.
+It is a visual guide to the actual block-coordinate radius, not a change to
+rollback selection or history.
+
+Only the operator who created the preview receives these particles. They make
+no block or entity changes and require no client mod. The boundary refreshes
+while the confirmation token is valid. The outline stops emitting on expiration,
+confirmation, replacement, cancellation, player logout, or plugin shutdown.
+Previously emitted particles fade naturally. It is not shown in other worlds;
+returning to the previewed world restores the display only while the token
+remains valid.
+
+Use `/fg rollback cancel` (or **Cancel Active Preview** in the rollback GUI)
+to invalidate your pending preview without starting a rollback job. Cancelling
+also invalidates any outstanding asynchronous rollback-preview search so a
+late query result cannot recreate a cancelled preview. Cancelling when nothing
+is active is harmless.
+
+### Boundary visualization settings
+
+The particle outline is presentation-only and **does not change the rollback radius**.
+All settings are optional; existing server configurations use these defaults:
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| `rollback-preview-visualization-enabled` | `true` | Disable visual particles without disabling rollback previews |
+| `rollback-preview-perimeter-quality` | `1` | 0=sparse, 1=standard, 2=detailed; clamped to 0–2 |
+| `rollback-preview-vertical-spacing` | `64` | Requested blocks between vertical guides; clamped to 16–192 |
+| `rollback-preview-operator-ring-enabled` | `true` | Show a ring at the operator's current height |
+| `rollback-preview-update-ticks` | `20` | Refresh interval (10–100 ticks) |
+| `rollback-preview-border-color` | `"#00FFFF"` | Cyan perimeter ring; use `#RRGGBB` |
+| `rollback-preview-height-color` | `"#FFFF00"` | Yellow vertical/top/bottom guides |
+| `rollback-preview-center-color` | `"#00FF00"` | Green origin marker |
+
+With standard density, the perimeter uses **24 points for radius 1–10,
+32 for 11–25, 48 for 26–50, and 64 for 51+**. Quality adjusts this by
+a small amount and always caps it at 96. Vertical columns use up to 12
+interior samples each, even in unusually tall worlds. The operator-height
+ring follows the operator as they fly or walk, using the refresh interval
+rather than rebuilding the boundary geometry every tick. Colors with
+invalid hex strings revert to the built-in defaults. The renderer uses
+player-targeted extended-range particles; other players never receive
+them, and no world blocks or entities change.
+
 ## Build
 
-Requires Java 25. The Gradle 9.8.0 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
+Requires Java 25. The Gradle 9.8.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-The current development feature version is `26.3-1.2.0`. Development targets Paper API `26.3.build.159-beta`, with `api-version: '26.3'`, following Paper 26.3's promotion to the beta release channel.
+The current development version is `26.3-1.2.1`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
 
 ```bash
 ./gradlew build
@@ -236,7 +557,7 @@ The current development feature version is `26.3-1.2.0`. Development targets Pap
 The plugin JAR is produced under:
 
 ```text
-build/libs/FragGuard-26.3-1.2.0.jar
+build/libs/FragGuard-26.3-1.2.1.jar
 ```
 
 Put the JAR in the server's `plugins` folder and restart Paper.

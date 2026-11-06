@@ -18,12 +18,19 @@ database-startup-warning-seconds: 30
 # 0 disables the hard startup cutoff so large databases can finish initializing safely.
 # Set this above 0 only if you explicitly want FragGuard to abort SQLite startup after that many seconds.
 database-startup-timeout-seconds: 0
-# Full-backup migrations use Java filesystem free space as a safety signal.
-# Managed hosts can enforce a smaller account quota that Java cannot see, so this value is not treated as a quota.
-# Disable only when the host filesystem value itself is unusable; SQLite errors still abort safely.
+# Every existing-database schema upgrade uses an estimated WAL/index/backup space preflight.
+# Java filesystem free space is NOT proof of a hosting account quota or SQLite native temp capacity.
+# Keep enabled unless you understand the risk of bypassing this estimate.
 database-migration-space-preflight-enabled: true
-# Extra free-space margin beyond the estimated backup/index working set.
+# Extra free-space margin beyond the estimated migration working set.
 database-migration-space-safety-mib: 256
+# Optional: confirmed FREE space (MiB, not total allocated capacity) remaining under your
+# hosting account/container quota. 0 = unknown. Set only if the host can provide a current value.
+# A stale value does not reserve space and cannot guarantee a successful migration.
+database-migration-account-free-mib: 0
+# Optional: confirmed FREE space (MiB) in SQLite's actual native TEMP area, not merely Java /tmp.
+# 0 = unknown. The SQLite VFS can use a different temp filesystem than java.io.tmpdir.
+database-migration-sqlite-temp-free-mib: 0
 # Auto-pruning only applies to backups this version has explicitly created and marked as verified;
 # older/unmarked backups are never deleted automatically. At least one verified full migration backup is retained.
 database-migration-backup-retention-count: 1
@@ -79,6 +86,22 @@ rollback-max-snapshot-bytes-per-command: 67108864
 rollback-max-chunks-per-command: 256
 # Preview tokens expire before a rollback can be confirmed.
 rollback-confirmation-timeout-seconds: 60
+
+# The outline is client-only particles, visible only to the operator.
+rollback-preview-visualization-enabled: true
+# 0 = sparse, 1 = standard (24/32/48/64 points), 2 = detailed; capped to 96 points.
+rollback-preview-perimeter-quality: 1
+# Spacing of the sparse full-height guide columns. Clamped to 16-192 blocks,
+# and a maximum of 12 interior levels per guide column.
+rollback-preview-vertical-spacing: 64
+# Draw a brighter circular ring at the operator's current elevation.
+rollback-preview-operator-ring-enabled: true
+# Particle refresh cadence in ticks. Clamped to 10-100; default: once per second.
+rollback-preview-update-ticks: 20
+# Optional color overrides; use #RRGGBB (invalid values fall back to defaults).
+rollback-preview-border-color: "#00FFFF"
+rollback-preview-height-color: "#FFFF00"
+rollback-preview-center-color: "#00FF00"
 
 # Usually false is safer for rollback because it avoids triggering gravity/neighbor updates everywhere.
 apply-physics-during-rollback: false

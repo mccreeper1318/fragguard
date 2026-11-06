@@ -1,5 +1,47 @@
 # FG Changelog
 
+## 26.3-1.2.1
+
+### Changed
+
+- Updated Paper API to 26.3 build 241 stable.
+- Updated README build instructions for 26.3-1.2.1.
+- Updated artifact GitHub Actions to upload 7.0.2 and download 8.0.2 (#122).
+- Updated Gradle wrapper to 9.8.2 (#127).
+- Updated Java setup to 6.1.0 and Gradle setup to 6.4.1 in GitHub Actions (#132).
+- Updated SQLite JDBC compile/test dependency to 3.54.1.0 (#133).
+- Used Paper's SQLite JDBC at runtime and added driver diagnostics (#149).
+- Improved schema-v7 forward migration recovery without an older backup (#150).
+- Added offline full-history migration checks and final release validation gates (#151).
+- Configured SQLite JNI access for Java 25 tests and documented server setup (#88).
+- Improved rollback boundary visibility, sampling, and configuration (#99).
+- Added UUID-based historical player resolution and actor query indexes (#100).
+- Added per-index SQLite migration diagnostics for storage failures (#138).
+- Reduced historical actor index size and made index migration restartable (#139).
+- Added storage-aware migration checks and safer SQLite failure recovery (#140).
+- Added large-history SQLite migration regression tests and release checklist (#141).
+- Added v7 coordinate-index storage diagnostics and recovery investigation (#147).
+- Reused existing chunk indexes to avoid full-history coordinate index migration (#148).
+- Added bounded causal player attribution for traceable TNT and machinery chains (#106).
+
+### Added
+
+- Added a player-only circular rollback boundary preview (#97).
+- Added rollback preview cancellation and cleanup in commands and GUI (#98).
+- Added global player lookup by UUID/name with world, time, and page filters (#101).
+- Added selective player rollback planning with historical ownership protection (#102).
+- Added player rollback preview, confirmation, persistent multi-world jobs, undo, and chunk overlap protection (#103).
+- Added player-scoped lookup and rollback GUI screens with history-based selection, paging, filters, and safe previews (#104).
+
+### Fixed
+
+- Fixed Gradle 10 resource-processing warning (#86).
+- Fixed Shadow JAR service merging (#87).
+- Fixed unrelated TNT inheriting piston ownership without observed TNT movement (PR #146).
+- Fixed GUI player history queries missing the partial-index condition (PR #146).
+- Fixed offline validation output safety for hard links and required historical index checks (#151).
+- Fixed piston retraction attribution when a player switches off redstone (#146).
+
 ## 26.3-1.2.0
 
 ### Added

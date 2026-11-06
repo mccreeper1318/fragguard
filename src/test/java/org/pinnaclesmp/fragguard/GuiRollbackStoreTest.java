@@ -33,7 +33,14 @@ class GuiRollbackStoreTest {
                         total_blocks INTEGER NOT NULL,
                         applied_blocks INTEGER NOT NULL,
                         conflict_blocks INTEGER NOT NULL,
-                        last_error TEXT NOT NULL DEFAULT ''
+                        last_error TEXT NOT NULL DEFAULT '',
+                        scope_type TEXT NOT NULL DEFAULT 'RADIUS',
+                        target_player_uuid TEXT,
+                        target_player_name TEXT,
+                        world_scope_name TEXT,
+                        historical_conflicts INTEGER NOT NULL DEFAULT 0,
+                        affected_worlds INTEGER NOT NULL DEFAULT 1,
+                        affected_chunks INTEGER NOT NULL DEFAULT 0
                     )
                     """);
             statement.execute("""

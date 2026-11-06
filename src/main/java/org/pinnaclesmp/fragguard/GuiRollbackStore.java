@@ -26,7 +26,9 @@ final class GuiRollbackStore {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
                     SELECT id, created_at, actor_name, world, radius, target_timestamp,
-                           status, total_blocks, applied_blocks, conflict_blocks, last_error
+                           status, total_blocks, applied_blocks, conflict_blocks, last_error,
+                           scope_type, target_player_uuid, target_player_name, world_scope_name,
+                           historical_conflicts, affected_worlds, affected_chunks
                     FROM rollback_jobs
                     WHERE status IN ('COMPLETED', 'FAILED')
                       AND applied_blocks > 0
@@ -49,7 +51,14 @@ final class GuiRollbackStore {
                                 rows.getInt("total_blocks"),
                                 rows.getInt("applied_blocks"),
                                 rows.getInt("conflict_blocks"),
-                                rows.getString("last_error")
+                                rows.getString("last_error"),
+                                rows.getString("scope_type"),
+                                rows.getString("target_player_uuid"),
+                                rows.getString("target_player_name"),
+                                rows.getString("world_scope_name"),
+                                rows.getInt("historical_conflicts"),
+                                rows.getInt("affected_worlds"),
+                                rows.getInt("affected_chunks")
                         ));
                     }
                 }
@@ -84,6 +93,24 @@ record GuiRollbackJob(
         int totalBlocks,
         int appliedBlocks,
         int conflictBlocks,
-        String lastError
+        String lastError,
+        String scopeType,
+        String targetPlayerUuid,
+        String targetPlayerName,
+        String worldScopeName,
+        int historicalConflicts,
+        int affectedWorlds,
+        int affectedChunks
 ) {
+    GuiRollbackJob(long id, long createdAt, String actorName, String worldName,
+                   int radius, long targetTimestamp, String status, int totalBlocks,
+                   int appliedBlocks, int conflictBlocks, String lastError) {
+        this(id, createdAt, actorName, worldName, radius, targetTimestamp,
+                status, totalBlocks, appliedBlocks, conflictBlocks, lastError,
+                "RADIUS", null, null, null, 0, 1, 0);
+    }
+
+    boolean isPlayerScope() {
+        return "PLAYER".equals(scopeType);
+    }
 }

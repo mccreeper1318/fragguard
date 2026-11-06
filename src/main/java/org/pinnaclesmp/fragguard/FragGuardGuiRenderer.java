@@ -42,6 +42,226 @@ final class FragGuardGuiRenderer {
         return inv;
     }
 
+    static Inventory lookupSetup(int radius, String timeLabel, boolean playerScope,
+                                 String selectedPlayer, String world) {
+        Inventory inv = lookupSetup(radius, timeLabel);
+        inv.setItem(4, item(Material.COMPASS,
+                "&bScope: &f" + (playerScope ? "Player" : "Nearby Area"),
+                "&eClick to switch search scopes."));
+        if (playerScope) {
+            inv.setItem(10, item(Material.PLAYER_HEAD,
+                    "&bPlayer: &f" + selectedPlayer,
+                    "&7Choose a player from retained history.", "&eClick to select."));
+            inv.setItem(14, item(Material.MAP,
+                    "&bWorld: &f" + (world == null ? "All Worlds" : world),
+                    "&eClick to choose a world."));
+            inv.setItem(16, item(Material.SPYGLASS, "&aRun Global Player Lookup",
+                    "&7Search direct and attributed changes.",
+                    "&7World, coordinates and physical cause", "&7remain visible in results."));
+        }
+        return inv;
+    }
+
+    static Inventory rollbackSetup(int radius, String timeLabel, boolean force,
+                                   boolean activePreview, boolean playerScope,
+                                   String selectedPlayer, String world) {
+        Inventory inv = rollbackSetup(radius, timeLabel, force, activePreview);
+        inv.setItem(4, item(Material.COMPASS,
+                "&eScope: &f" + (playerScope ? "Player" : "Nearby Area"),
+                "&eClick to switch rollback scopes."));
+        if (playerScope) {
+            inv.setItem(10, item(Material.PLAYER_HEAD,
+                    "&ePlayer: &f" + selectedPlayer,
+                    "&7Select an identity in retained history."));
+            inv.setItem(16, item(Material.SPYGLASS, "&ePreview Player Rollback",
+                    "&7Find eligible changes across selected worlds.",
+                    "&7No blocks change until confirmation."));
+            inv.setItem(24, item(Material.MAP, "&eWorld: &f"
+                    + (world == null ? "All Worlds" : world),
+                    "&eClick to choose world scope."));
+        }
+        return inv;
+    }
+
+    static Inventory playerPicker(GuiPlayerHistoryStore.IdentityPage page,
+                                  String selectedUuid, boolean rollback) {
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &bSelect Player"));
+        for (int i = 0; i < page.identities().size() && i < GuiPlayerHistoryStore.PLAYER_PAGE_SIZE; i++) {
+            GuiPlayerHistoryStore.PlayerIdentity identity = page.identities().get(i);
+            boolean selected = identity.uuid().toString().equals(selectedUuid);
+            inv.setItem(i, item(selected ? Material.EMERALD_BLOCK : Material.PLAYER_HEAD,
+                    (selected ? "&a✓ " : "&b") + identity.latestName(),
+                    "&7UUID: &f" + identity.uuid(),
+                    selected ? "&aSelected player" : "&eClick to select."));
+        }
+        fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
+        inv.setItem(45, item(Material.ARROW, "&fBack to " + (rollback ? "Rollback" : "Lookup")));
+        if (page.page() > 0) inv.setItem(48, item(Material.SPECTRAL_ARROW, "&fPrevious Players"));
+        inv.setItem(49, item(Material.MAP, "&bPlayers Page " + (page.page() + 1),
+                "&7Sorted alphabetically by latest known name.",
+                "&7Selections are stored by stable UUID."));
+        if (page.hasNext()) inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Players"));
+        inv.setItem(53, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
+    static Inventory worldPicker(List<String> worlds, int page, String selectedWorld,
+                                 boolean rollback) {
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &bSelect World"));
+        fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
+        fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
+        inv.setItem(4, item(selectedWorld == null ? Material.EMERALD_BLOCK : Material.MAP,
+                "&bAll Worlds", "&7Default global scope.", "&eClick to select."));
+        int start = page * 36;
+        for (int i = 0; i < 36 && start + i < worlds.size(); i++) {
+            String world = worlds.get(start + i);
+            inv.setItem(9 + i, item(world.equals(selectedWorld) ? Material.EMERALD_BLOCK : Material.GRASS_BLOCK,
+                    "&b" + world, world.equals(selectedWorld) ? "&aSelected" : "&eClick to select."));
+        }
+        inv.setItem(45, item(Material.ARROW, "&fBack to " + (rollback ? "Rollback" : "Lookup")));
+        if (page > 0) inv.setItem(48, item(Material.SPECTRAL_ARROW, "&fPrevious Worlds"));
+        inv.setItem(49, item(Material.MAP, "&bWorld Page " + (page + 1)));
+        if ((page + 1) * 36 < worlds.size()) {
+            inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Worlds"));
+        }
+        inv.setItem(53, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
+    static Inventory playerHistoryResults(GuiPlayerHistoryStore.HistoryPage history,
+                                          GuiPlayerHistoryStore.HistoryQuery query) {
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &bPlayer History"));
+        fillRange(inv, 0, 8, Material.BLACK_STAINED_GLASS_PANE);
+        fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
+        inv.setItem(0, item(Material.PLAYER_HEAD, "&b" + query.latestName(),
+                "&7Exact retained events: &f" + history.totalRows(),
+                "&7Player UUID: &f" + query.playerUuid()));
+        inv.setItem(2, item(Material.HOPPER, "&eAction / Material Filters",
+                "&7Action: &f" + (query.action() == null ? "Any" : query.action().displayPastTense()),
+                "&7Material: &f" + (query.material() == null ? "Any" : truncate(query.material())),
+                "&eClick to configure."));
+        inv.setItem(4, item(Material.MAP, "&bWorld: &f"
+                + (query.worldName() == null ? "All Worlds" : query.worldName()),
+                "&7Every event shows its actual world and cause."));
+        inv.setItem(8, item(Material.BARRIER, "&cClose"));
+        for (int i = 0; i < history.rows().size() && i < GuiPlayerHistoryStore.EVENT_PAGE_SIZE; i++) {
+            PlayerLookupRow event = history.rows().get(i);
+            String material = LookupActivityGrouper.materialKey(new LookupRow(
+                    event.id(), event.happenedAt(), event.actorUuid(), event.actorName(),
+                    event.worldName(), event.x(), event.y(), event.z(), event.action(),
+                    event.beforeData(), event.afterData(), event.blockEntityDataPresent()));
+            List<String> lore = new ArrayList<>();
+            lore.add("&7World: &f" + event.worldName());
+            lore.add("&7XYZ: &f" + event.x() + " " + event.y() + " " + event.z());
+            lore.add("&7Time: &f" + TIME.format(Instant.ofEpochMilli(event.happenedAt())));
+            lore.add("&7Before: &f" + state(event.beforeData()));
+            lore.add("&7After: &f" + state(event.afterData()));
+            if (event.indirectlyAttributedTo(query.playerUuid().toString())) {
+                lore.add("&6Indirectly attributed to &f" + query.latestName());
+                lore.add("&7Physical cause: &f" + actor(event.actorName()));
+                lore.add("&7Chain: &f" + actor(event.causalCauseType()));
+            } else {
+                lore.add("&7Direct actor: &f" + actor(event.actorName()));
+            }
+            lore.add("&eClick for exact details.");
+            inv.setItem(9 + i, item(icon(material),
+                    "&b" + actor(event.actorName()) + " &7"
+                            + event.action().displayPastTense(), lore));
+        }
+        inv.setItem(45, item(Material.ARROW, "&fNew Lookup"));
+        if (history.page() > 1) inv.setItem(48, item(Material.SPECTRAL_ARROW, "&fPrevious Events"));
+        inv.setItem(49, item(Material.MAP, "&bPage " + history.page() + " / "
+                + Math.max(1, (history.totalRows() + GuiPlayerHistoryStore.EVENT_PAGE_SIZE - 1)
+                        / GuiPlayerHistoryStore.EVENT_PAGE_SIZE),
+                "&f" + history.totalRows() + " &7exact event(s)"));
+        if (history.hasNext()) inv.setItem(50, item(Material.SPECTRAL_ARROW, "&fNext Events"));
+        return inv;
+    }
+
+    static Inventory playerHistoryFilters(GuiPlayerHistoryStore.HistoryQuery query) {
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &ePlayer Filters"));
+        fill(inv, Material.GRAY_STAINED_GLASS_PANE);
+        inv.setItem(10, item(Material.IRON_PICKAXE, "&eAction: &f"
+                + (query.action() == null ? "Any" : query.action().displayPastTense()),
+                "&eClick to choose a matching action."));
+        inv.setItem(12, item(Material.GRASS_BLOCK, "&eMaterial: &f"
+                + (query.material() == null ? "Any" : truncate(query.material())),
+                "&eClick to choose a matching material."));
+        inv.setItem(16, item(Material.MILK_BUCKET, "&fClear Action / Material Filters"));
+        inv.setItem(18, item(Material.ARROW, "&fBack to Player Results"));
+        inv.setItem(26, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
+    static Inventory playerFilterOptions(List<String> labels, int page, int selected) {
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &eChoose Filter"));
+        for (int i = 0; i < 45 && page * 45 + i < labels.size(); i++) {
+            int index = page * 45 + i;
+            inv.setItem(i, item(index == selected ? Material.EMERALD_BLOCK : Material.PAPER,
+                    "&f" + truncate(labels.get(index)),
+                    index == selected ? "&aSelected" : "&eClick to select."));
+        }
+        fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
+        inv.setItem(45, item(Material.ARROW, "&fBack to Filters"));
+        if (page > 0) inv.setItem(48, item(Material.SPECTRAL_ARROW, "&fPrevious Options"));
+        inv.setItem(49, item(Material.MAP, "&bPage " + (page + 1)));
+        if ((page + 1) * 45 < labels.size()) inv.setItem(50,
+                item(Material.SPECTRAL_ARROW, "&fNext Options"));
+        inv.setItem(53, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
+    static Inventory playerExactDetail(PlayerLookupRow event, String selectedPlayer,
+                                       BlockEntitySnapshot.SnapshotDescription before,
+                                       BlockEntitySnapshot.SnapshotDescription after, boolean changed) {
+        LookupRow row = new LookupRow(event.id(), event.happenedAt(), event.actorUuid(),
+                event.actorName(), event.worldName(), event.x(), event.y(), event.z(),
+                event.action(), event.beforeData(), event.afterData(),
+                event.blockEntityDataPresent());
+        Inventory inv = exactEventDetail(row, before, after, changed);
+        inv.setItem(20, item(Material.MAP, "&bRecorded World",
+                "&f" + event.worldName(), "&7XYZ: &f" + event.x() + " " + event.y() + " " + event.z()));
+        if (event.indirectlyAttributedTo(selectedPlayer)) {
+            inv.setItem(22, item(Material.TNT, "&6Indirectly Attributed Change",
+                    "&7Caused by player: &f" + actor(event.causalPlayerName()),
+                    "&7Physical cause: &f" + actor(event.actorName()),
+                    "&7Cause type: &f" + actor(event.causalCauseType())));
+        } else {
+            inv.setItem(22, item(Material.PLAYER_HEAD, "&bDirect Change",
+                    "&7Recorded actor: &f" + actor(event.actorName())));
+        }
+        return inv;
+    }
+
+    static Inventory playerRollbackPreview(String token, PlayerRollbackPlan plan,
+                                           String worldName, boolean force) {
+        Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &ePlayer Preview"));
+        fill(inv, Material.GRAY_STAINED_GLASS_PANE);
+        long worlds = plan.targets().stream().map(RollbackTarget::worldUuid).distinct().count();
+        int chunks = RollbackChunkPlan.countTargetChunks(plan.targets());
+        inv.setItem(10, item(Material.PLAYER_HEAD, "&b" + plan.player().latestName(),
+                "&7UUID: &f" + plan.player().uuid(),
+                "&7From: &f" + TIME.format(Instant.ofEpochMilli(plan.targetTimestamp()))));
+        inv.setItem(12, item(Material.MAP, "&bWorlds: &f" + worlds,
+                "&7Requested scope: &f" + (worldName == null ? "All Worlds" : worldName),
+                "&7Chunks affected: &f" + chunks));
+        inv.setItem(14, item(Material.PAPER, "&eBlocks: &f" + plan.reversibleCoordinates(),
+                "&eHistorical conflicts: &f" + plan.historicalConflicts(),
+                "&7No-op: &f" + plan.noOps() + " &7Unavailable: &f" + plan.unavailable(),
+                force ? "&cForce may override live-state conflicts."
+                        : "&aNewer conflicting live states will be skipped.",
+                "&7Historical ownership protection is always enforced."));
+        inv.setItem(16, item(Material.EMERALD_BLOCK, "&aConfirm Rollback",
+                "&7No blocks have yet changed.",
+                "&7Use saved confirmation token: &f" + token,
+                "&eClick to start the saved job."));
+        inv.setItem(18, item(Material.ARROW, "&fBack to Setup"));
+        inv.setItem(22, item(Material.RED_DYE, "&cCancel Preview",
+                "&7Dismiss preview without changing blocks."));
+        inv.setItem(26, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
     static Inventory lookupSetup(int radius, String timeLabel) {
         Inventory inv = Bukkit.createInventory(null, 27, component("&8FragGuard &7• &bLookup"));
         fill(inv, Material.GRAY_STAINED_GLASS_PANE);
@@ -180,9 +400,13 @@ final class FragGuardGuiRenderer {
         if (activePreview) {
             inv.setItem(20, item(Material.EMERALD_BLOCK, "&aConfirm Active Preview",
                     "&7Run your most recent unexpired", "&7rollback preview."));
+            inv.setItem(22, item(Material.RED_DYE, "&cCancel Active Preview",
+                    "&7Dismiss your pending rollback", "&7without changing any blocks."));
         } else {
             inv.setItem(20, item(Material.GRAY_DYE, "&7No Active Preview",
                     "&7Run a rollback preview first."));
+            inv.setItem(22, item(Material.RED_DYE, "&cCancel Preview / Search",
+                    "&7Stop an unfinished rollback search.", "&7Harmless if nothing is pending."));
         }
         inv.setItem(18, item(Material.ARROW, "&fBack"));
         inv.setItem(26, item(Material.BARRIER, "&cClose"));
@@ -338,14 +562,23 @@ final class FragGuardGuiRenderer {
     }
 
     private static ItemStack undoJobItem(GuiRollbackJob job) {
-        List<String> lore = new ArrayList<>(List.of(
-                "&7Status: &f" + job.status(),
-                "&7Actor: &f" + actor(job.actorName()),
-                "&7World: &f" + actor(job.worldName()),
-                "&7Radius: &f" + job.radius(),
-                "&7Target: &f" + TIME.format(Instant.ofEpochMilli(job.targetTimestamp())),
-                "&7Applied: &f" + job.appliedBlocks() + "&7 / " + job.totalBlocks(),
-                "&7Conflicts: &f" + job.conflictBlocks()));
+        List<String> lore = new ArrayList<>();
+        lore.add("&7Type: &f" + (job.isPlayerScope() ? "Player" : "Radius"));
+        lore.add("&7Status: &f" + job.status());
+        lore.add("&7Operator: &f" + actor(job.actorName()));
+        if (job.isPlayerScope()) {
+            lore.add("&7Target player: &f" + actor(job.targetPlayerName()));
+            lore.add("&7World scope: &f" + (job.worldScopeName() == null
+                    ? "All" : actor(job.worldScopeName())));
+            lore.add("&7Worlds: &f" + job.affectedWorlds() + " &7| Chunks: &f" + job.affectedChunks());
+            lore.add("&7Historical conflicts: &e" + job.historicalConflicts());
+        } else {
+            lore.add("&7World: &f" + actor(job.worldName()));
+            lore.add("&7Radius: &f" + job.radius());
+        }
+        lore.add("&7Target: &f" + TIME.format(Instant.ofEpochMilli(job.targetTimestamp())));
+        lore.add("&7Applied: &f" + job.appliedBlocks() + "&7 / " + job.totalBlocks());
+        lore.add("&7Live conflicts: &f" + job.conflictBlocks());
         if (job.lastError() != null && !job.lastError().isBlank()) {
             lore.add("&cLast error: " + truncate(job.lastError()));
         }

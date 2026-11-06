@@ -20,14 +20,20 @@ final class RollbackChunkPlan {
 
     static int countTargetChunks(List<RollbackTarget> targets) {
         return (int) targets.stream()
-                .map(target -> new ChunkKey(target.worldName(), target.x() >> 4, target.z() >> 4))
+                .map(target -> new ChunkKey(target.worldName(), target.worldUuid(),
+                        target.x() >> 4, target.z() >> 4))
                 .distinct()
                 .count();
     }
 
-    record ChunkKey(String worldName, int x, int z) {
+    record ChunkKey(String worldName, String worldUuid, int x, int z) {
+        ChunkKey(String worldName, int x, int z) {
+            this(worldName, null, x, z);
+        }
+
         static ChunkKey from(RollbackJobChange change) {
-            return new ChunkKey(change.worldName(), change.x() >> 4, change.z() >> 4);
+            return new ChunkKey(change.worldName(), change.worldUuid(),
+                    change.x() >> 4, change.z() >> 4);
         }
     }
 

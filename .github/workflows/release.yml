@@ -41,13 +41,13 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Java 25
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "25"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
       - name: Read and validate version
         id: version
@@ -215,6 +215,58 @@ jobs:
             exit 1
           fi
 
+          # Use the verifier bundled with the release tag. Old releases may
+          # have shipped a JDBC provider inside the plugin JAR, while newer
+          # releases use Paper's SQLite JDBC and deliberately omit it (#149).
+          # Keeping this check in the tag's verifier ensures build and release
+          # packaging validate the same requirements for that release.
+          if [[ -f scripts/verify_shaded_services.py ]]; then
+            python3 scripts/verify_shaded_services.py "$EXPECTED_JAR"
+          else
+            # Legacy fallback for releases from before the verifier was added.
+            python3 - "$EXPECTED_JAR" "$VERSION" <<'PY'
+          import re
+          import sys
+          from collections import Counter
+          from zipfile import ZipFile
+
+          jar_path, version = sys.argv[1:]
+          version_match = re.match(
+              r"^(\d+)\.(\d+)-(\d+)\.(\d+)\.(\d+)(?:-|$)", version
+          )
+          if version_match is None:
+              raise SystemExit(f"Invalid release version for service verification: {version}")
+
+          if tuple(map(int, version_match.groups())) < (26, 3, 1, 2, 1):
+              print(f"Skipping new service-descriptor checks for legacy release {version}")
+              sys.exit(0)
+
+          services = {
+              "META-INF/services/java.sql.Driver": "org.sqlite.JDBC",
+              "META-INF/services/org.slf4j.spi.SLF4JServiceProvider": "org.slf4j.nop.NOPServiceProvider",
+          }
+          with ZipFile(jar_path) as archive:
+              entries = Counter(archive.namelist())
+              for descriptor, provider in services.items():
+                  if entries[descriptor] != 1:
+                      raise SystemExit(
+                          f"Expected one {descriptor}; found {entries[descriptor]}"
+                      )
+                  providers = {
+                      line.split("#", 1)[0].strip()
+                      for line in archive.read(descriptor).decode("utf-8").splitlines()
+                  }
+                  if provider not in providers:
+                      raise SystemExit(f"{descriptor} is missing provider {provider}")
+                  provider_class = provider.replace(".", "/") + ".class"
+                  if entries[provider_class] != 1:
+                      raise SystemExit(
+                          f"Expected one provider class {provider_class}; found {entries[provider_class]}"
+                      )
+                  print(f"Verified {descriptor}: {provider}")
+          PY
+          fi
+
           RELEASE_DIR="build/release"
           mkdir -p "$RELEASE_DIR"
           cp "$EXPECTED_JAR" "$RELEASE_DIR/$EXPECTED_NAME"
@@ -232,7 +284,7 @@ jobs:
           cat "$RELEASE_DIR/$EXPECTED_NAME.sha256"
 
       - name: Save verified release package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fragguard-release-${{ steps.version.outputs.version }}
           path: |
@@ -249,7 +301,7 @@ jobs:
 
     steps:
       - name: Download verified release package
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: fragguard-release-${{ needs.build-release.outputs.version }}
           path: build/release

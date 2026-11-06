@@ -6,7 +6,10 @@ plugins {
 }
 
 group = "org.pinnaclesmp"
-version = "26.3-1.2.0"
+version = "26.3-1.2.1"
+
+// Capture the version during configuration; resource copying must not access Task.project.
+val pluginVersion = version.toString()
 
 java {
     // Paper 26.x uses the newer Paper API versioning and currently documents Java 25 for 26.x builds.
@@ -14,11 +17,14 @@ java {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:26.3.build.177-stable")
-    implementation("org.xerial:sqlite-jdbc:3.53.4.0")
+    compileOnly("io.papermc.paper:paper-api:26.3.build.241-stable")
+    // Paper provides SQLite JDBC at server runtime; do not shade a conflicting
+    // copy into FragGuard. Compile/test with a pinned version for local CI.
+    compileOnly("org.xerial:sqlite-jdbc:3.54.1.0")
     implementation("org.slf4j:slf4j-nop:2.0.20")
 
-    testImplementation("io.papermc.paper:paper-api:26.3.build.177-stable")
+    testImplementation("io.papermc.paper:paper-api:26.3.build.241-stable")
+    testImplementation("org.xerial:sqlite-jdbc:3.54.1.0")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
     testImplementation("org.mockito:mockito-core:5.24.0")
@@ -36,18 +42,27 @@ tasks {
 
     test {
         useJUnitPlatform()
+        // sqlite-jdbc uses JNI. Explicit access allows tests to pass even when
+        // future Java releases deny unapproved native access by default.
+        jvmArgs("--enable-native-access=ALL-UNNAMED", "--illegal-native-access=deny")
     }
 
     processResources {
         filteringCharset = "UTF-8"
+        inputs.property("pluginVersion", pluginVersion)
         filesMatching("plugin.yml") {
-            expand("version" to project.version)
+            expand("version" to pluginVersion)
         }
     }
 
     shadowJar {
         archiveClassifier.set("")
+        // Leave unrelated duplicates excluded, but pass all service descriptors to the merger.
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
         mergeServiceFiles()
+        filesMatching("META-INF/services/**") {
+            duplicatesStrategy = DuplicatesStrategy.INCLUDE
+        }
     }
 
     build {

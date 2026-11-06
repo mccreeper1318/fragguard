@@ -17,6 +17,7 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     private Database database;
     private FragGuardCommand commandExecutor;
+    private BlockChangeListener changeListener;
     private boolean storageWarningActive;
     private long lastStorageWarningAt;
     private int guiLookupFetchSize = DEFAULT_GUI_LOOKUP_FETCH_SIZE;
@@ -40,7 +41,8 @@ public final class FragGuardPlugin extends JavaPlugin {
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
-        Bukkit.getPluginManager().registerEvents(new BlockChangeListener(this, database), this);
+        changeListener = new BlockChangeListener(this, database);
+        Bukkit.getPluginManager().registerEvents(changeListener, this);
         Bukkit.getPluginManager().registerEvents(new ShelfChangeListener(this, database), this);
         Bukkit.getPluginManager().registerEvents(new FragGuardGui(this, database), this);
         commandExecutor = new FragGuardCommand(this, database);
@@ -56,6 +58,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (changeListener != null) {
+            changeListener.clearCausalAttribution();
+            changeListener = null;
+        }
         if (commandExecutor != null) {
             commandExecutor.clearRollbackPreviews();
             commandExecutor = null;
@@ -87,6 +93,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     int getRollbackJobRetentionDays() {
         return Math.max(1, getConfig().getInt("rollback-job-retention-days", getRetentionDays()));
+    }
+
+    FragGuardCommand getFragGuardCommand() {
+        return commandExecutor;
     }
 
     int getGuiLookupFetchSize() {
