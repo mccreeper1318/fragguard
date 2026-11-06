@@ -14,26 +14,32 @@ final class HistoricalIndexMigrationDiagnostics {
 
     static void createIndex(Connection connection, File databaseFile, String indexName, String sql,
                             Consumer<String> info, Consumer<String> warning) throws SQLException {
+        createIndex(connection, databaseFile, "Schema v4->v5", indexName, sql, info, warning);
+    }
+
+    static void createIndex(Connection connection, File databaseFile, String migrationStage,
+                            String indexName, String sql,
+                            Consumer<String> info, Consumer<String> warning) throws SQLException {
         long start = System.nanoTime();
         String before = snapshot(connection, databaseFile);
-        info.accept("Schema v4->v5 index " + indexName + ": starting; " + before);
+        info.accept(migrationStage + " index " + indexName + ": starting; " + before);
         try (Statement statement = connection.createStatement()) {
             statement.executeUpdate(sql);
         } catch (SQLException failure) {
             String error = sqlError(failure);
-            String diagnostic = "Schema v4->v5 index " + indexName + " FAILED after "
+            String diagnostic = migrationStage + " index " + indexName + " FAILED after "
                     + elapsedSeconds(start) + "s (" + error + "); before: " + before
                     + "; after: " + snapshot(connection, databaseFile) + ". "
                     + "Reported filesystem capacity is NOT an account quota. "
                     + "Possible causes include database/WAL growth, SQLite-native temp storage, "
                     + "and container/hosting limits; this report does not establish which caused the failure.";
             warning.accept(diagnostic);
-            throw new SQLException("FragGuard schema v4->v5 failed while creating index " + indexName
+            throw new SQLException("FragGuard " + migrationStage + " failed while creating index " + indexName
                     + " after " + elapsedSeconds(start) + "s (" + error + "). "
                     + "See the preceding storage diagnostics; the root cause is not yet confirmed.",
                     failure.getSQLState(), failure.getErrorCode(), failure);
         }
-        info.accept("Schema v4->v5 index " + indexName + ": completed in " + elapsedSeconds(start)
+        info.accept(migrationStage + " index " + indexName + ": completed in " + elapsedSeconds(start)
                 + "s; " + snapshot(connection, databaseFile));
     }
 
@@ -54,6 +60,9 @@ final class HistoricalIndexMigrationDiagnostics {
                 + ", journal_mode=" + pragma(connection, "journal_mode")
                 + ", page_count=" + pragma(connection, "page_count")
                 + ", freelist_count=" + pragma(connection, "freelist_count")
+                + ", max_page_count=" + pragma(connection, "max_page_count")
+                + ", user_version=" + pragma(connection, "user_version")
+                + ", native-temp-candidates={" + SqliteTempStorageProbe.describe(databaseFile) + "}"
                 + ", sqlite-native-temp-dir=unresolved (Java tmpdir is not authoritative)";
     }
 
