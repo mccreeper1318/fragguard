@@ -89,7 +89,7 @@ final class SqliteTempStorageProbe {
                 return "unavailable";
             }
             return type;
-        } catch (IOException | SecurityException ignored) {
+        } catch (SecurityException ignored) {
             return "unknown";
         }
     }
