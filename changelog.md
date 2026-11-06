@@ -18,6 +18,7 @@
 - Added storage-aware migration checks and safer SQLite failure recovery (#140).
 - Added large-history SQLite migration regression tests and release checklist (#141).
 - Added v7 coordinate-index storage diagnostics and recovery investigation (#147).
+- Reused existing chunk indexes to avoid full-history coordinate index migration (#148).
 - Added bounded causal player attribution for traceable TNT and machinery chains (#106).
 
 ### Added

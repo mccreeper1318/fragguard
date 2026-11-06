@@ -107,10 +107,23 @@ class LargeHistoryMigrationIntegrationTest {
             assertEquals("ok", singleString(sql, "PRAGMA integrity_check(1)"));
             for (String name : List.of("idx_fg_actor_time", "idx_fg_actor_world_time",
                     "idx_fg_actor_name_uuid", "idx_fg_causal_actor_time", "idx_fg_causal_actor_world_time",
-                    "idx_fg_causal_name_uuid", "idx_fg_coordinate_time", "idx_fg_job_chunk_overlap")) {
+                    "idx_fg_causal_name_uuid", "idx_fg_spatial_time", "idx_fg_job_chunk_overlap")) {
                 assertEquals(1L, scalar(sql, "SELECT COUNT(*) FROM sqlite_master"
                         + " WHERE type='index' AND name='" + name + "'"), name);
             }
+            assertEquals(0L, scalar(sql, """
+                    SELECT COUNT(*) FROM sqlite_master
+                    WHERE type='index' AND name='idx_fg_coordinate_time'
+                    """), "v4→v9 should not create a global coordinate index on 30K+ events");
+            assertIndexPlan(sql, "idx_fg_spatial_time", """
+                    SELECT id FROM block_changes
+                    WHERE world_uuid='99999999-2222-3333-4444-555555555555'
+                      AND chunk_x=0 AND chunk_z=0
+                      AND x=3 AND y=64 AND z=3
+                      AND rollback_pending=0
+                      AND happened_at > 0
+                    ORDER BY happened_at DESC, id DESC LIMIT 8193
+                    """);
             assertIndexPlan(sql, "idx_fg_actor_time",
                     "SELECT id FROM block_changes WHERE actor_uuid='" + PLAYER
                             + "' AND length(actor_uuid) IN (32, 36)"

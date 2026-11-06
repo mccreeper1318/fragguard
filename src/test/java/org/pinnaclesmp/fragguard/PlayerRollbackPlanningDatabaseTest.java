@@ -255,7 +255,7 @@ class PlayerRollbackPlanningDatabaseTest {
     }
 
     @Test
-    void versionSevenUpgradeBuildsAnIndexedCoordinateTimeSeek() throws Exception {
+    void versionSevenUpgradeUsesExistingChunkIndexWithoutAllocatingGlobalCoordinateIndex() throws Exception {
         database = start();
         long now = System.currentTimeMillis();
         database.insertRequiredAsync(List.of(change(now - 10_000, STEVE, "Steve",
@@ -264,7 +264,7 @@ class PlayerRollbackPlanningDatabaseTest {
         database = null;
 
         try (Connection connection = open(); Statement sql = connection.createStatement()) {
-            sql.execute("DROP INDEX idx_fg_coordinate_time");
+            sql.execute("DROP INDEX IF EXISTS idx_fg_coordinate_time");
             sql.execute("PRAGMA user_version=7");
         }
         database = start();
@@ -274,11 +274,19 @@ class PlayerRollbackPlanningDatabaseTest {
                 assertTrue(version.next());
                 assertEquals(Database.SCHEMA_VERSION, version.getInt(1));
             }
+            try (ResultSet oldIndex = sql.executeQuery("""
+                    SELECT COUNT(*) FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_fg_coordinate_time'
+                    """)) {
+                assertTrue(oldIndex.next());
+                assertEquals(0, oldIndex.getInt(1), "v7 must not build a 57M-row coordinate index");
+            }
             try (ResultSet plan = sql.executeQuery("""
                     EXPLAIN QUERY PLAN
                     SELECT id, happened_at, before_data FROM block_changes
                     WHERE rollback_pending = 0 AND world_uuid =
                           '99999999-2222-3333-4444-555555555555'
+                      AND chunk_x=1 AND chunk_z=0
                       AND x=24 AND y=64 AND z=0
                       AND happened_at > 0 AND happened_at <= 9999999999999
                     ORDER BY happened_at DESC, id DESC
@@ -288,15 +296,15 @@ class PlayerRollbackPlanningDatabaseTest {
                 while (plan.next()) {
                     details.add(plan.getString("detail"));
                 }
-                assertTrue(details.stream().anyMatch(s -> s.contains("idx_fg_coordinate_time")),
-                        "per-coordinate history should use its coordinate/time index: " + details);
-                assertFalse(details.stream().anyMatch(s -> s.contains("USE TEMP B-TREE")),
+                assertTrue(details.stream().anyMatch(line -> line.contains("idx_fg_spatial_time")),
+                        "per-coordinate history must reuse existing chunk/time index: " + details);
+                assertFalse(details.stream().anyMatch(line -> line.contains("USE TEMP B-TREE")),
                         "newest-first history should not need a temporary sort: " + details);
             }
         }
 
         var planned = plan(STEVE, now - 20_000, now, false, 30, 100, 1024);
-        assertEquals(1, planned.targets().size(), "index-only migration must preserve history");
+        assertEquals(1, planned.targets().size(), "index reuse must preserve historical rollback results");
     }
 
     private PlayerRollbackPlan plan(String name, long start, long end, boolean force,

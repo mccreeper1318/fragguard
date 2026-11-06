@@ -18,7 +18,7 @@ The test runs FG's real `Database.init()` upgrade from schema **v4 through v5, v
 
 - [ ] SQLite `PRAGMA integrity_check(1) = ok` and `user_version=9`.
 - [ ] History count, retained direct-player rows, original block-entity BLOB, rollback job/snapshot and world UUID mapping preserved.
-- [ ] All three direct-actor, three causal and coordinate/chunk indexes created.
+- [ ] All three direct-actor, three causal, and the **pre-existing chunk/time** index exist; verify the giant `idx_fg_coordinate_time` is **not** created (#148).
 - [ ] `EXPLAIN QUERY PLAN` uses the selective actor/time, actor/world/time and actor-name indexes for matching queries.
 - [ ] Historical username resolves to the latest UUID/name; global and world-scoped player lookups return correct rows.
 - [ ] A new post-migration causal TNT record is attributed, queryable, and usable for selective rollback planning.
@@ -66,3 +66,17 @@ These are release-end checklists and require explicit results in #141 before dec
 7. **Release signoff:** update this checklist and parent tracker #105 with actual measured results. Do not tag/merge a 1.2.1 production release until all required checks pass.
 
 **Production operating rule:** leave FG 26.3-1.2.0 in service and keep backups while #141 is unfinished. No live test was performed in this PR.
+
+## Schema-v7 forward recovery — new release gate (#148–#151)
+
+After Beta 2 reached v7 on a 57-million-row database, building a new
+`idx_fg_coordinate_time` failed with `SQLITE_FULL`. The new #148 migration
+reuses the existing `idx_fg_spatial_time` index for exact coordinate history
+and checks all persisted chunks before advancing the schema. No separate
+full-history coordinate index is required.
+
+The owner has **no verified schema-v4 backup**. Validation must include a
+coherent **v7** snapshot and a non-destructive v7→v9 forward upgrade; the
+old FG 1.2.0 JAR cannot open schema v7, and manually downgrading the schema
+number is unsafe. Complete #149 (driver) and #150 (recovery) before final
+approval, with real-host quota/temp behavior still unverified by synthetic CI.
