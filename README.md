@@ -311,8 +311,12 @@ Actual player-operated levers, buttons and pressure plates (not passive
 right-clicks on pistons or observers), directly altered mechanism components,
 live redstone updates, and piston movements form a bounded graph of
 actual component and block movement positions. An active, connected component
-can attribute a piston or TNT at that component, including an observable
-piston-driven TNT duplicator. A detached or ambiguously powered machine, a
+can attribute a piston or directly observed TNT priming at that component.
+For piston-driven TNT duplicators, TNT entity ownership requires the piston
+event to have actually moved a TNT block at the spawn's exact source or
+destination coordinate within 500 ms. Movement of ordinary blocks (including
+stone, slime, or the piston itself) is **not** enough to attribute TNT spawned
+by an unrelated dispenser. A detached or ambiguously powered machine, a
 different player's restart/modification, or a source absent from Paper's events
 fails closed to system/physical attribution. Merely being near a player, or
 happening after an earlier interaction, does not confer ownership.
@@ -324,7 +328,8 @@ own spawn to accommodate slow fuse progression at reduced TPS. No entity
 can restart expired mechanism ownership merely by existing nearby.
 Tracked mechanisms cannot extend farther than 96 blocks on any axis from
 the original activation, and are capped to 2,048 block links, 512 TNT
-entity links, and 256 recent prime locations. A world unload, plugin reload/disable or memory pressure
+entity links, 256 recent prime locations, and 256 recent TNT-movement coordinates.
+A world unload, plugin reload/disable or memory pressure
 clears relevant links. Cross-session or conflicting ownership invalidates the
 claim instead of guessing. Fires, unobservable redstone components,
 untraceable TNT duper cycles, and delayed environmental propagation are not
