@@ -459,6 +459,14 @@ rollback commands remain part of later 26.3-1.2.1 issues.
 
 ## SQLite native access on Java 24+
 
+Paper bundles Xerial SQLite JDBC for plugins. FragGuard **does not shade its own
+SQLite driver**; the Gradle SQLite version is only a compile/test dependency.
+The loaded JDBC driver version, native SQLite engine version and sanitized
+library origin are recorded once when FragGuard opens the database, before
+any schema migrations. A Paper version may use a different driver than the
+Gradle test dependency; this alone does not imply database corruption.
+See `docs/sqlite-runtime-driver-provenance-26.3-1.2.1.md` for details.
+
 FragGuard uses Xerial SQLite JDBC's JNI-based native SQLite library. Java 24 and later
 warn when code on the class path loads a native library without explicit permission.
 Java 25 still permits the call with a warning by default, but a future Java version
