@@ -143,6 +143,81 @@ class SchemaSevenForwardRecoveryIntegrationTest {
         assertV9PreservesAllHistory();
     }
 
+    @Test
+    void optInLargerV7HistoryMigratesWithoutGlobalIndexAndKeepsSnapshots() throws Exception {
+        String requested = System.getenv("FG_V7_VALIDATION_ROWS");
+        int systemRows = requested == null || requested.isBlank()
+                ? 12_000 : Integer.parseInt(requested);
+        assertTrue(systemRows >= 100 && systemRows <= 2_000_000,
+                "Use 100..2000000 synthetic rows only on a provisioned offline test host");
+
+        seedGenuineV7Schema();
+        long now = System.currentTimeMillis();
+        try (Connection raw = open()) {
+            raw.setAutoCommit(false);
+            try (PreparedStatement statement = raw.prepareStatement("""
+                    INSERT INTO block_changes
+                    (happened_at, actor_uuid, actor_name, world, world_uuid,
+                     x, y, z, chunk_x, chunk_z, action, before_data, after_data)
+                    VALUES (?, 'SYSTEM', 'System', ?, ?, ?, 65, ?, ?, ?,
+                            'block.break', 'minecraft:stone', 'minecraft:air')
+                    """)) {
+                for (int i = 0; i < systemRows; i++) {
+                    int x = (i % 256) - 128;
+                    int z = i / 256;
+                    boolean overworld = i % 2 == 0;
+                    statement.setLong(1, now - 100_000L + (i % 20_000));
+                    statement.setString(2, overworld ? "world" : "world_nether");
+                    statement.setString(3, overworld ? OVERWORLD : NETHER);
+                    statement.setInt(4, x);
+                    statement.setInt(5, z);
+                    statement.setInt(6, x >> 4);
+                    statement.setInt(7, z >> 4);
+                    statement.addBatch();
+                    if (i % 1_000 == 999) statement.executeBatch();
+                }
+                statement.executeBatch();
+            }
+            raw.commit();
+        }
+
+        long baselineBytes = Files.size(directory.resolve("fragguard.db"));
+        long started = System.nanoTime();
+        database = start(0);
+        long elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - started);
+        assertTrue(database.health().healthy());
+        assertEquals(2, database.lookupPlayerAsync("OldBuilder", null, 1, 20, 0, 30)
+                .join().totalRows());
+
+        try (Connection raw = open()) {
+            assertEquals(9L, scalar(raw, "PRAGMA user_version"));
+            assertEquals(systemRows + 3L, scalar(raw, "SELECT COUNT(*) FROM block_changes"));
+            assertEquals(1L, scalar(raw, "SELECT COUNT(*) FROM rollback_jobs"));
+            assertEquals(1L, scalar(raw, "SELECT COUNT(*) FROM rollback_job_changes"));
+            assertEquals(0L, scalar(raw, """
+                    SELECT COUNT(*) FROM sqlite_master
+                    WHERE type='index' AND name='idx_fg_coordinate_time'
+                    """), "no 57M-row coordinate index should ever be allocated");
+            assertArrayEquals(SNAPSHOT, blob(raw,
+                    "SELECT target_entity_data FROM rollback_job_changes WHERE job_id=7"));
+            assertEquals("ok", string(raw, "PRAGMA integrity_check(1)"));
+        }
+        database.shutdown();
+        database = null;
+        database = start(0);
+        try (Connection raw = open()) {
+            assertEquals(systemRows + 3L, scalar(raw, "SELECT COUNT(*) FROM block_changes"));
+            assertEquals("ok", string(raw, "PRAGMA integrity_check(1)"));
+        }
+        assertNoAutomaticFullBackup();
+        System.out.println("FG synthetic v7->v9: fixtureRows=" + (systemRows + 3L)
+                + ", migrationMillis=" + elapsedMs
+                + ", sourceDbBytes=" + baselineBytes
+                + ", postMigrationDbBytes=" + Files.size(directory.resolve("fragguard.db"))
+                + " (does not measure SQLite unlinked native temp or managed-host quotas)");
+    }
+
     private void assertV7Preserved() throws Exception {
         try (Connection raw = open()) {
             assertEquals(7, scalar(raw, "PRAGMA user_version"));
