@@ -32,6 +32,8 @@
 
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).
+- Fixed unrelated TNT inheriting piston ownership without observed TNT movement (PR #146).
+- Fixed GUI player history queries missing the partial-index condition (PR #146).
 
 ## 26.3-1.2.0
 
