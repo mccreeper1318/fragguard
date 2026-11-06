@@ -151,6 +151,76 @@ class CausalChainTrackerTest {
     }
 
     @Test
+    void directLeverSwitchOffRetainsAttributionForImmediatePistonRetraction() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 1_000);
+        assertEquals(FIRST, t.redstone(at(0,64,0), 1_005, true).playerUuid());
+        // The lever stays on for longer than the four-second idle window.
+        // A new player interaction re-establishes direct, fresh ownership.
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 10_000);
+        assertEquals(FIRST, t.redstone(at(0,64,0), 10_001, false).playerUuid());
+        var retraction = t.piston(at(1,64,0), List.of(at(2,64,0)), -1, 0, 0, 10_002);
+        assertNotNull(retraction, "lever falling edge must not erase the player's retraction");
+        assertEquals(FIRST, retraction.playerUuid());
+        assertNull(t.spawnedTnt(at(2,64,0), UUID.randomUUID(), 10_010),
+                "stone movement on retraction still must not claim unrelated TNT");
+    }
+
+    @Test
+    void shortPowerOffWavePropagatesToRemotePistonButExpiresAfterHandoffWindow() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 20_000);
+        assertNotNull(t.redstone(at(0,64,0), 20_001, false));
+        assertNotNull(t.redstone(at(1,64,0), 20_002, false));
+        assertNotNull(t.redstone(at(2,64,0), 20_003, false));
+        var retract = t.piston(at(3,64,0), List.of(at(4,64,0)),
+                -1, 0, 0, 20_004);
+        assertEquals(FIRST, retract.playerUuid(), "connected falling-edge handoff must survive");
+
+        var other = new CausalChainTracker();
+        other.playerActivated(at(0,64,0), FIRST, "Builder", 30_000);
+        assertNotNull(other.redstone(at(0,64,0), 30_001, false));
+        assertNull(other.redstone(at(1,64,0),
+                        30_000 + CausalChainTracker.FALLING_EDGE_HANDOFF_MILLIS + 1, false),
+                "unrelated later off events must not prolong player ownership");
+        assertNull(other.piston(at(1,64,0), List.of(), -1, 0, 0,
+                30_000 + CausalChainTracker.FALLING_EDGE_HANDOFF_MILLIS + 2));
+    }
+
+    @Test
+    void unobservedFallingEdgeCannotReviveStaleMachineOwnership() {
+        var t = new CausalChainTracker();
+        assertNull(t.redstone(at(0,64,0), 500, false));
+        assertNull(t.piston(at(1,64,0), List.of(), -1, 0, 0, 510));
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 1_000);
+        assertNull(t.redstone(at(0,64,0), 1_000 + CausalChainTracker.IDLE_MILLIS + 1, false));
+        assertNull(t.piston(at(1,64,0), List.of(), -1, 0, 0,
+                1_000 + CausalChainTracker.IDLE_MILLIS + 2));
+    }
+
+    @Test
+    void competingPlayerLinksOnFallingEdgeRemainAmbiguous() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "First", 1_000);
+        t.playerActivated(at(2,64,0), SECOND, "Second", 1_001);
+        assertNull(t.redstone(at(1,64,0), 1_002, false));
+        assertNull(t.piston(at(1,64,0), List.of(), -1, 0, 0, 1_003));
+    }
+
+    @Test
+    void repeatedPlayerClickRefreshesFallingEdgeWithoutResettingCausalChain() {
+        var t = new CausalChainTracker();
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 1_000);
+        var first = t.observedAt(at(0,64,0), 1_001, "CHECK");
+        t.playerActivated(at(0,64,0), FIRST, "Builder", 1_300);
+        assertEquals(FIRST, t.redstone(at(0,64,0), 1_310, false).playerUuid());
+        assertEquals(first.chainId(),
+                t.piston(at(1,64,0), List.of(), -1, 0, 0, 1_311).chainId());
+        assertNull(t.redstone(at(0,64,0),
+                1_300 + CausalChainTracker.FALLING_EDGE_HANDOFF_MILLIS + 1, false));
+    }
+
+    @Test
     void disconnectedOrAmbiguousMechanismNeverGuessesPlayer() {
         var t = new CausalChainTracker();
         assertNull(t.piston(at(10,64,10), List.of(), 1, 0, 0, 100));
