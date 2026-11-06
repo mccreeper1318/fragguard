@@ -1992,13 +1992,14 @@ final class Database {
      */
     private void migratePlayerRollbackCoordinateIndex(Connection databaseConnection) throws SQLException {
         startupStage = "indexing block coordinates for safe player rollback planning";
-        try (Statement statement = databaseConnection.createStatement()) {
-            statement.executeUpdate("""
-                    CREATE INDEX IF NOT EXISTS idx_fg_coordinate_time
-                    ON block_changes(y, world_uuid, x, z, happened_at DESC, id DESC)
-                    WHERE rollback_pending = 0
-                    """);
-        }
+        // Diagnostic only (#147). Keep v7->v8 index DDL within the current
+        // migration transaction, so SQLITE_FULL still rolls back safely.
+        HistoricalIndexMigrationDiagnostics.createIndex(databaseConnection, databaseFile,
+                "Schema v7->v8", "idx_fg_coordinate_time", """
+                        CREATE INDEX IF NOT EXISTS idx_fg_coordinate_time
+                        ON block_changes(y, world_uuid, x, z, happened_at DESC, id DESC)
+                        WHERE rollback_pending = 0
+                        """, plugin.getLogger()::info, plugin.getLogger()::warning);
     }
 
     /** Shared ownership condition for player lookup/rollback in #101/#102. */
