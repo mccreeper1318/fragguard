@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
@@ -105,6 +106,56 @@ class GuiPlayerHistoryStoreTest {
         assertTrue(options.actions().contains(ChangeAction.PISTON_EXTEND));
         assertTrue(options.materials().contains("minecraft:stone"));
         assertTrue(options.materials().contains("minecraft:dirt"));
+    }
+
+    @Test
+    void guiHistoryAndFilterQueriesUseBothPartialActorAndCausalIndexes() throws Exception {
+        initialize();
+        try (Connection connection = open(); Statement stmt = connection.createStatement()) {
+            stmt.execute("CREATE INDEX idx_fg_time ON block_changes(happened_at)");
+            stmt.execute(HistoricalActorIndexPlan.ACTOR_TIME_SQL);
+            stmt.execute("""
+                    CREATE INDEX idx_fg_causal_actor_time
+                    ON block_changes(causal_player_uuid, happened_at DESC, id DESC)
+                    WHERE causal_player_uuid IS NOT NULL
+                    """);
+        }
+        long now = System.currentTimeMillis();
+        insert(now - 1000, BUILDER.toString(), "Builder", null, null, null, "world",
+                ChangeAction.PLACE, "minecraft:air", "minecraft:stone");
+        insert(now - 900, "SYSTEM", "Explosion: TNT", BUILDER.toString(), "Builder", "TNT_CHAIN",
+                "world_nether", ChangeAction.EXPLOSION, "minecraft:stone", "minecraft:air");
+
+        try (Connection connection = open()) {
+            for (String query : List.of(
+                    "SELECT COUNT(*) FROM block_changes WHERE " + GuiPlayerHistoryStore.OWNED,
+                    "SELECT DISTINCT action FROM block_changes WHERE "
+                            + GuiPlayerHistoryStore.OWNED + " ORDER BY action",
+                    "SELECT id FROM block_changes WHERE " + GuiPlayerHistoryStore.OWNED
+                            + " AND world = ? ORDER BY happened_at DESC, id DESC LIMIT 36")) {
+                try (PreparedStatement statement = connection.prepareStatement(
+                        "EXPLAIN QUERY PLAN " + query)) {
+                    statement.setLong(1, now - 30000);
+                    statement.setLong(2, now);
+                    statement.setString(3, BUILDER.toString());
+                    statement.setString(4, BUILDER.toString());
+                    if (query.contains("world = ?")) statement.setString(5, "world");
+                    StringBuilder plan = new StringBuilder();
+                    try (ResultSet rows = statement.executeQuery()) {
+                        while (rows.next()) plan.append(rows.getString("detail")).append('\n');
+                    }
+                    assertTrue(plan.toString().contains("idx_fg_actor_time"),
+                            "GUI history must seek direct player records: " + plan);
+                    assertTrue(plan.toString().contains("idx_fg_causal_actor_time"),
+                            "GUI history must seek causal player records: " + plan);
+                }
+            }
+        }
+
+        var scope = new GuiPlayerHistoryStore.HistoryQuery(
+                BUILDER, "Builder", null, now - 30_000, now, null, null);
+        assertEquals(2, store().historyAsync(scope, 1).join().totalRows());
+        assertTrue(store().filterChoicesAsync(scope).join().actions().contains(ChangeAction.EXPLOSION));
     }
 
     @Test
