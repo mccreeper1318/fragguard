@@ -1319,6 +1319,9 @@ final class Database {
         startupStage = "opening SQLite database";
         try (Connection databaseConnection = DriverManager.getConnection(jdbcUrl)) {
             connection = databaseConnection;
+            startupStage = "verifying active SQLite JDBC runtime";
+            SqliteDriverProvenance.log(databaseConnection, plugin.getLogger()::info,
+                    plugin.getLogger()::warning);
             startupStage = "initializing SQLite schema";
             initializeSchema(databaseConnection, loadedWorlds);
             startupStage = "ready";

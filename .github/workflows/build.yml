@@ -63,6 +63,9 @@ jobs:
       - name: Build and test plugin
         run: ./gradlew --no-daemon --warning-mode all clean test build
 
+      - name: Test shaded artifact guardrails
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
       - name: Verify and stage plugin
         id: plugin
         shell: bash
@@ -112,7 +115,8 @@ jobs:
             exit 1
           fi
 
-          # Ensure both JDBC and SLF4J providers survive service-file transformation.
+          # Ensure the SLF4J provider survives transformation and SQLite
+          # JDBC classes/native libraries are not bundled (Paper provides them).
           python3 scripts/verify_shaded_services.py "$EXPECTED_JAR"
 
           BUILD_DIR="build/check"
