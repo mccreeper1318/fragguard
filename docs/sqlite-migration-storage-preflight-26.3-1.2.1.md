@@ -11,9 +11,10 @@ metadata upgrades, in addition to existing full-backup migrations.
   to 17.03 GiB.
 - The server's reported host-filesystem free space was about **2.45 TiB**,
   but this is **not** evidence of the hosting account's writable quota.
-- Production FG **26.3-1.2.0** currently opens the compacted schema-v4 database.
-  Keep it running and preserve the independently verified backup until the
-  1.2.1 migration has passed the final release tests (#141).
+- After the November 6 Beta 2 attempt, schema v4→v7 migrations succeeded but
+  v7→v8 failed on a 57M-row coordinate index. The owner has **no verified v4
+  backup**, so recovery must preserve the current schema-v7 state and move
+  forward through a tested newer build (#148/#150/#151).
 
 ## What is checked
 
@@ -27,9 +28,11 @@ data volume.
 - v4→v5: **before each missing actor index** from #139. If an index was
   successfully committed during an interrupted earlier attempt, it is not
   charged again. Each completed index is checkpointed to limit WAL growth.
-- v5→v6, v6→v7, v7→v8: estimate two times current occupied bytes (minimum
-  512 MiB) to allow for an index, WAL growth, and SQLite sort/temp work.
-  Also checkpoint completed index-heavy schema steps before continuing.
+- v5→v6 and v6→v7: estimate twice the active database bytes (minimum
+  512 MiB) for index creation, WAL and SQLite sort/temp work.
+- v7→v8: no new all-history coordinate index is created (#148). Verify the
+  existing world/chunk/time index and all persisted chunk coordinates using
+  a read-only scan. Reserve 128 MiB plus the safety margin for metadata only.
 - v8→v9: bounded metadata allowance (minimum 128 MiB).
 - Legacy full-backup migrations: budget for the backup file, table-migration
   working space, later index-heavy work, and the safety margin.
@@ -93,10 +96,12 @@ database/WAL/SHM files. Some completed #139 indexes may safely remain while
 `user_version=4` on restart; subsequent attempts skip those indexes.
 
 **Do not manually delete SQLite `-wal`, `-shm`, or `-journal` files.**
-Do not delete your saved original 85.11 GiB backup as part of a blind retry.
-If a migration fails, retain the old database and send the exact FG schema
-diagnostic lines plus the hosting provider's confirmed account/native-temp
-free-space limits.
+The owner has confirmed **no verified pre-upgrade v4 backup exists**. Never
+suggest using FG 1.2.0 against the existing v7 database or manually changing
+`user_version`. Preserve current database and matching sidecars as a coherent
+snapshot, and perform forward repair only on isolated copies until validated.
+If a migration fails, retain the database and send the exact FG schema
+diagnostic lines plus hosting-provider account/native-temp free-space limits.
 
 ## Test coverage
 
