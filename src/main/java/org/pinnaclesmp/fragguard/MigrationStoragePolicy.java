@@ -41,8 +41,14 @@ final class MigrationStoragePolicy {
      */
     static long estimateIndexMigrationWorkingBytes(long logicalDatabaseBytes, int previousVersion) {
         long bytes = Math.max(0L, logicalDatabaseBytes);
-        if (previousVersion >= 4 && previousVersion <= 7) {
+        if (previousVersion >= 4 && previousVersion <= 6) {
             return Math.max(MIN_INDEX_WORK_BYTES, saturatingMultiply(bytes, 2L));
+        }
+        if (previousVersion == 7) {
+            // v7->v8 reuses idx_fg_spatial_time and checks chunk consistency
+            // without building a multi-gigabyte coordinate index.
+            // Only a small user_version metadata transaction is required.
+            return MIN_METADATA_WORK_BYTES;
         }
         // v3 index removal and v8 metadata/job-scope updates are lighter, but
         // WAL/journal and metadata growth still need headroom.
