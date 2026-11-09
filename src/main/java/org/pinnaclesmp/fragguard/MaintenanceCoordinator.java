@@ -87,8 +87,13 @@ final class MaintenanceCoordinator implements AutoCloseable {
     }
 
     CompletableFuture<MaintenanceSnapshot> beginVerification() {
-        return advance(MaintenancePhase.VERIFYING,
-                "Checking compacted database before any manual replacement");
+        return commit(existing -> {
+            if (existing.snapshotCutoffMillis() <= 0 || existing.candidateFile().isEmpty()) {
+                throw new IllegalStateException("Cannot verify before capturing a consistent SQLite snapshot");
+            }
+            return existing.withPhase(MaintenancePhase.VERIFYING,
+                    "Checking compacted database before any manual replacement");
+        });
     }
 
     CompletableFuture<MaintenanceSnapshot> recordVerifiedManifest(String manifestFile) {
