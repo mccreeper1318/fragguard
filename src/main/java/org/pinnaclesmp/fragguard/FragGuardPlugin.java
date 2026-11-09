@@ -7,6 +7,7 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -15,6 +16,7 @@ import java.util.logging.Level;
 public final class FragGuardPlugin extends JavaPlugin {
     static final int DEFAULT_GUI_LOOKUP_FETCH_SIZE = 1000;
 
+    private MaintenanceCoordinator maintenance;
     private Database database;
     private FragGuardCommand commandExecutor;
     private BlockChangeListener changeListener;
@@ -25,6 +27,20 @@ public final class FragGuardPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        try {
+            maintenance = MaintenanceCoordinator.open(getDataFolder().toPath());
+        } catch (IOException exception) {
+            getLogger().log(Level.SEVERE,
+                    "Could not read safe maintenance metadata; do not edit or delete the file blindly. "
+                    + "FragGuard will not open the database until this is resolved.", exception);
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+        if (maintenance.snapshot().phase() != MaintenancePhase.IDLE) {
+            getLogger().warning("FragGuard maintenance state: " + maintenance.snapshot().phase()
+                    + " — " + maintenance.snapshot().detail()
+                    + ". The database has not been automatically replaced or reset.");
+        }
         int configuredGuiLookupFetchSize = getConfig().getInt(
                 "gui-lookup-fetch-size", DEFAULT_GUI_LOOKUP_FETCH_SIZE);
         guiLookupFetchSize = resolveGuiLookupFetchSize(configuredGuiLookupFetchSize);
@@ -58,6 +74,14 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (maintenance != null) {
+            try {
+                maintenance.close();
+            } catch (IllegalStateException exception) {
+                getLogger().log(Level.SEVERE, "Could not flush maintenance metadata on shutdown", exception);
+            }
+            maintenance = null;
+        }
         if (changeListener != null) {
             changeListener.clearCausalAttribution();
             changeListener = null;
@@ -93,6 +117,14 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     int getRollbackJobRetentionDays() {
         return Math.max(1, getConfig().getInt("rollback-job-retention-days", getRetentionDays()));
+    }
+
+    MaintenanceCoordinator getMaintenanceCoordinator() {
+        return maintenance;
+    }
+
+    boolean maintenanceBlocksNewJobs() {
+        return maintenance != null && maintenance.blocksNewJobs();
     }
 
     FragGuardCommand getFragGuardCommand() {
