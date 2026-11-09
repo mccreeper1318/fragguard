@@ -10,6 +10,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.UnaryOperator;
+import java.util.function.Consumer;
 
 /**
  * Thread-safe, durable maintenance lifecycle. State-changing filesystem I/O
@@ -19,11 +20,14 @@ import java.util.function.UnaryOperator;
 final class MaintenanceCoordinator implements AutoCloseable {
     private final MaintenanceStateStore store;
     private final ExecutorService executor;
+    private final Consumer<String> audit;
     private volatile MaintenanceSnapshot current;
     private volatile boolean closed;
 
-    private MaintenanceCoordinator(MaintenanceStateStore store, MaintenanceSnapshot initial) {
+    private MaintenanceCoordinator(MaintenanceStateStore store, MaintenanceSnapshot initial,
+                                   Consumer<String> audit) {
         this.store = store;
+        this.audit = audit;
         this.current = initial;
         this.executor = Executors.newSingleThreadExecutor(r -> {
             Thread thread = new Thread(r, "FragGuard-Maintenance-State");
@@ -33,6 +37,11 @@ final class MaintenanceCoordinator implements AutoCloseable {
     }
 
     static MaintenanceCoordinator open(Path dataDirectory) throws IOException {
+        return open(dataDirectory, ignored -> { });
+    }
+
+    static MaintenanceCoordinator open(Path dataDirectory, Consumer<String> audit) throws IOException {
+        Objects.requireNonNull(audit, "audit");
         MaintenanceStateStore store = new MaintenanceStateStore(dataDirectory);
         MaintenanceSnapshot loaded = store.load();
         MaintenanceSnapshot recovered = switch (loaded.phase()) {
@@ -46,7 +55,9 @@ final class MaintenanceCoordinator implements AutoCloseable {
         if (recovered != loaded) {
             store.save(recovered);
         }
-        return new MaintenanceCoordinator(store, recovered);
+        safeLog(audit, "Maintenance startup state: " + recovered.phase()
+                + " (operation " + recovered.operationId() + ")");
+        return new MaintenanceCoordinator(store, recovered, audit);
     }
 
     MaintenanceSnapshot snapshot() {
@@ -155,6 +166,8 @@ final class MaintenanceCoordinator implements AutoCloseable {
                         // Never publish in memory until durable write completes.
                         store.save(next);
                         current = next;
+                        safeLog(audit, "Maintenance state " + next.operationId() + ": "
+                                + next.phase() + " — " + next.detail());
                         result.complete(next);
                     } catch (Exception exception) {
                         result.completeExceptionally(exception);
@@ -165,6 +178,14 @@ final class MaintenanceCoordinator implements AutoCloseable {
             }
         }
         return result;
+    }
+
+    private static void safeLog(Consumer<String> logger, String message) {
+        try {
+            logger.accept(message);
+        } catch (RuntimeException ignored) {
+            // A logging failure must never contradict a successfully persisted transition.
+        }
     }
 
     @Override
