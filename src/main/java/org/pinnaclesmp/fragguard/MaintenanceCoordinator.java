@@ -23,6 +23,9 @@ final class MaintenanceCoordinator implements AutoCloseable {
     private final Consumer<String> audit;
     private volatile MaintenanceSnapshot current;
     private volatile boolean closed;
+    // A rename that could not be confirmed durable must never reopen the
+    // rollback/undo gate or permit additional transitions in this process.
+    private volatile boolean durabilityUncertain;
 
     private MaintenanceCoordinator(MaintenanceStateStore store, MaintenanceSnapshot initial,
                                    Consumer<String> audit) {
@@ -41,8 +44,14 @@ final class MaintenanceCoordinator implements AutoCloseable {
     }
 
     static MaintenanceCoordinator open(Path dataDirectory, Consumer<String> audit) throws IOException {
+        return open(new MaintenanceStateStore(dataDirectory), audit);
+    }
+
+    // Package-private for simulating directory-sync failures in regression tests.
+    static MaintenanceCoordinator open(MaintenanceStateStore store, Consumer<String> audit)
+            throws IOException {
         Objects.requireNonNull(audit, "audit");
-        MaintenanceStateStore store = new MaintenanceStateStore(dataDirectory);
+        Objects.requireNonNull(store, "store");
         MaintenanceSnapshot loaded = store.load();
         MaintenanceSnapshot recovered = switch (loaded.phase()) {
             case COUNTDOWN -> loaded.withPhase(MaintenancePhase.CANCELLED,
@@ -65,7 +74,7 @@ final class MaintenanceCoordinator implements AutoCloseable {
     }
 
     boolean blocksNewJobs() {
-        return current.blocksNewJobs();
+        return durabilityUncertain || current.blocksNewJobs();
     }
 
     CompletableFuture<MaintenanceSnapshot> schedule(UUID operator, long now, long deadline,
@@ -155,13 +164,20 @@ final class MaintenanceCoordinator implements AutoCloseable {
         Objects.requireNonNull(update);
         CompletableFuture<MaintenanceSnapshot> result = new CompletableFuture<>();
         synchronized (this) {
-            if (closed) {
-                result.completeExceptionally(new IllegalStateException("Maintenance state worker is stopped"));
+            if (closed || durabilityUncertain) {
+                result.completeExceptionally(new IllegalStateException(
+                        durabilityUncertain
+                                ? "Maintenance state durability is uncertain; administrator recovery is required"
+                                : "Maintenance state worker is stopped"));
                 return result;
             }
             try {
                 executor.execute(() -> {
                     try {
+                        if (durabilityUncertain) {
+                            throw new IllegalStateException(
+                                    "Maintenance state durability is uncertain; no further transitions are allowed");
+                        }
                         MaintenanceSnapshot next = Objects.requireNonNull(update.apply(current));
                         // Never publish in memory until durable write completes.
                         store.save(next);
@@ -169,6 +185,13 @@ final class MaintenanceCoordinator implements AutoCloseable {
                         safeLog(audit, "Maintenance state " + next.operationId() + ": "
                                 + next.phase() + " — " + next.detail());
                         result.complete(next);
+                    } catch (MaintenanceStateStore.UncertainDurabilityException exception) {
+                        // After the rename, disk state may be newer than the
+                        // last acknowledged in-memory state. Fail closed.
+                        durabilityUncertain = true;
+                        safeLog(audit, "SEVERE: Maintenance state rename not confirmed durable. "
+                                + "Blocking new rollback/undo jobs until recovery: " + exception.getMessage());
+                        result.completeExceptionally(exception);
                     } catch (Exception exception) {
                         result.completeExceptionally(exception);
                     }
