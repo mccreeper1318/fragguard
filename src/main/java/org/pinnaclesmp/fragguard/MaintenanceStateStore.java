@@ -30,12 +30,39 @@ final class MaintenanceStateStore {
             "version", "phase", "operationId", "operatorUuid", "requestedAtMillis",
             "countdownEndsAtMillis", "policy", "snapshotCutoffMillis",
             "candidateFile", "manifestFile", "detail", "revision");
+    @FunctionalInterface
+    interface DirectorySync {
+        void sync(Path directory) throws IOException;
+    }
+
+    /** After a successful atomic rename, failed directory sync is ambiguous:
+     * the new file is visible but may not survive a power loss. */
+    static final class UncertainDurabilityException extends IOException {
+        UncertainDurabilityException(String message, IOException cause) {
+            super(message, cause);
+        }
+    }
+
     private final Path directory;
     private final Path stateFile;
+    private final DirectorySync directorySync;
 
     MaintenanceStateStore(Path directory) {
+        this(directory, MaintenanceStateStore::syncDirectory);
+    }
+
+    MaintenanceStateStore(Path directory, DirectorySync directorySync) {
         this.directory = directory.toAbsolutePath().normalize();
         this.stateFile = this.directory.resolve(FILE);
+        this.directorySync = java.util.Objects.requireNonNull(directorySync, "directorySync");
+    }
+
+    private static void syncDirectory(Path directory) throws IOException {
+        // Required for durable renames on POSIX filesystems. On filesystems
+        // where a directory cannot be synced, do not acknowledge a transition.
+        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            channel.force(true);
+        }
     }
 
     MaintenanceSnapshot load() throws IOException {
@@ -96,6 +123,17 @@ final class MaintenanceStateStore {
         p.setProperty("revision", Long.toString(snapshot.revision()));
         p.setProperty("checksum", checksum(p));
 
+        // Check support before touching the current metadata. Some hosting
+        // filesystems (including certain Windows providers) cannot sync a
+        // directory via Java NIO: refuse maintenance rather than promise
+        // durability that the host cannot provide.
+        try {
+            directorySync.sync(directory);
+        } catch (IOException exception) {
+            throw new IOException("Cannot guarantee durable maintenance state on this filesystem; "
+                    + "the existing database and maintenance state are unchanged", exception);
+        }
+
         Path temp = Files.createTempFile(directory, "maintenance-state-", ".tmp");
         boolean moved = false;
         try {
@@ -113,6 +151,16 @@ final class MaintenanceStateStore {
                 throw new IOException("Hosting filesystem does not support atomic maintenance-state updates", exception);
             }
             moved = true;
+            // force(temp) protects file contents; force(directory) is required
+            // to persist the rename itself before publishing the new stage.
+            try {
+                directorySync.sync(directory);
+            } catch (IOException exception) {
+                throw new UncertainDurabilityException(
+                        "Maintenance metadata was renamed but directory sync failed. "
+                                + "The committed state is uncertain; block new jobs and preserve files.",
+                        exception);
+            }
         } finally {
             if (!moved) {
                 Files.deleteIfExists(temp);
