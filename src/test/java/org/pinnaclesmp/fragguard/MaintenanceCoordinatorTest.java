@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -175,6 +176,47 @@ class MaintenanceCoordinatorTest {
                     ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT).join());
             assertEquals(MaintenancePhase.IDLE, maintenance.snapshot().phase());
             assertTrue(Files.isDirectory(directory.resolve("maintenance-state.properties")));
+        }
+    }
+
+    @Test
+    void refusesStateUpdateWhenFilesystemCannotSyncDirectoryBeforeRename() throws Exception {
+        var store = new MaintenanceStateStore(directory, path -> {
+            throw new IOException("simulated unsupported directory fsync");
+        });
+        try (var maintenance = MaintenanceCoordinator.open(store, ignored -> { })) {
+            var failure = assertThrows(CompletionException.class, () ->
+                    maintenance.schedule(ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT).join());
+            assertInstanceOf(IOException.class, failure.getCause());
+            assertEquals(MaintenancePhase.IDLE, maintenance.snapshot().phase());
+            assertFalse(maintenance.blocksNewJobs(), "no state was renamed or acknowledged");
+            assertFalse(Files.exists(directory.resolve("maintenance-state.properties")));
+        }
+    }
+
+    @Test
+    void failedDirectorySyncAfterRenameFailsClosedWithoutAcknowledgingStage() throws Exception {
+        AtomicInteger syncs = new AtomicInteger();
+        var store = new MaintenanceStateStore(directory, path -> {
+            if (syncs.incrementAndGet() == 2) {
+                throw new IOException("simulated crash-risk after atomic move");
+            }
+        });
+        try (var maintenance = MaintenanceCoordinator.open(store, ignored -> { })) {
+            var failure = assertThrows(CompletionException.class, () ->
+                    maintenance.schedule(ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT).join());
+            assertInstanceOf(MaintenanceStateStore.UncertainDurabilityException.class, failure.getCause());
+            assertEquals(2, syncs.get(), "directory must be synced before and after atomic rename");
+            assertEquals(MaintenancePhase.IDLE, maintenance.snapshot().phase(),
+                    "unconfirmed transition must not be published");
+            assertTrue(maintenance.blocksNewJobs(),
+                    "a renamed but unconfirmed state must not permit new rollback work");
+            assertThrows(CompletionException.class, () ->
+                    maintenance.schedule(ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT).join(),
+                    "do not permit further transitions after an uncertain rename");
+            assertEquals(2, syncs.get(), "no more filesystem updates should be attempted");
+            assertEquals(MaintenancePhase.COUNTDOWN, new MaintenanceStateStore(directory).load().phase(),
+                    "after the rename, the on-disk file may be newer than the last acknowledged state");
         }
     }
 
