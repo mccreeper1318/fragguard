@@ -28,7 +28,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
         try {
-            maintenance = MaintenanceCoordinator.open(getDataFolder().toPath());
+            maintenance = MaintenanceCoordinator.open(getDataFolder().toPath(), getLogger()::info);
         } catch (IOException exception) {
             getLogger().log(Level.SEVERE,
                     "Could not read safe maintenance metadata; do not edit or delete the file blindly. "
