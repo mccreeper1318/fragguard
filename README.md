@@ -4,6 +4,24 @@ FragGuard is a Paper plugin that records world-changing block history in SQLite,
 
 History is retained for 30 days by default. The `26.3-1.2.0` inventory GUI condenses related events for easier browsing without deleting, rewriting, or hiding the underlying raw history. Large investigations are database-backed and paged, so the operator can browse far more than 5,000 matching events without loading the complete result set into one GUI session.
 
+## Upcoming 26.3-1.2.2 maintenance foundation
+
+Development of built-in database maintenance begins with #159. FragGuard now
+stores a separate, checksummed `maintenance-state.properties` lifecycle file.
+It records the scheduled operator and countdown, strict or acknowledged
+snapshot policy, candidate identity, snapshot cutoff, validation manifest and
+maintenance stage without changing the active SQLite database. If a server
+stops during compaction or verification, the candidate remains **unverified**;
+FragGuard retains the metadata and requires deliberate administrator recovery.
+New rollback/undo job creation is blocked while maintenance is active. Normal
+block history, existing accepted jobs, the database file and WAL/SHM are not
+modified by the maintenance-state component.
+
+**Not yet implemented:** countdown announcements, player kicks/login
+restrictions, Boss Bars, diagnostics, VACUUM INTO, manual activation verification
+or maintenance commands/GUI. Those are scheduled under #160–#172. Until those
+pieces are implemented there is no in-game action to initiate maintenance.
+
 ## What it tracks
 
 - Player block placement and destruction
@@ -548,7 +566,7 @@ them, and no world blocks or entities change.
 
 Requires Java 25. The Gradle 9.8.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-The current development version is `26.3-1.2.1`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
+The current development version is `26.3-1.2.2`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
 
 ```bash
 ./gradlew build
@@ -557,7 +575,7 @@ The current development version is `26.3-1.2.1`. Development targets Paper API `
 The plugin JAR is produced under:
 
 ```text
-build/libs/FragGuard-26.3-1.2.1.jar
+build/libs/FragGuard-26.3-1.2.2.jar
 ```
 
 Put the JAR in the server's `plugins` folder and restart Paper.
