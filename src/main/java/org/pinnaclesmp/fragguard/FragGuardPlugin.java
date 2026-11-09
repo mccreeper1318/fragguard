@@ -74,14 +74,6 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (maintenance != null) {
-            try {
-                maintenance.close();
-            } catch (IllegalStateException exception) {
-                getLogger().log(Level.SEVERE, "Could not flush maintenance metadata on shutdown", exception);
-            }
-            maintenance = null;
-        }
         if (changeListener != null) {
             changeListener.clearCausalAttribution();
             changeListener = null;
@@ -90,24 +82,47 @@ public final class FragGuardPlugin extends JavaPlugin {
             commandExecutor.clearRollbackPreviews();
             commandExecutor = null;
         }
-        if (database == null) return;
-        DatabaseShutdownSnapshot before = database.shutdown();
-        DatabaseHealth after = database.health();
-        StorageShutdownReport report = StorageShutdownSupport.finish(before, after, database.completedWrites(),
-                database.workerStopped() ? 0 : database.inFlightWrites(), database.workerStopped(), database.walCheckpointCompleted());
-        String summary = "FragGuard storage shutdown: queued=" + report.queuedWritesAtStart()
-                + ", drained=" + report.drainedWrites() + ", remaining=" + report.remainingWrites()
-                + ", remaining operations=" + report.remainingOperations()
-                + ", unconfirmed active operations=" + report.unconfirmedOperations()
-                + ", lost during shutdown=" + report.lostDuringShutdown()
-                + ", unconfirmed in-flight writes=" + report.unconfirmedWrites()
-                + ", total dropped this session=" + report.totalDroppedWrites()
-                + ", worker stopped=" + report.workerStopped()
-                + ", WAL checkpoint=" + (report.walCheckpointCompleted() ? "complete" : "FAILED");
-        if (report.clean()) getLogger().info(summary);
-        else {
-            getLogger().warning(summary);
-            if (!after.lastError().isBlank()) getLogger().warning("FragGuard final storage error: " + after.lastError());
+
+        // Keep maintenance and its blocking state available while Database
+        // drains queued operations. They recheck maintenanceBlocksNewJobs()
+        // even during shutdown. Clearing it before shutdown could turn a
+        // queued, forbidden rollback or undo into an accepted job.
+        try {
+            if (database != null) {
+                DatabaseShutdownSnapshot before = database.shutdown();
+                DatabaseHealth after = database.health();
+                StorageShutdownReport report = StorageShutdownSupport.finish(
+                        before, after, database.completedWrites(),
+                        database.workerStopped() ? 0 : database.inFlightWrites(),
+                        database.workerStopped(), database.walCheckpointCompleted());
+                String summary = "FragGuard storage shutdown: queued=" + report.queuedWritesAtStart()
+                        + ", drained=" + report.drainedWrites()
+                        + ", remaining=" + report.remainingWrites()
+                        + ", remaining operations=" + report.remainingOperations()
+                        + ", unconfirmed active operations=" + report.unconfirmedOperations()
+                        + ", lost during shutdown=" + report.lostDuringShutdown()
+                        + ", unconfirmed in-flight writes=" + report.unconfirmedWrites()
+                        + ", total dropped this session=" + report.totalDroppedWrites()
+                        + ", worker stopped=" + report.workerStopped()
+                        + ", WAL checkpoint=" + (report.walCheckpointCompleted() ? "complete" : "FAILED");
+                if (report.clean()) getLogger().info(summary);
+                else {
+                    getLogger().warning(summary);
+                    if (!after.lastError().isBlank())
+                        getLogger().warning("FragGuard final storage error: " + after.lastError());
+                }
+            }
+        } finally {
+            if (maintenance != null) {
+                try {
+                    maintenance.close();
+                } catch (IllegalStateException exception) {
+                    getLogger().log(Level.SEVERE, "Could not flush maintenance metadata on shutdown", exception);
+                }
+                // Do not null the reference. If the database worker failed to
+                // stop, any lingering queued operation must still see the
+                // active maintenance gate until the JVM actually terminates.
+            }
         }
     }
 
