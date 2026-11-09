@@ -862,9 +862,15 @@ final class Database {
                                                            int centerX, int centerZ, int radius,
                                                            long targetTimestamp, long snapshotTimestamp,
                                                            boolean force, List<RollbackTarget> targets) {
+        try {
+            rejectNewJobsDuringMaintenance();
+        } catch (IllegalStateException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
         String worldUuid = resolveWorldUuid(worldName);
         List<RollbackTarget> savedTargets = List.copyOf(targets);
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            rejectNewJobsDuringMaintenance(); // Recheck after queued writes and earlier work.
             rejectOverlappingChunks(databaseConnection,
                     RollbackJobChunk.radius(worldUuid, centerX, centerZ, radius), -1L);
             long now = System.currentTimeMillis();
@@ -936,6 +942,11 @@ final class Database {
     CompletableFuture<RollbackJob> createPlayerRollbackJobAsync(
             String operatorUuid, String operatorName, PlayerRollbackPlan plan,
             String worldScopeName, boolean force) {
+        try {
+            rejectNewJobsDuringMaintenance();
+        } catch (IllegalStateException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
         List<RollbackTarget> targets = List.copyOf(plan.targets());
         if (targets.isEmpty()) {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
@@ -969,6 +980,7 @@ final class Database {
         }
         int affectedWorlds = (int) reservations.stream().map(RollbackJobChunk::worldUuid).distinct().count();
         return submit(db -> inTransaction(db, () -> {
+            rejectNewJobsDuringMaintenance(); // Reject if maintenance activated while queued.
             rejectOverlappingChunks(db, reservations, -1L);
             // Do not persist an unsafe/stale plan even if another operator
             // changed the world after the original preview was displayed.
@@ -1299,7 +1311,13 @@ final class Database {
     }
 
     CompletableFuture<RollbackJob> beginUndoAsync(long jobId) {
+        try {
+            rejectNewJobsDuringMaintenance();
+        } catch (IllegalStateException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            rejectNewJobsDuringMaintenance(); // Do not begin a new undo after activation.
             RollbackJob job = loadJob(databaseConnection, jobId);
             if (!job.status().equals("COMPLETED") && !job.status().equals("FAILED")) {
                 throw new IllegalStateException("Rollback job #" + jobId + " cannot be undone while it is " + job.status() + ".");
@@ -1313,6 +1331,13 @@ final class Database {
             }
             return loadJob(databaseConnection, jobId);
         }), false);
+    }
+
+    private void rejectNewJobsDuringMaintenance() {
+        if (plugin instanceof FragGuardPlugin fragGuard && fragGuard.maintenanceBlocksNewJobs()) {
+            throw new IllegalStateException("FragGuard maintenance is active. New rollback and undo jobs "
+                    + "are disabled; existing accepted jobs may continue or recover.");
+        }
     }
 
     private void runWorker(CompletableFuture<Void> started, List<WorldIdentity> loadedWorlds) {
