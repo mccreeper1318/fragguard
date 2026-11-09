@@ -6,6 +6,10 @@
 - Added persistent database maintenance states with safe cancellation and restart recovery (#159).
 - Blocked new rollback and undo jobs during active maintenance (#159).
 
+### Fixed
+- Made maintenance state updates durable across host crashes (#173).
+- Kept maintenance rollback protection active during server shutdown (#173).
+
 ## 26.3-1.2.1
 
 ### Changed
