@@ -49,6 +49,8 @@ final class MaintenanceStateStore {
         Properties p = new Properties();
         try (var in = Files.newInputStream(stateFile)) {
             p.load(in);
+        } catch (IllegalArgumentException exception) {
+            throw new IOException("Malformed maintenance metadata; preserve the file for recovery", exception);
         }
         if (!FORMAT.equals(p.getProperty("version"))) {
             throw new IOException("Unsupported maintenance-state version; preserve the file for recovery");
