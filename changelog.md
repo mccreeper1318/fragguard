@@ -1,5 +1,11 @@
 # FG Changelog
 
+## 26.3-1.2.2
+
+### Added
+- Added persistent database maintenance states with safe cancellation and restart recovery (#159).
+- Blocked new rollback and undo jobs during active maintenance (#159).
+
 ## 26.3-1.2.1
 
 ### Changed
