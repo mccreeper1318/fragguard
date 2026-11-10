@@ -35,10 +35,29 @@ and the overview intentionally doesn't scan millions of records. Only server
 operators with `fragguard.admin` can view database details. No external tools
 are required.
 
-**Not yet implemented:** countdown announcements, player kicks/login
-restrictions, Boss Bars, VACUUM INTO, manual activation verification or the
-full maintenance commands/GUI. Those are scheduled under #160–#172. Until then,
-there is no in-game action to initiate maintenance.
+### Maintenance countdown and status display (#160)
+
+When a future maintenance control schedules an operation, FragGuard now has a
+**configurable 10-minute countdown** with a shared yellow Minecraft Boss Bar.
+Its text displays the actual remaining `mm:ss` and the bar shrinks from full
+to empty against the persistent server-side deadline. Players joining partway
+through see the same remaining time. Server-wide chat reminders default to
+10, 5, 3, and 1 minutes, then 30 and 10 seconds. Late ticks cannot repeat
+warnings or dump multiple stale announcements.
+
+Staff with `fragguard.maintenance.bypass` (OP by default) will see persistent
+status Boss Bars once maintenance is ACTIVE: red while active/failed, blue during
+compaction or verification, green when a verified candidate requires restart.
+All text, colors, visibility and warning intervals can be changed in
+`config.yml`. The indicator is restored when authorized staff reconnect,
+and disappears on cancellation or plugin shutdown.
+
+**Safety / integration status:** The countdown presentation is implemented,
+but **player kicking and login denial are still planned in #161**. Until that
+gate is installed, an expired countdown is cancelled rather than activating an
+unsafe, unrestricted maintenance mode. Scheduling controls and the completed
+maintenance GUI are planned in #169; there is **no command to start a countdown
+yet**. Database compaction and verified activation are still future work.
 
 ## What it tracks
 
