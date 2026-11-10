@@ -39,6 +39,10 @@ final class FragGuardGuiRenderer {
         inv.setItem(16, item(Material.REDSTONE_TORCH, "&aStorage Status", "&7Run the existing status command."));
         inv.setItem(20, item(Material.BOOK, "&fCommand Help", "&7Show existing FragGuard commands."));
         inv.setItem(22, item(Material.BARRIER, "&cClose"));
+        inv.setItem(24, item(Material.COMPARATOR, "&bDatabase Diagnostics",
+                "&7View a read-only database overview.",
+                "&7Exact counts and integrity checks",
+                "&7are available from /fg diagnostics."));
         return inv;
     }
 
