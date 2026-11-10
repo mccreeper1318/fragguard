@@ -1,6 +1,8 @@
 package org.pinnaclesmp.fragguard;
 
 import org.bukkit.Bukkit;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.World;
@@ -55,6 +57,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     // cannot resurrect a preview from an older asynchronous search.
     private final Map<UUID, UUID> pendingRollbackQueries = new HashMap<>();
     private final Map<UUID, UUID> lookupRequests = new HashMap<>();
+    private final Map<UUID, CompletableFuture<DatabaseQuickDiagnostics.Report>>
+            diagnosticRequests = new HashMap<>();
     private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
@@ -73,11 +77,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         UUID actor = event.getPlayer().getUniqueId();
         pendingRollbackQueries.remove(actor);
         lookupRequests.remove(actor);
+        CompletableFuture<DatabaseQuickDiagnostics.Report> diagnostics = diagnosticRequests.remove(actor);
+        if (diagnostics != null) diagnostics.cancel(true);
         removePreviewsFor(actor);
     }
 
     void clearRollbackPreviews() {
         lookupRequests.clear();
+        diagnosticRequests.values().forEach(pending -> pending.cancel(true));
+        diagnosticRequests.clear();
         pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
@@ -113,6 +121,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 }
             }
             case "undo" -> handleUndo(player, args);
+            case "diagnostics", "diag" -> handleDiagnostics(player, Arrays.copyOfRange(args, 1, args.length));
             case "status" -> {
                 if (args.length == 2) {
                     sendRollbackJobStatus(player, args[1]);
@@ -1683,6 +1692,59 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }));
     }
 
+    private void handleDiagnostics(Player player, String[] args) {
+        DatabaseQuickDiagnostics.Mode mode;
+        if (args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("overview"))) {
+            mode = DatabaseQuickDiagnostics.Mode.OVERVIEW;
+        } else if (args.length == 1 && args[0].equalsIgnoreCase("counts")) {
+            mode = DatabaseQuickDiagnostics.Mode.COUNTS;
+        } else if (args.length == 1 && args[0].equalsIgnoreCase("check")) {
+            mode = DatabaseQuickDiagnostics.Mode.QUICK_CHECK;
+        } else {
+            player.sendMessage(color("&cUsage: &f/fg diagnostics [overview|counts|check]"));
+            return;
+        }
+
+        DatabaseQuickDiagnostics diagnostics = plugin.getQuickDiagnostics();
+        if (diagnostics == null) {
+            player.sendMessage(color("&cFragGuard diagnostics are not available."));
+            return;
+        }
+        UUID actor = player.getUniqueId();
+        CompletableFuture<DatabaseQuickDiagnostics.Report> prior = diagnosticRequests.remove(actor);
+        if (prior != null) prior.cancel(true);
+        int seconds = Math.max(1, plugin.getConfig().getInt(
+                mode == DatabaseQuickDiagnostics.Mode.QUICK_CHECK
+                        ? "diagnostics-quick-check-timeout-seconds"
+                        : "diagnostics-query-timeout-seconds",
+                mode == DatabaseQuickDiagnostics.Mode.QUICK_CHECK ? 45 : 15));
+        player.sendMessage(color(mode == DatabaseQuickDiagnostics.Mode.OVERVIEW
+                ? "&7Reading database overview (read-only)..."
+                : "&7Running read-only database diagnostics. This may take a while on large history databases..."));
+        CompletableFuture<DatabaseQuickDiagnostics.Report> request = diagnostics.run(
+                mode, database.health(), plugin.getRetentionDays(),
+                plugin.getRollbackJobRetentionDays(), seconds);
+        diagnosticRequests.put(actor, request);
+        request.whenComplete((report, failure) -> onServerThread(() -> {
+            if (diagnosticRequests.get(actor) != request) return;
+            diagnosticRequests.remove(actor);
+            if (!player.isOnline() || !player.isOp() || !player.hasPermission("fragguard.admin")) return;
+            if (failure != null) {
+                Throwable cause = unwrap(failure);
+                player.sendMessage(Component.text("FragGuard diagnostics failed: "
+                        + (cause.getMessage() == null ? cause.getClass().getSimpleName()
+                        : cause.getMessage()), NamedTextColor.RED));
+                return;
+            }
+            player.sendMessage(color("&8&m------&r &bFragGuard Database Diagnostics &8&m------"));
+            // Report contents (including the admin-only absolute path and any
+            // host error) are plain text, not legacy color markup.
+            for (String line : report.lines()) {
+                player.sendMessage(Component.text(line, NamedTextColor.GRAY));
+            }
+        }));
+    }
+
     private void sendDatabaseStatus(Player player) {
         DatabaseHealth health = database.health();
         player.sendMessage(color("&8&m------&r &bFragGuard Storage &8&m------"));
@@ -1779,6 +1841,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg rollback cancel &7- Dismiss your rollback preview."));
         player.sendMessage(color("&f/fg undo <job-id> &7- Reverse blocks actually changed by a saved rollback job."));
         player.sendMessage(color("&f/fg status &7- Show database queue and storage health."));
+        player.sendMessage(color("&f/fg diagnostics &7- Read-only database size, schema and health."));
+        player.sendMessage(color("&f/fg diagnostics counts &7- Scan exact history and rollback job counts."));
+        player.sendMessage(color("&f/fg diagnostics check &7- Run SQLite quick integrity check."));
         player.sendMessage(color("&7Only server operators can use these commands."));
     }
 
@@ -1789,10 +1854,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
 
         if (args.length == 1) {
-            return partial(args[0], List.of("lookup", "rollback", "undo", "status", "help"));
+            return partial(args[0], List.of("lookup", "rollback", "undo", "status", "diagnostics", "help"));
         }
 
         String subCommand = args[0].toLowerCase(Locale.ROOT);
+        if (subCommand.equals("diagnostics") || subCommand.equals("diag")) {
+            return args.length == 2
+                    ? partial(args[1], List.of("overview", "counts", "check"))
+                    : Collections.emptyList();
+        }
         if (subCommand.equals("lookup") || subCommand.equals("inspect") || subCommand.equals("l")) {
             boolean playerScope = PlayerLookupArguments.isPlayerScope(
                     Arrays.copyOfRange(args, 1, args.length));

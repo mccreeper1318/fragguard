@@ -18,6 +18,7 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     private MaintenanceCoordinator maintenance;
     private Database database;
+    private DatabaseQuickDiagnostics quickDiagnostics;
     private FragGuardCommand commandExecutor;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
@@ -57,6 +58,8 @@ public final class FragGuardPlugin extends JavaPlugin {
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
+        quickDiagnostics = new DatabaseQuickDiagnostics(
+                getDataFolder().toPath().resolve("fragguard.db"));
         changeListener = new BlockChangeListener(this, database);
         Bukkit.getPluginManager().registerEvents(changeListener, this);
         Bukkit.getPluginManager().registerEvents(new ShelfChangeListener(this, database), this);
@@ -81,6 +84,13 @@ public final class FragGuardPlugin extends JavaPlugin {
         if (commandExecutor != null) {
             commandExecutor.clearRollbackPreviews();
             commandExecutor = null;
+        }
+
+        // Close any read-only diagnostics before the SQLite writer shuts down
+        // and checkpoints its WAL. This does not alter the live database.
+        if (quickDiagnostics != null) {
+            quickDiagnostics.close();
+            quickDiagnostics = null;
         }
 
         // Keep maintenance and its blocking state available while Database
@@ -136,6 +146,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     MaintenanceCoordinator getMaintenanceCoordinator() {
         return maintenance;
+    }
+
+    DatabaseQuickDiagnostics getQuickDiagnostics() {
+        return quickDiagnostics;
     }
 
     boolean maintenanceBlocksNewJobs() {

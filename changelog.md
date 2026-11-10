@@ -5,12 +5,15 @@
 ### Added
 - Added persistent database maintenance states with safe cancellation and restart recovery (#159).
 - Blocked new rollback and undo jobs during active maintenance (#159).
+- Added read-only database overview, record counts, and quick integrity checks (#162).
 
 ### Changed
 - Updated Java setup action to 6.2.0 (#174).
 - Updated Gradle wrapper to 9.9.0 (#175).
 
 ### Fixed
+- Fixed cancelled database scans blocking future diagnostics (#176).
+- Fixed completed database scans briefly blocking immediate follow-up diagnostics (#176).
 - Made maintenance state updates durable across host crashes (#173).
 - Kept maintenance rollback protection active during server shutdown (#173).
 
