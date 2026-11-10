@@ -221,6 +221,10 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
         };
     }
 
+    void announcePostponed() {
+        if (!stopped) broadcast(settings.postponedMessage());
+    }
+
     private void broadcast(String configured) {
         if (configured == null || configured.isBlank()) return;
         Bukkit.getServer().broadcast(LEGACY_INPUT.deserialize(configured));
