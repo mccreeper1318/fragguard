@@ -143,17 +143,24 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
                 // If it was cancelled before starting, it must not touch
                 // SQLite even if a worker dequeues it after a newer request.
                 if (!request.tryStart()) return;
+                Report report = null;
+                Throwable failure = null;
                 try {
-                    Report report = inspect(mode, health,
+                    report = inspect(mode, health,
                             Math.max(1, retentionDays), Math.max(1, rollbackRetentionDays), request);
-                    response.complete(report);
-                } catch (Exception exception) {
-                    response.completeExceptionally(exception);
+                } catch (Throwable exception) {
+                    failure = exception;
                 } finally {
+                    // inspect() has returned and closed its SQLite connection.
+                    // Release the single-scan slot BEFORE waking join() callers;
+                    // otherwise an immediate follow-up can be spuriously refused.
+                    // A cancelled in-flight scan keeps this slot until it exits.
                     active.compareAndSet(request, null);
                     ScheduledFuture<?> alarm = request.alarm;
                     if (alarm != null) alarm.cancel(false);
                 }
+                if (failure == null) response.complete(report);
+                else response.completeExceptionally(failure);
             });
             request.alarm = watchdog.schedule(() -> {
                 if (!response.isDone()) {
@@ -163,6 +170,9 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
                     request.cancel();
                 }
             }, seconds, TimeUnit.SECONDS);
+            // The worker can finish before the alarm field is assigned.
+            // Cancel that late timer rather than retaining a pointless task.
+            if (response.isDone()) request.alarm.cancel(false);
             response.whenComplete((value, failure) -> {
                 if (response.isCancelled()) request.cancel();
             });
