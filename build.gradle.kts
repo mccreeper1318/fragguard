@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "org.pinnaclesmp"
-version = "26.3-1.2.1"
+version = "26.3-1.2.2"
 
 // Capture the version during configuration; resource copying must not access Task.project.
 val pluginVersion = version.toString()
