@@ -6,6 +6,10 @@
 - Added persistent database maintenance states with safe cancellation and restart recovery (#159).
 - Blocked new rollback and undo jobs during active maintenance (#159).
 
+### Changed
+- Updated Java setup action to 6.2.0 (#174).
+- Updated Gradle wrapper to 9.9.0 (#175).
+
 ### Fixed
 - Made maintenance state updates durable across host crashes (#173).
 - Kept maintenance rollback protection active during server shutdown (#173).
