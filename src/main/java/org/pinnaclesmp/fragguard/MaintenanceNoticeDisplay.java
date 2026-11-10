@@ -156,7 +156,7 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
         }
         ensureStaffBar();
         updateStaffBar(phase);
-        List<Player> allowed = Bukkit.getOnlinePlayers().stream()
+        List<? extends Player> allowed = Bukkit.getOnlinePlayers().stream()
                 .filter(MaintenanceNoticeDisplay::bypass)
                 .toList();
         syncViewers(staffBar, allowed);
