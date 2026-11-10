@@ -1,3 +1,27 @@
+# Player notifications for upcoming FragGuard database maintenance.
+# The countdown is scheduled by the future maintenance controls (#169); these
+# settings do NOT automatically start maintenance or run database compaction.
+maintenance-countdown-seconds: 600
+# Chat warnings in seconds remaining (duplicates and out-of-range values ignored).
+maintenance-warning-seconds: [600, 300, 180, 60, 30, 10]
+# Configurable Minecraft Boss Bars: supported colors include YELLOW, RED, BLUE, GREEN.
+maintenance-countdown-bossbar-enabled: true
+maintenance-staff-bossbar-enabled: true
+maintenance-countdown-bossbar-color: YELLOW
+maintenance-active-bossbar-color: RED
+maintenance-compacting-bossbar-color: BLUE
+maintenance-ready-bossbar-color: GREEN
+maintenance-countdown-bossbar-title: "&eMaintenance Begins in %time%"
+maintenance-active-bossbar-title: "&cSERVER MAINTENANCE ACTIVE"
+maintenance-compacting-bossbar-title: "&bDATABASE COMPACTION IN PROGRESS"
+maintenance-verifying-bossbar-title: "&bVERIFYING COMPACTED DATABASE"
+maintenance-ready-bossbar-title: "&aDATABASE READY - RESTART REQUIRED"
+maintenance-failed-bossbar-title: "&cMAINTENANCE ERROR - STAFF REVIEW REQUIRED"
+# %time% displays actual remaining mm:ss; traditional & color formatting works.
+maintenance-warning-message: "&eServer maintenance begins in &f%time%&e. Please finish up."
+maintenance-start-message: "&cServer maintenance has started."
+maintenance-postponed-message: "&eMaintenance could not start safely and has been cancelled."
+
 # How long block logs are kept before automatic deletion.
 retention-days: 30
 
