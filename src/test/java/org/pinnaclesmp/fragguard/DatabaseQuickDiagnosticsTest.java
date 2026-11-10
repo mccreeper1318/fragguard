@@ -137,6 +137,44 @@ class DatabaseQuickDiagnosticsTest {
     }
 
     @Test
+    void consecutiveCompletedDiagnosticsCanBeStartedImmediatelyAfterJoin() throws Exception {
+        Path db = seededDatabase(false);
+        try (var diagnostics = new DatabaseQuickDiagnostics(db)) {
+            // Regression for the future-completion race: join() can wake a
+            // waiting caller before the worker's finally block runs. A follow-up
+            // diagnostic must never see the previous request as still active.
+            for (int i = 0; i < 500; i++) {
+                var result = diagnostics.run(DatabaseQuickDiagnostics.Mode.OVERVIEW,
+                        HEALTH, 30, 30, 15).join();
+                assertEquals(DatabaseQuickDiagnostics.Mode.OVERVIEW, result.mode(),
+                        "completed overview " + i + " must free the slot before join() returns");
+            }
+            assertEquals(3L, diagnostics.run(DatabaseQuickDiagnostics.Mode.COUNTS,
+                    HEALTH, 30, 30, 15).join().historyRows());
+        }
+    }
+
+    @Test
+    void consecutiveFailedDiagnosticsAlsoReleaseSlotBeforeJoin() throws Exception {
+        Path db = directory.resolve("fragguard.db");
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE unrelated_table(id INTEGER)");
+        }
+        try (var diagnostics = new DatabaseQuickDiagnostics(db)) {
+            for (int i = 0; i < 100; i++) {
+                assertThrows(CompletionException.class, () ->
+                        diagnostics.run(DatabaseQuickDiagnostics.Mode.COUNTS,
+                                HEALTH, 30, 30, 15).join());
+                assertEquals(DatabaseQuickDiagnostics.Mode.OVERVIEW,
+                        diagnostics.run(DatabaseQuickDiagnostics.Mode.OVERVIEW,
+                                HEALTH, 30, 30, 15).join().mode(),
+                        "a completed failed scan must free its slot before join()");
+            }
+        }
+    }
+
+    @Test
     void cancellingQueuedTaskReleasesSlotWithoutRunningCancelledScan() throws Exception {
         Path db = seededDatabase(false);
         try (var diagnostics = new DatabaseQuickDiagnostics(db)) {
