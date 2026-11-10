@@ -12,6 +12,7 @@
 - Updated Gradle wrapper to 9.9.0 (#175).
 
 ### Fixed
+- Fixed cancelled database scans blocking future diagnostics (#176).
 - Made maintenance state updates durable across host crashes (#173).
 - Kept maintenance rollback protection active during server shutdown (#173).
 
