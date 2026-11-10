@@ -11,8 +11,14 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Instant;
+import java.lang.reflect.Field;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -127,6 +133,97 @@ class DatabaseQuickDiagnosticsTest {
                     () -> diagnostics.run(DatabaseQuickDiagnostics.Mode.COUNTS,
                             HEALTH, 30, 30, 5).join());
             assertInstanceOf(java.sql.SQLException.class, failure.getCause());
+        }
+    }
+
+    @Test
+    void cancellingQueuedTaskReleasesSlotWithoutRunningCancelledScan() throws Exception {
+        Path db = seededDatabase(false);
+        try (var diagnostics = new DatabaseQuickDiagnostics(db)) {
+            Field field = DatabaseQuickDiagnostics.class.getDeclaredField("worker");
+            field.setAccessible(true);
+            ExecutorService worker = (ExecutorService) field.get(diagnostics);
+
+            CountDownLatch occupied = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            Future<?> blocker = worker.submit(() -> {
+                occupied.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) {
+                        throw new AssertionError("Timed out holding diagnostics worker");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            try {
+                assertTrue(occupied.await(5, TimeUnit.SECONDS));
+
+                var cancelled = diagnostics.run(DatabaseQuickDiagnostics.Mode.COUNTS,
+                        HEALTH, 30, 30, 10);
+                assertTrue(cancelled.cancel(true), "queued diagnostic must be cancellable");
+                assertTrue(cancelled.isCancelled());
+
+                // Codex #176: the queued FutureTask will not enter its finally
+                // block after cancellation. A new request must be accepted now,
+                // while the single worker is still occupied.
+                CompletableFuture<DatabaseQuickDiagnostics.Report> next = diagnostics.run(
+                        DatabaseQuickDiagnostics.Mode.OVERVIEW,
+                        HEALTH, 30, 30, 10);
+                assertFalse(next.isCompletedExceptionally(),
+                        "cancelling an unstarted request must free the active slot");
+                release.countDown();
+                blocker.get(5, TimeUnit.SECONDS);
+                assertEquals(DatabaseQuickDiagnostics.Mode.OVERVIEW,
+                        next.get(10, TimeUnit.SECONDS).mode());
+                assertTrue(cancelled.isCancelled(), "cancelled scan may not later publish results");
+                assertEquals(3L, diagnostics.run(DatabaseQuickDiagnostics.Mode.COUNTS,
+                        HEALTH, 30, 30, 10).join().historyRows(),
+                        "later requests must work after the queued cancellation");
+            } finally {
+                release.countDown();
+                blocker.cancel(true);
+            }
+        }
+    }
+
+    @Test
+    void cancelledRequestDequeuedAfterReplacementNeverStartsItsSqliteScan() throws Exception {
+        Path db = seededDatabase(false);
+        try (var diagnostics = new DatabaseQuickDiagnostics(db)) {
+            Field field = DatabaseQuickDiagnostics.class.getDeclaredField("worker");
+            field.setAccessible(true);
+            ExecutorService worker = (ExecutorService) field.get(diagnostics);
+
+            CountDownLatch occupied = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            Future<?> blocker = worker.submit(() -> {
+                occupied.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            try {
+                assertTrue(occupied.await(5, TimeUnit.SECONDS));
+                var old = diagnostics.run(DatabaseQuickDiagnostics.Mode.QUICK_CHECK,
+                        HEALTH, 30, 30, 10);
+                assertTrue(old.cancel(true));
+                var next = diagnostics.run(DatabaseQuickDiagnostics.Mode.COUNTS,
+                        HEALTH, 30, 30, 10);
+
+                // Remove the SQLite database only after the replacement request
+                // has already been accepted: the cancelled request must not
+                // hold the active slot or complete successfully when released.
+                release.countDown();
+                blocker.get(5, TimeUnit.SECONDS);
+                assertTrue(old.isCancelled());
+                assertEquals(3L, next.get(10, TimeUnit.SECONDS).historyRows());
+            } finally {
+                release.countDown();
+                blocker.cancel(true);
+            }
         }
     }
 
