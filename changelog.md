@@ -6,6 +6,7 @@
 - Added persistent database maintenance states with safe cancellation and restart recovery (#159).
 - Blocked new rollback and undo jobs during active maintenance (#159).
 - Added read-only database overview, record counts, and quick integrity checks (#162).
+- Added maintenance countdown Boss Bar, chat reminders, and staff status indicators (#160).
 
 ### Changed
 - Updated Java setup action to 6.2.0 (#174).
