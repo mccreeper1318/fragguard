@@ -202,6 +202,10 @@ final class FragGuardGui implements Listener {
                 player.performCommand("fg help");
             }
             case 22 -> player.closeInventory();
+            case 24 -> {
+                player.closeInventory();
+                player.performCommand("fg diagnostics");
+            }
             default -> { }
         }
     }
