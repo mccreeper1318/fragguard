@@ -139,6 +139,10 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
         try {
             int seconds = Math.max(1, timeoutSeconds);
             request.workerTask = worker.submit(() -> {
+                // Cancellation can happen while this task is still queued.
+                // If it was cancelled before starting, it must not touch
+                // SQLite even if a worker dequeues it after a newer request.
+                if (!request.tryStart()) return;
                 try {
                     Report report = inspect(mode, health,
                             Math.max(1, retentionDays), Math.max(1, rollbackRetentionDays), request);
@@ -279,17 +283,44 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
         }
     }
 
-    private static final class Request {
+    private final class Request {
         private final CompletableFuture<Report> response;
         private volatile Statement statement;
         private volatile Future<?> workerTask;
         private volatile ScheduledFuture<?> alarm;
+        // The lock linearizes task start with cancellation. Only an unstarted
+        // task can release active immediately; an in-flight SQLite scan must
+        // keep the slot until the worker's finally block actually exits.
+        private final Object startLock = new Object();
+        private boolean started;
+        private boolean cancelled;
 
         private Request(CompletableFuture<Report> response) {
             this.response = response;
         }
 
+        boolean tryStart() {
+            synchronized (startLock) {
+                if (cancelled) return false;
+                started = true;
+                return true;
+            }
+        }
+
         void cancel() {
+            boolean wasUnstarted;
+            synchronized (startLock) {
+                cancelled = true;
+                wasUnstarted = !started;
+            }
+            if (wasUnstarted) {
+                // A cancelled FutureTask may never invoke its runnable/finally.
+                // The cancelled runnable, if dequeued, cannot start a scan
+                // because tryStart() checks the same lock.
+                active.compareAndSet(this, null);
+            }
+            ScheduledFuture<?> timeout = alarm;
+            if (timeout != null) timeout.cancel(false);
             Statement inFlight = statement;
             if (inFlight != null) {
                 try {
