@@ -17,10 +17,28 @@ New rollback/undo job creation is blocked while maintenance is active. Normal
 block history, existing accepted jobs, the database file and WAL/SHM are not
 modified by the maintenance-state component.
 
+### Quick read-only diagnostics (#162)
+
+Use **/fg diagnostics** or click **Database Diagnostics** on the /fg main menu
+to see the active database location, main/WAL/SHM file sizes, schema version,
+page/free-list storage, estimated reusable pages, filesystem free-space signal,
+retention settings, and existing write-queue health. The report is asynchronous
+and **does not modify the database**. The free-list estimate is **not** a
+prediction of exact VACUUM INTO savings, and the host quota/SQLite temporary
+space remain unknown.
+
+**/fg diagnostics counts** requests exact history and rollback job row counts;
+**/fg diagnostics check** requests SQLite's lightweight `quick_check(1)`
+integrity pass. These optional scans run on a separate read-only connection with
+configurable deadlines (15s/45s defaults); on a huge database they can time out,
+and the overview intentionally doesn't scan millions of records. Only server
+operators with `fragguard.admin` can view database details. No external tools
+are required.
+
 **Not yet implemented:** countdown announcements, player kicks/login
-restrictions, Boss Bars, diagnostics, VACUUM INTO, manual activation verification
-or maintenance commands/GUI. Those are scheduled under #160–#172. Until those
-pieces are implemented there is no in-game action to initiate maintenance.
+restrictions, Boss Bars, VACUUM INTO, manual activation verification or the
+full maintenance commands/GUI. Those are scheduled under #160–#172. Until then,
+there is no in-game action to initiate maintenance.
 
 ## What it tracks
 
@@ -60,13 +78,16 @@ Only server operators with `fragguard.admin` can use FragGuard administration co
 /fg rollback confirm <token>
 /fg undo <job-id>
 /fg status
+/fg diagnostics
+/fg diagnostics counts
+/fg diagnostics check
 ```
 
 `/fg` and `/fragguard` with no arguments open the in-game GUI. Existing subcommands remain available.
 
 ## In-game GUI
 
-The GUI uses ordinary server-side Minecraft inventories and requires no client mod or resource pack. The main menu provides access to history lookup, rollback setup/confirmation, undoable rollback jobs, storage status, and command help.
+The GUI uses ordinary server-side Minecraft inventories and requires no client mod or resource pack. The main menu provides access to history lookup, rollback setup/confirmation, undoable rollback jobs, storage status, database diagnostics, and command help.
 
 ### GUI lookup setup
 
