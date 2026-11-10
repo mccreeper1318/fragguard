@@ -72,8 +72,7 @@ class MaintenanceNoticeDisplayTest {
                 verify(countdown).setTitle(contains("05:00"));
                 verify(server, times(2)).broadcast(any(Component.class));
                 display.tick();
-                verify(server, times(2)).broadcast(any(Component.class),
-                        "a repeated tick must not duplicate five-minute chat");
+                verify(server, times(2)).broadcast(any(Component.class)); // no repeated five-minute warning
 
                 time.set(START + 600_000L);
                 display.tick();
