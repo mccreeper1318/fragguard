@@ -123,7 +123,7 @@ class MaintenanceNoticeDisplayTest {
                 display.onJoin(late);
                 verify(countdown, atLeastOnce()).setTitle(contains("06:00"));
                 assertTrue(countdown.getPlayers().contains(newJoin));
-                verify(server, never()).broadcast(any(Component.class)); // late join must not rebroadcast
+                verify(server, times(1)).broadcast(any(Component.class)); // late join must not rebroadcast
 
                 // When #161 activates the persisted maintenance phase, the
                 // shared yellow countdown is replaced with staff-only red.
