@@ -17,6 +17,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     static final int DEFAULT_GUI_LOOKUP_FETCH_SIZE = 1000;
 
     private MaintenanceCoordinator maintenance;
+    private MaintenanceNoticeDisplay maintenanceNoticeDisplay;
     private Database database;
     private DatabaseQuickDiagnostics quickDiagnostics;
     private FragGuardCommand commandExecutor;
@@ -60,6 +61,11 @@ public final class FragGuardPlugin extends JavaPlugin {
         }
         quickDiagnostics = new DatabaseQuickDiagnostics(
                 getDataFolder().toPath().resolve("fragguard.db"));
+        maintenanceNoticeDisplay = new MaintenanceNoticeDisplay(
+                this, maintenance, MaintenanceNoticeSettings.from(getConfig()),
+                System::currentTimeMillis, this::cancelCountdownWithoutAdmissionControls);
+        Bukkit.getPluginManager().registerEvents(maintenanceNoticeDisplay, this);
+        maintenanceNoticeDisplay.start();
         changeListener = new BlockChangeListener(this, database);
         Bukkit.getPluginManager().registerEvents(changeListener, this);
         Bukkit.getPluginManager().registerEvents(new ShelfChangeListener(this, database), this);
@@ -77,6 +83,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (maintenanceNoticeDisplay != null) {
+            maintenanceNoticeDisplay.close();
+            maintenanceNoticeDisplay = null;
+        }
         if (changeListener != null) {
             changeListener.clearCausalAttribution();
             changeListener = null;
@@ -134,6 +144,27 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // active maintenance gate until the JVM actually terminates.
             }
         }
+    }
+
+    /**
+     * Until #161 adds a real join-denial/kick gate, never switch the persisted
+     * state to ACTIVE and imply that regular players are actually restricted.
+     * The countdown display itself is ready for that future integration.
+     */
+    private void cancelCountdownWithoutAdmissionControls(MaintenanceSnapshot expired) {
+        getLogger().warning("Maintenance countdown ended without player admission protection. "
+                + "Cancelling the countdown instead of activating an unrestricted maintenance mode.");
+        maintenance.cancel("Maintenance not activated: player access controls are not installed")
+                .whenComplete((cancelled, failure) -> {
+                    if (failure != null) {
+                        getLogger().log(Level.SEVERE, "Could not safely cancel maintenance countdown", failure);
+                        return;
+                    }
+                    if (!isEnabled()) return;
+                    Bukkit.getScheduler().runTask(this, () -> {
+                        if (maintenanceNoticeDisplay != null) maintenanceNoticeDisplay.announcePostponed();
+                    });
+                });
     }
 
     int getRetentionDays() {

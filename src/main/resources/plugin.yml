@@ -13,3 +13,6 @@ permissions:
   fragguard.admin:
     description: Allows use of all FragGuard commands.
     default: op
+  fragguard.maintenance.bypass:
+    description: Allows authorized staff to see maintenance status and later bypass maintenance admission restrictions.
+    default: op
