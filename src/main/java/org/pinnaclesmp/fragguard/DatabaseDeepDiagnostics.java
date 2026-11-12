@@ -50,20 +50,37 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
     private static final int MAX_TIMEOUT_SECONDS = 21_600;
     private static final List<String> TABLES = List.of(
             "block_changes", "rollback_jobs", "rollback_job_changes", "rollback_job_chunks");
+    // Complete persisted v9 column inventory, not just the fields used by
+    // the diagnostic itself. A missing column can make a saved rollback or
+    // retained history unreadable even when a SELECT * scan succeeds.
+    // Keep this aligned with Database's CREATE TABLE and v1-v9 migrations.
     private static final Map<String, List<String>> REQUIRED_COLUMNS = Map.of(
-            "block_changes", List.of("id", "happened_at", "actor_uuid", "actor_name",
-                    "world", "world_uuid", "x", "y", "z", "chunk_x", "chunk_z",
-                    "action", "before_data", "after_data", "before_entity_data",
-                    "after_entity_data", "rollback_pending", "causal_player_uuid"),
-            "rollback_jobs", List.of("id", "created_at", "updated_at", "actor_uuid",
-                    "world_uuid", "status", "total_blocks", "processed_blocks",
-                    "applied_blocks", "undo_processed_blocks", "scope_type", "snapshot_timestamp"),
-            "rollback_job_changes", List.of("job_id", "sequence", "world",
-                    "world_uuid", "before_data", "target_data", "expected_data",
-                    "before_entity_data", "target_entity_data", "expected_entity_data",
-                    "applied_data", "applied_entity_data", "processed", "applied",
-                    "conflicted", "undone", "pending_audit_id", "pending_audit_undo"),
-            "rollback_job_chunks", List.of("job_id", "world_uuid", "chunk_x", "chunk_z"));
+            "block_changes", List.of(
+                    "id", "happened_at", "actor_uuid", "actor_name", "world",
+                    "x", "y", "z", "action", "before_data", "after_data",
+                    "world_uuid", "chunk_x", "chunk_z", "coalesce_session",
+                    "server_tick", "before_entity_data", "after_entity_data",
+                    "rollback_pending", "causal_player_uuid", "causal_player_name",
+                    "causal_chain_id", "causal_cause_type"),
+            "rollback_jobs", List.of(
+                    "id", "created_at", "updated_at", "actor_uuid", "actor_name",
+                    "world_uuid", "world", "center_x", "center_z", "radius",
+                    "target_timestamp", "snapshot_timestamp", "force", "status",
+                    "total_blocks", "processed_blocks", "applied_blocks",
+                    "conflict_blocks", "undo_processed_blocks", "last_error",
+                    "scope_type", "target_player_uuid", "target_player_name",
+                    "world_scope_uuid", "world_scope_name", "historical_conflicts",
+                    "affected_worlds", "affected_chunks"),
+            "rollback_job_changes", List.of(
+                    "job_id", "sequence", "world", "x", "y", "z",
+                    "before_data", "target_data", "expected_data", "processed",
+                    "applied", "conflicted", "undone", "before_entity_data",
+                    "target_entity_data", "expected_entity_data", "applied_data",
+                    "applied_entity_data", "pending_audit_id", "pending_audit_undo",
+                    "world_uuid", "physical_actor_uuid", "physical_actor_name",
+                    "causal_player_uuid", "causal_chain_id", "causal_cause_type"),
+            "rollback_job_chunks", List.of(
+                    "job_id", "world_uuid", "chunk_x", "chunk_z"));
     private static final Map<String, String> REQUIRED_INDEXES = Map.ofEntries(
             Map.entry("idx_fg_time", "block_changes"),
             Map.entry("idx_fg_spatial_time", "block_changes"),
@@ -458,8 +475,10 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                                     }
                                 } else if ("rollback_job_changes".equals(table)) {
                                     if (rows.getLong("job_id") <= 0 || rows.getLong("sequence") < 0
-                                            || (rows.getInt("applied") != 0 && rows.getInt("processed") == 0)
-                                            || (rows.getInt("undone") != 0 && rows.getInt("applied") == 0)) {
+                                            || (rows.getInt("applied") != 0 && rows.getInt("processed") == 0)) {
+                                        // A saved undo can legitimately set undone=1 with
+                                        // applied=0: resumed, non-conflicting no-op rollbacks
+                                        // keep before_data and are still eligible for undo.
                                         issue(issues, "Invalid rollback change state or identity");
                                     }
                                 } else if (rows.getLong("job_id") <= 0) {
