@@ -52,12 +52,26 @@ All text, colors, visibility and warning intervals can be changed in
 `config.yml`. The indicator is restored when authorized staff reconnect,
 and disappears on cancellation or plugin shutdown.
 
-**Safety / integration status:** The countdown presentation is implemented,
-but **player kicking and login denial are still planned in #161**. Until that
-gate is installed, an expired countdown is cancelled rather than activating an
-unsafe, unrestricted maintenance mode. Scheduling controls and the completed
-maintenance GUI are planned in #169; there is **no command to start a countdown
-yet**. Database compaction and verified activation are still future work.
+### Maintenance player access (#161)
+
+At countdown expiry, FragGuard closes admission while it durably saves ACTIVE
+state. Regular players are kicked with a configurable message, and new logins
+are rejected at Paper's synchronous login stage. OPs and players explicitly
+granted `fragguard.maintenance.bypass` (default OP) may remain or reconnect;
+`fragguard.admin` is for commands and does **not** independently grant bypass.
+Online permissions are rechecked every second, so staff who lose bypass are
+removed. The same restrictions cover recovered ACTIVE, COMPACTING, VERIFYING,
+READY_TO_SWAP and FAILED states until cancellation or verified completion.
+
+Set `maintenance-kick-message` and `maintenance-login-denied-message` in
+`config.yml` to customize text. If maintenance metadata is unreadable, the
+server stops instead of silently admitting everyone. This is a **player access
+gate**, not a world freeze: environment ticks, redstone, other plugins and
+bypass staff can still change blocks, and logging continues.
+
+**Remaining work:** Scheduling controls and the completed maintenance GUI are
+planned in #169; there is **no command to start a countdown yet**. Database
+compaction and verified activation are also future work.
 
 ## What it tracks
 
