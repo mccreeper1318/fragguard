@@ -100,7 +100,7 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
         }
     }
 
-    @EventHandler(priority = EventPriority.LOWEST)
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onJoin(PlayerJoinEvent event) {
         // Fail closed if activation or a permission change occurs *between*
         // Paper's login authorization and the actual player join.
