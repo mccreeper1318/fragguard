@@ -22,6 +22,11 @@ maintenance-warning-message: "&eServer maintenance begins in &f%time%&e. Please 
 maintenance-start-message: "&cServer maintenance has started."
 maintenance-postponed-message: "&eMaintenance could not start safely and has been cancelled."
 
+# Messages for players removed or denied entry while maintenance is active.
+# Minecraft & color codes are supported. Bypass: fragguard.maintenance.bypass (OP by default).
+maintenance-kick-message: "&cServer maintenance is in progress. Please reconnect later."
+maintenance-login-message: "&cServer maintenance is in progress. Please reconnect later."
+
 # How long block logs are kept before automatic deletion.
 retention-days: 30
 
