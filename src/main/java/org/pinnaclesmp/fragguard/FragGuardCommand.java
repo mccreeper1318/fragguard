@@ -82,7 +82,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         CompletableFuture<DatabaseQuickDiagnostics.Report> diagnostics = diagnosticRequests.remove(actor);
         if (diagnostics != null) diagnostics.cancel(true);
         CompletableFuture<DatabaseDeepDiagnostics.Report> deep = deepDiagnosticRequests.remove(actor);
-        if (deep != null && plugin.getDeepDiagnostics() != null) plugin.getDeepDiagnostics().cancel();
+        // A finished request can still be awaiting its main-thread callback.
+        // Do not cancel another operator's later scan on behalf of a finished one.
+        if (deep != null && !deep.isDone() && plugin.getDeepDiagnostics() != null) {
+            plugin.getDeepDiagnostics().cancel();
+        }
         removePreviewsFor(actor);
     }
 
@@ -1783,10 +1787,26 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             }
             return;
         }
+        UUID actor = player.getUniqueId();
+        // The single global scan is also tracked by its initiating operator.
+        // A duplicate command must never replace the pending completion hook:
+        // doing so drops the final report and loses disconnect cancellation.
+        if (deepDiagnosticRequests.containsKey(actor)) {
+            player.sendMessage(color("&eYour deep diagnostics request is already being "
+                    + "processed. Use &f/fg diagnostics progress&e or "
+                    + "&f/fg diagnostics cancel&e."));
+            return;
+        }
         int seconds = Math.max(1, Math.min(21_600,
                 plugin.getConfig().getInt("diagnostics-deep-timeout-seconds", 3600)));
-        UUID actor = player.getUniqueId();
         CompletableFuture<DatabaseDeepDiagnostics.Report> request = deep.run(seconds);
+        if (request.isCompletedExceptionally()) {
+            // run() immediately rejects concurrent or stopped scans. Never
+            // register a rejected future as the scan owner.
+            player.sendMessage(color("&eA deep diagnostics scan is already running, "
+                    + "or diagnostics are unavailable. Use &f/fg diagnostics progress&e."));
+            return;
+        }
         deepDiagnosticRequests.put(actor, request);
         player.sendMessage(color("&7Starting read-only deep database validation. This can take "
                 + "a long time on large histories; use &f/fg diagnostics progress&7 or "
