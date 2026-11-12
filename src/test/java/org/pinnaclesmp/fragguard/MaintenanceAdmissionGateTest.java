@@ -13,7 +13,6 @@ import org.mockito.MockedStatic;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -39,7 +38,9 @@ class MaintenanceAdmissionGateTest {
         Player adminOnly = player(false, false);
         when(adminOnly.hasPermission("fragguard.admin")).thenReturn(true);
 
-        try (var gate = gate(coordinator)) {
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             var gate = gate(coordinator)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of());
             assertAllowed(gate, ordinary);
             assertTrue(gate.beginActivation(countdown));
             assertFalse(gate.beginActivation(MaintenanceSnapshot.idle()));
@@ -96,7 +97,9 @@ class MaintenanceAdmissionGateTest {
         when(coordinator.blocksNewJobs()).thenAnswer(ignored ->
                 phase.get().blocksNewJobs());
 
-        try (var gate = gate(coordinator)) {
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             var gate = gate(coordinator)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of());
             assertTrue(gate.beginActivation(countdown));
             gate.activationFailed();
             assertTrue(gate.restricted(), "failed disk write must not reopen the login gate");
