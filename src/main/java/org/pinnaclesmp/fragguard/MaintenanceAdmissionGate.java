@@ -65,6 +65,7 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
                 || !actual.operationId().equals(countdown.operationId())
                 || clock.getAsLong() < actual.countdownEndsAtMillis()) return false;
         activationPending = true;
+        enforceOnline(); // Kick regular players now, not after the async metadata write.
         return true;
     }
 
