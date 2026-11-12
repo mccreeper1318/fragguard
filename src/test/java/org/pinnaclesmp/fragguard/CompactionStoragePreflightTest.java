@@ -185,7 +185,14 @@ class CompactionStoragePreflightTest {
     @Test
     void unsafeCandidateDirectorySymlinkNeverReservesOrRewritesOutsideFiles()
             throws Exception {
-        Files.writeString(directory.resolve("fragguard.db"), "source");
+        // Inspection correctly reads SQLite page statistics even when the
+        // candidate directory is unsafe; use an actual SQLite database here.
+        Path source = directory.resolve("fragguard.db");
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + source);
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE history(id INTEGER PRIMARY KEY)");
+        }
+        byte[] original = Files.readAllBytes(source);
         Path outside = Files.createDirectory(directory.resolve("outside"));
         Files.writeString(outside.resolve("keep.bak"), "keep");
         Path candidates = directory.resolve("compaction-candidates");
@@ -204,6 +211,8 @@ class CompactionStoragePreflightTest {
             assertThrows(IOException.class, () -> preflight.reserve(report));
         }
         assertEquals("keep", Files.readString(outside.resolve("keep.bak")));
+        assertArrayEquals(original, Files.readAllBytes(source),
+                "unsafe candidate paths must not modify the active SQLite file");
     }
 
     @Test
