@@ -77,6 +77,23 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
             Map.entry("idx_fg_pending_changes", "rollback_job_changes"),
             Map.entry("idx_fg_undo_changes", "rollback_job_changes"),
             Map.entry("idx_fg_job_chunk_overlap", "rollback_job_chunks"));
+    // Index key sequences matter for historic player lookups and undo jobs.
+    // Every name and field below is fixed by FragGuard, never user-controlled SQL.
+    private static final Map<String, List<String>> INDEX_COLUMNS = Map.ofEntries(
+            Map.entry("idx_fg_time", List.of("happened_at")),
+            Map.entry("idx_fg_spatial_time", List.of("world_uuid", "chunk_x", "chunk_z", "happened_at")),
+            Map.entry("idx_fg_actor_time", List.of("actor_uuid", "happened_at", "id")),
+            Map.entry("idx_fg_actor_world_time", List.of("actor_uuid", "world_uuid", "happened_at", "id")),
+            Map.entry("idx_fg_actor_name_uuid", List.of("actor_name", "actor_uuid")),
+            Map.entry("idx_fg_causal_actor_time", List.of("causal_player_uuid", "happened_at", "id")),
+            Map.entry("idx_fg_causal_actor_world_time",
+                    List.of("causal_player_uuid", "world_uuid", "happened_at", "id")),
+            Map.entry("idx_fg_causal_name_uuid", List.of("causal_player_name", "causal_player_uuid")),
+            Map.entry("idx_fg_active_jobs", List.of("world_uuid", "status")),
+            Map.entry("idx_fg_pending_changes", List.of("job_id", "processed", "sequence")),
+            Map.entry("idx_fg_undo_changes", List.of("job_id", "undone", "sequence")),
+            Map.entry("idx_fg_job_chunk_overlap",
+                    List.of("world_uuid", "chunk_x", "chunk_z", "job_id")));
     private static final Map<String, String> ORDER_BY = Map.of(
             "block_changes", "id",
             "rollback_jobs", "id",
@@ -266,9 +283,41 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                     }
                 }
                 for (Map.Entry<String, String> expected : REQUIRED_INDEXES.entrySet()) {
-                    if (!expected.getValue().equals(objects.get("index:" + expected.getKey()))) {
-                        issue(issues, "Missing or wrongly owned index " + expected.getKey());
+                    String index = expected.getKey();
+                    if (!expected.getValue().equals(objects.get("index:" + index))) {
+                        issue(issues, "Missing or wrongly owned index " + index);
+                        continue;
                     }
+                    List<String> fields = new ArrayList<>();
+                    try (Statement statement = connection.createStatement()) {
+                        request.statement = statement;
+                        try (ResultSet rows = statement.executeQuery(
+                                "PRAGMA index_info('" + index + "')")) {
+                            while (rows.next()) fields.add(rows.getString("name"));
+                        } finally {
+                            request.statement = null;
+                        }
+                    }
+                    if (!INDEX_COLUMNS.get(index).equals(fields)) {
+                        issue(issues, "Index has unexpected key fields: " + index);
+                    }
+                }
+                for (String dependent : List.of("rollback_job_changes", "rollback_job_chunks")) {
+                    int recognized = 0;
+                    try (Statement statement = connection.createStatement()) {
+                        request.statement = statement;
+                        try (ResultSet rows = statement.executeQuery(
+                                "PRAGMA foreign_key_list('" + dependent + "')")) {
+                            while (rows.next()) {
+                                if ("rollback_jobs".equals(rows.getString("table"))
+                                        && "job_id".equals(rows.getString("from"))
+                                        && "id".equals(rows.getString("to"))) recognized++;
+                            }
+                        } finally {
+                            request.statement = null;
+                        }
+                    }
+                    if (recognized == 0) issue(issues, "Missing rollback parent FK in " + dependent);
                 }
 
                 request.check();
@@ -310,6 +359,18 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                 if (foreignFailures > 0) {
                     issue(issues, "Orphan rollback records / foreign-key violations: "
                             + foreignFailures);
+                }
+                // Also detect orphan rows if a tampered table was rebuilt
+                // without declaring its foreign key.
+                for (String child : List.of("rollback_job_changes", "rollback_job_chunks")) {
+                    if (!child.equals(objects.get("table:" + child))
+                            || !"rollback_jobs".equals(objects.get("table:rollback_jobs"))) {
+                        continue;
+                    }
+                    long orphans = scalar(connection, "SELECT COUNT(*) FROM " + child
+                            + " AS c LEFT JOIN rollback_jobs AS j ON j.id = c.job_id "
+                            + "WHERE j.id IS NULL", request);
+                    if (orphans > 0) issue(issues, "Orphan records in " + child + ": " + orphans);
                 }
 
                 for (String table : TABLES) {
@@ -354,16 +415,23 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                                             if (stream == null) {
                                                 tableHash.update((byte) 0);
                                             } else {
-                                                tableHash.update((byte) 1);
+                                                // Hash BLOB contents with a framed per-cell
+                                                // digest, so arbitrary BLOB bytes cannot forge
+                                                // a column or row boundary in the table hash.
+                                                MessageDigest cellHash = digest();
+                                                long cellLength = 0L;
                                                 int length;
                                                 while ((length = stream.read(buffer)) != -1) {
                                                     request.check();
-                                                    tableHash.update(buffer, 0, length);
-                                                    blobBytes = Math.addExact(blobBytes, length);
+                                                    cellHash.update(buffer, 0, length);
+                                                    cellLength = Math.addExact(cellLength, length);
                                                 }
+                                                blobBytes = Math.addExact(blobBytes, cellLength);
+                                                tableHash.update((byte) 2);
+                                                updateLong(tableHash, cellLength);
+                                                tableHash.update(cellHash.digest());
                                             }
                                         }
-                                        tableHash.update((byte) 0x7f);
                                     } else {
                                         updateText(tableHash, rows.getString(col));
                                     }
@@ -375,6 +443,27 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                                             || rows.getLong("chunk_z") != Math.floorDiv(z, 16L)) {
                                         issue(issues, "History chunk coordinates disagree with block coordinates");
                                     }
+                                    if (rows.getLong("id") <= 0
+                                            || rows.getLong("happened_at") <= 0
+                                            || rows.getString("world_uuid").isBlank()) {
+                                        issue(issues, "Invalid block history identity or timestamp");
+                                    }
+                                } else if ("rollback_jobs".equals(table)) {
+                                    if (rows.getLong("id") <= 0 || rows.getLong("total_blocks") < 0
+                                            || rows.getLong("processed_blocks") < 0
+                                            || rows.getLong("applied_blocks") < 0
+                                            || rows.getLong("processed_blocks") > rows.getLong("total_blocks")
+                                            || rows.getLong("applied_blocks") > rows.getLong("total_blocks")) {
+                                        issue(issues, "Invalid rollback job counters or identity");
+                                    }
+                                } else if ("rollback_job_changes".equals(table)) {
+                                    if (rows.getLong("job_id") <= 0 || rows.getLong("sequence") < 0
+                                            || (rows.getInt("applied") != 0 && rows.getInt("processed") == 0)
+                                            || (rows.getInt("undone") != 0 && rows.getInt("applied") == 0)) {
+                                        issue(issues, "Invalid rollback change state or identity");
+                                    }
+                                } else if (rows.getLong("job_id") <= 0) {
+                                    issue(issues, "Invalid rollback chunk owner");
                                 }
                                 records++;
                                 request.rows++;
@@ -404,7 +493,11 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
             // The SQLite connection and read transaction are already closed.
             request.phase = "writing redacted report";
         }
-        Report report = persist(new Report(complete, complete && issues.isEmpty(),
+        // A cancelled worker's interrupt flag must not prevent it from
+        // writing a clearly marked PARTIAL report after closing SQLite.
+        if (request.cancelled) Thread.interrupted();
+        Report report = persist(new Report(complete && !request.cancelled,
+                complete && issues.isEmpty() && !request.cancelled,
                 phase, schemaVersion, started, Instant.now(), request.rows, schemaHash,
                 tableResults, issues, null, null));
         request.phase = report.complete ? "finished" : "partial";
@@ -475,6 +568,12 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
             return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("Required SHA-256 digest is unavailable", exception);
+        }
+    }
+
+    private static void updateLong(MessageDigest hash, long value) {
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            hash.update((byte) (value >>> shift));
         }
     }
 
