@@ -93,7 +93,9 @@ class MaintenanceAdmissionGateTest {
         var phase = new java.util.concurrent.atomic.AtomicReference<>(MaintenancePhase.COUNTDOWN);
         when(coordinator.snapshot()).thenAnswer(ignored ->
                 phase.get() == MaintenancePhase.COUNTDOWN ? countdown :
-                        countdown.withPhase(MaintenancePhase.ACTIVE, "active"));
+                        phase.get() == MaintenancePhase.CANCELLED
+                                ? countdown.withPhase(MaintenancePhase.CANCELLED, "cancelled")
+                                : countdown.withPhase(MaintenancePhase.ACTIVE, "active"));
         when(coordinator.blocksNewJobs()).thenAnswer(ignored ->
                 phase.get().blocksNewJobs());
 
