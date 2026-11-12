@@ -69,18 +69,28 @@ public final class FragGuardPlugin extends JavaPlugin {
         }
         quickDiagnostics = new DatabaseQuickDiagnostics(
                 getDataFolder().toPath().resolve("fragguard.db"));
-        maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
-                getConfig().getString("maintenance-kick-message",
-                        "&cMaintenance is active. Please return later."),
-                getConfig().getString("maintenance-login-denied-message",
-                        "&cThe server is undergoing database maintenance. Please return later."));
-        Bukkit.getPluginManager().registerEvents(maintenanceAdmissionGate, this);
-        maintenanceAdmissionGate.start();
-        maintenanceNoticeDisplay = new MaintenanceNoticeDisplay(
-                this, maintenance, MaintenanceNoticeSettings.from(getConfig()),
-                System::currentTimeMillis, this::activateMaintenanceAtDeadline);
-        Bukkit.getPluginManager().registerEvents(maintenanceNoticeDisplay, this);
-        maintenanceNoticeDisplay.start();
+        try {
+            maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
+                    getConfig().getString("maintenance-kick-message",
+                            "&cMaintenance is active. Please return later."),
+                    getConfig().getString("maintenance-login-denied-message",
+                            "&cThe server is undergoing database maintenance. Please return later."));
+            Bukkit.getPluginManager().registerEvents(maintenanceAdmissionGate, this);
+            maintenanceAdmissionGate.start();
+            maintenanceNoticeDisplay = new MaintenanceNoticeDisplay(
+                    this, maintenance, MaintenanceNoticeSettings.from(getConfig()),
+                    System::currentTimeMillis, this::activateMaintenanceAtDeadline);
+            Bukkit.getPluginManager().registerEvents(maintenanceNoticeDisplay, this);
+            maintenanceNoticeDisplay.start();
+        } catch (RuntimeException exception) {
+            getLogger().log(Level.SEVERE, "FragGuard maintenance admission protection failed to initialize.", exception);
+            if (maintenance.blocksNewJobs()) {
+                getLogger().severe("Maintenance access must not run without an admission gate. Stopping Paper.");
+                Bukkit.shutdown();
+            }
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
         changeListener = new BlockChangeListener(this, database);
         Bukkit.getPluginManager().registerEvents(changeListener, this);
         Bukkit.getPluginManager().registerEvents(new ShelfChangeListener(this, database), this);
