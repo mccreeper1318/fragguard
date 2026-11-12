@@ -45,6 +45,9 @@ database-query-timeout-seconds: 15
 # Exact counts may scan tens of millions of records. A full quick_check may scan every DB page.
 diagnostics-query-timeout-seconds: 15
 diagnostics-quick-check-timeout-seconds: 45
+# Opt-in full-history/BLOB scan: 1-21600 seconds, default one hour.
+# Incomplete/interrupted scans are never trusted as verification.
+diagnostics-deep-timeout-seconds: 3600
 # Slow startup work (including migration backups/schema maintenance) reports progress instead of failing at 30s.
 database-startup-warning-seconds: 30
 # 0 disables the hard startup cutoff so large databases can finish initializing safely.

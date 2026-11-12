@@ -35,6 +35,31 @@ and the overview intentionally doesn't scan millions of records. Only server
 operators with `fragguard.admin` can view database details. No external tools
 are required.
 
+### Deep history validation (#163)
+
+Use **/fg diagnostics deep** to run opt-in, full read-only SQLite validation on
+a separate worker. It performs SQLite's full `integrity_check`, checks
+foreign keys and missing/orphan rollback records, validates required schema,
+index keys and history coordinates, and streams **every column** in retained
+block history, rollback jobs, rollback changes and chunk reservations (including
+container and other block-entity BLOBs) into SHA-256 digests. No stored records
+are sampled or skipped for convenience; memory stays bounded by row buffers.
+
+Use **/fg diagnostics progress** for phase and scanned row count, or
+**/fg diagnostics cancel** to interrupt. The configurable timeout defaults
+to one hour (maximum six hours). Missing schema, cancellation or timeout produces
+a **PARTIAL/UNTRUSTED** result, never a passing verification. Completed scans
+write a summary and redacted manifest inside
+`plugins/FragGuard/diagnostic-reports/`: counts, schema metadata hashes and
+per-table digests, never raw player, inventory or block-state content. Output
+names are generated internally, never supplied by players. Commands require
+OP plus `fragguard.admin`.
+
+This is a current read snapshot, **not a guarantee that a future compacted
+candidate includes later writes**. Candidate verification and post-snapshot
+policies are tracked in #166/#167. Long read transactions can delay WAL
+checkpoint recycling, so use full scans deliberately rather than on a timer.
+
 ### Maintenance countdown and status display (#160)
 
 When a future maintenance control schedules an operation, FragGuard now has a
