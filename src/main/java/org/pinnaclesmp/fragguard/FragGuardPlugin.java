@@ -71,6 +71,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                 getDataFolder().toPath().resolve("fragguard.db"));
         try {
             maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
+                    System::currentTimeMillis,
                     getConfig().getString("maintenance-kick-message",
                             "&cMaintenance is active. Please return later."),
                     getConfig().getString("maintenance-login-denied-message",
