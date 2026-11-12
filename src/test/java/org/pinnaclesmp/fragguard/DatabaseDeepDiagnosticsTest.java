@@ -161,9 +161,11 @@ class DatabaseDeepDiagnosticsTest {
                 blocker.get(5, TimeUnit.SECONDS);
                 assertTrue(next.get(40, TimeUnit.SECONDS).passed(),
                         "new diagnostic should start after queued cancellation");
-                assertEquals(1, Files.list(directory.resolve("diagnostic-reports"))
+                try (var output = Files.list(directory.resolve("diagnostic-reports"))) {
+                assertEquals(1, output
                                 .filter(p -> p.getFileName().toString().endsWith(".manifest")).count(),
                         "cancelled-before-start requests may not open SQLite or emit reports");
+            }
             } finally {
                 release.countDown();
                 blocker.cancel(true);
@@ -190,7 +192,7 @@ class DatabaseDeepDiagnosticsTest {
                       action TEXT NOT NULL, before_data TEXT NOT NULL, after_data TEXT NOT NULL,
                       before_entity_data BLOB, after_entity_data BLOB,
                       rollback_pending INTEGER NOT NULL DEFAULT 0,
-                      causal_player_uuid TEXT)
+                      causal_player_uuid TEXT, causal_player_name TEXT)
                     """);
             s.execute("""
                     CREATE TABLE rollback_jobs (
@@ -226,17 +228,14 @@ class DatabaseDeepDiagnosticsTest {
                     "CREATE INDEX idx_fg_actor_name_uuid ON block_changes(actor_name,actor_uuid)",
                     "CREATE INDEX idx_fg_causal_actor_time ON block_changes(causal_player_uuid,happened_at DESC,id DESC)",
                     "CREATE INDEX idx_fg_causal_actor_world_time ON block_changes(causal_player_uuid,world_uuid,happened_at DESC,id DESC)",
-                    "CREATE INDEX idx_fg_causal_name_uuid ON block_changes(causal_player_uuid,causal_player_uuid)",
+                    "CREATE INDEX idx_fg_causal_name_uuid ON block_changes(causal_player_name,causal_player_uuid)",
                     "CREATE INDEX idx_fg_active_jobs ON rollback_jobs(world_uuid,status)",
                     "CREATE INDEX idx_fg_pending_changes ON rollback_job_changes(job_id,processed,sequence)",
                     "CREATE INDEX idx_fg_undo_changes ON rollback_job_changes(job_id,undone,sequence)",
                     "CREATE INDEX idx_fg_job_chunk_overlap ON rollback_job_chunks(world_uuid,chunk_x,chunk_z,job_id)"
             )) {
-                s.execute(index.replace("idx_fg_causal_name_uuid ON block_changes(causal_player_uuid,causal_player_uuid)",
-                        "idx_fg_causal_name_uuid ON block_changes(causal_player_uuid,causal_player_uuid)"));
+                s.execute(index);
             }
-            // Tests create the real name-index columns; real schema includes
-            // the extra name field, so keep the fixture equivalent.
             s.execute("INSERT INTO rollback_jobs VALUES(1,1000,1000,'actor','uuid','COMPLETED',1,1,1,0,'RADIUS',1000)");
             s.execute("INSERT INTO rollback_job_changes VALUES(1,0,'secret-world','uuid',"
                     + "'minecraft:diamond_block','minecraft:air','minecraft:diamond_block',"
