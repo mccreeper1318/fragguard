@@ -119,6 +119,23 @@ class CompactionStoragePreflightTest {
     }
 
     @Test
+    void completedPreflightsImmediatelyFreeTheWorkerSlot() throws Exception {
+        Path db = directory.resolve("fragguard.db");
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE history(id INTEGER PRIMARY KEY)");
+        }
+        try (CompactionStoragePreflight preflight = new CompactionStoragePreflight(directory)) {
+            var evidence = new CompactionStoragePreflight.Evidence(null, null, 256, false);
+            for (int i = 0; i < 100; i++) {
+                var result = preflight.run(evidence).get(10, TimeUnit.SECONDS);
+                assertEquals(CompactionStoragePreflight.Decision.ACKNOWLEDGEMENT_REQUIRED,
+                        result.decision(), "completed scan " + i + " must release admission first");
+            }
+        }
+    }
+
+    @Test
     void reservationIsAtomicAndNeverOverwritesAnExistingCandidate() throws Exception {
         Files.writeString(directory.resolve("fragguard.db"), "source-do-not-change");
         try (CompactionStoragePreflight preflight = new CompactionStoragePreflight(directory)) {
