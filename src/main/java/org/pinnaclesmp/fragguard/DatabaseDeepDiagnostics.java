@@ -117,7 +117,7 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
             "rollback_job_changes", "job_id, sequence",
             "rollback_job_chunks", "job_id, world_uuid, chunk_x, chunk_z");
 
-    private static final int BLOB_SLICE_BYTES = 8192;
+    private static final int BLOB_SLICE_BYTES = 64 * 1024;
 
     private record TableColumn(String name, boolean blob) { }
 
@@ -434,7 +434,7 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                     long blobBytes = 0L;
                     // Only scalar fields and BLOB byte LENGTHS are projected
                     // in the main cursor. Every BLOB is fetched separately via
-                    // SQLite substr() with a hard 8-KiB result cap.
+                    // SQLite substr() with a hard 64-KiB result cap.
                     StringBuilder scanSql = new StringBuilder("SELECT rowid AS __fg_diag_rowid");
                     for (TableColumn column : columns) {
                         String name = quoteIdentifier(column.name());
