@@ -24,10 +24,8 @@ import java.util.logging.Level;
 /**
  * Bukkit main-thread presentation only: it reads committed maintenance state
  * and does not run SQLite, kick players or select replacement policy.
- *
- * The deadline callback is wired to the player-admission gate in issue #161.
- * Until admission control is implemented, the plugin cancels an expired
- * countdown rather than falsely claiming that players are restricted.
+ * The deadline callback requests admission closure and durable activation
+ * through FragGuardPlugin and MaintenanceAdmissionGate.
  */
 final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
     private static final LegacyComponentSerializer LEGACY_INPUT =
