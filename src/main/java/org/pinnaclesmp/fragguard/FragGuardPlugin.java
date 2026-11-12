@@ -22,6 +22,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private Database database;
     private DatabaseQuickDiagnostics quickDiagnostics;
     private DatabaseDeepDiagnostics deepDiagnostics;
+    private CompactionStoragePreflight compactionPreflight;
     private FragGuardCommand commandExecutor;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
@@ -71,6 +72,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         quickDiagnostics = new DatabaseQuickDiagnostics(
                 getDataFolder().toPath().resolve("fragguard.db"));
         deepDiagnostics = new DatabaseDeepDiagnostics(getDataFolder().toPath());
+        compactionPreflight = new CompactionStoragePreflight(getDataFolder().toPath());
         try {
             maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
                     System::currentTimeMillis,
@@ -134,6 +136,10 @@ public final class FragGuardPlugin extends JavaPlugin {
             commandExecutor = null;
         }
 
+        if (compactionPreflight != null) {
+            compactionPreflight.close();
+            compactionPreflight = null;
+        }
         // Stop full-history read transactions before closing the live SQLite
         // writer, so long readers cannot retain WAL frames at shutdown.
         if (deepDiagnostics != null) {
@@ -239,6 +245,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     DatabaseDeepDiagnostics getDeepDiagnostics() {
         return deepDiagnostics;
+    }
+
+    CompactionStoragePreflight getCompactionPreflight() {
+        return compactionPreflight;
     }
 
     boolean maintenanceBlocksNewJobs() {
