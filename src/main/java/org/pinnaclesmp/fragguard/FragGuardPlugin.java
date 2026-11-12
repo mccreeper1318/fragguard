@@ -200,7 +200,8 @@ public final class FragGuardPlugin extends JavaPlugin {
                         maintenanceAdmissionGate.activationFailed();
                         return;
                     }
-                    // Announce maintenance and update staff bars before kicking.
+                    // Announce committed activation and update staff bars;
+                    // ordinary players were already removed at the deadline.
                     if (maintenanceNoticeDisplay != null) maintenanceNoticeDisplay.tick();
                     maintenanceAdmissionGate.activationCompleted();
                 });
