@@ -2050,13 +2050,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
 
         String subCommand = args[0].toLowerCase(Locale.ROOT);
         if (subCommand.equals("diagnostics") || subCommand.equals("diag")) {
-            return args.length == 2
-                    ? partial(args[1], List.of("overview", "counts", "check", "deep", "progress", "cancel", "preflight"))
-                    : Collections.emptyList();
-        }
-        if ((subCommand.equals("diagnostics") || subCommand.equals("diag"))
-                && args.length == 3 && args[1].equalsIgnoreCase("preflight")) {
-            return partial(args[2], List.of("acknowledge"));
+            if (args.length == 2) {
+                return partial(args[1], List.of("overview", "counts", "check", "deep",
+                        "progress", "cancel", "preflight"));
+            }
+            if (args.length == 3 && args[1].equalsIgnoreCase("preflight")) {
+                return partial(args[2], List.of("acknowledge"));
+            }
+            return Collections.emptyList();
         }
         if (subCommand.equals("lookup") || subCommand.equals("inspect") || subCommand.equals("l")) {
             boolean playerScope = PlayerLookupArguments.isPlayerScope(
