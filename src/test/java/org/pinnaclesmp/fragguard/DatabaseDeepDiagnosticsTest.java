@@ -80,6 +80,55 @@ class DatabaseDeepDiagnosticsTest {
     }
 
     @Test
+    void veryLargeBlobIsHashedUsingBoundedSqlSlices() throws Exception {
+        Path db = seededDatabase(1);
+        // SQLite itself creates the payload. Never allocate a matching Java
+        // byte[]: older JDBC getBinaryStream() materialized it before reading.
+        long bytes = 64L * 1024 * 1024 + 17;
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
+             PreparedStatement statement = connection.prepareStatement(
+                     "UPDATE block_changes SET before_entity_data = zeroblob(?) WHERE id = 1")) {
+            statement.setLong(1, bytes);
+            assertEquals(1, statement.executeUpdate());
+        }
+        try (DatabaseDeepDiagnostics deep = new DatabaseDeepDiagnostics(directory)) {
+            DatabaseDeepDiagnostics.Report report = deep.run(120).get(130, TimeUnit.SECONDS);
+            assertTrue(report.passed(), report.issues().toString());
+            assertEquals(bytes, report.tables().get("block_changes").blobBytes());
+            assertEquals(1L, report.tables().get("block_changes").rows());
+            assertEquals(64, report.tables().get("block_changes").sha256().length());
+            assertTrue(Files.readString(report.manifestFile())
+                    .contains("block_changes.blob_bytes=" + bytes));
+        }
+    }
+
+    @Test
+    void emptyBlobAndNullRemainDifferentEvenWhenBothHaveZeroBytes() throws Exception {
+        Path db = seededDatabase(1);
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("UPDATE block_changes SET before_entity_data = NULL WHERE id = 1");
+        }
+        String nullHash;
+        try (DatabaseDeepDiagnostics deep = new DatabaseDeepDiagnostics(directory)) {
+            var result = deep.run(20).get(30, TimeUnit.SECONDS);
+            assertTrue(result.passed(), result.issues().toString());
+            nullHash = result.tables().get("block_changes").sha256();
+            assertEquals(0, result.tables().get("block_changes").blobBytes());
+        }
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("UPDATE block_changes SET before_entity_data = X'' WHERE id = 1");
+        }
+        try (DatabaseDeepDiagnostics deep = new DatabaseDeepDiagnostics(directory)) {
+            var result = deep.run(20).get(30, TimeUnit.SECONDS);
+            assertTrue(result.passed(), result.issues().toString());
+            assertNotEquals(nullHash, result.tables().get("block_changes").sha256());
+            assertEquals(0, result.tables().get("block_changes").blobBytes());
+        }
+    }
+
+    @Test
     void catchesMissingIndexAndOrphanedRollbackRecordsWithoutRepair() throws Exception {
         Path db = seededDatabase(3);
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
