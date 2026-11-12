@@ -61,6 +61,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             diagnosticRequests = new HashMap<>();
     private final Map<UUID, CompletableFuture<DatabaseDeepDiagnostics.Report>>
             deepDiagnosticRequests = new HashMap<>();
+    private final Map<UUID, CompletableFuture<CompactionStoragePreflight.Report>>
+            capacityRequests = new HashMap<>();
+    private final Map<UUID, CompactionStoragePreflight.Report> capacityLastReports = new HashMap<>();
     private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
@@ -87,6 +90,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         if (deep != null && !deep.isDone() && plugin.getDeepDiagnostics() != null) {
             plugin.getDeepDiagnostics().cancel();
         }
+        CompletableFuture<CompactionStoragePreflight.Report> capacity = capacityRequests.remove(actor);
+        if (capacity != null) capacity.cancel(true);
+        capacityLastReports.remove(actor);
         removePreviewsFor(actor);
     }
 
@@ -96,6 +102,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         diagnosticRequests.clear();
         if (plugin.getDeepDiagnostics() != null) plugin.getDeepDiagnostics().cancel();
         deepDiagnosticRequests.clear();
+        capacityRequests.values().forEach(pending -> pending.cancel(true));
+        capacityRequests.clear();
+        capacityLastReports.clear();
         pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
@@ -1703,6 +1712,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     }
 
     private void handleDiagnostics(Player player, String[] args) {
+        if (args.length >= 1 && args[0].equalsIgnoreCase("preflight")) {
+            if (args.length == 1) {
+                handleCapacityPreflight(player, false);
+            } else if (args.length == 2 && args[1].equalsIgnoreCase("acknowledge")) {
+                handleCapacityPreflight(player, true);
+            } else {
+                player.sendMessage(color("&cUsage: &f/fg diagnostics preflight [acknowledge]"));
+            }
+            return;
+        }
         if (args.length == 1 && (args[0].equalsIgnoreCase("deep")
                 || args[0].equalsIgnoreCase("progress") || args[0].equalsIgnoreCase("cancel"))) {
             handleDeepDiagnostics(player, args[0].toLowerCase(Locale.ROOT));
@@ -1716,7 +1735,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         } else if (args.length == 1 && args[0].equalsIgnoreCase("check")) {
             mode = DatabaseQuickDiagnostics.Mode.QUICK_CHECK;
         } else {
-            player.sendMessage(color("&cUsage: &f/fg diagnostics [overview|counts|check|deep|progress|cancel]"));
+            player.sendMessage(color("&cUsage: &f/fg diagnostics [overview|counts|check|deep|progress|cancel|preflight]"));
             return;
         }
 
@@ -1756,6 +1775,85 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             // host error) are plain text, not legacy color markup.
             for (String line : report.lines()) {
                 player.sendMessage(Component.text(line, NamedTextColor.GRAY));
+            }
+        }));
+    }
+
+    private void handleCapacityPreflight(Player player, boolean acknowledgeUnknown) {
+        CompactionStoragePreflight preflight = plugin.getCompactionPreflight();
+        if (preflight == null) {
+            player.sendMessage(color("&cFragGuard compaction preflight is unavailable."));
+            return;
+        }
+        UUID operator = player.getUniqueId();
+        if (capacityRequests.containsKey(operator)) {
+            player.sendMessage(color("&eYour storage preflight is already running."));
+            return;
+        }
+        if (acknowledgeUnknown) {
+            CompactionStoragePreflight.Report last = capacityLastReports.get(operator);
+            if (last == null
+                    || last.decision() != CompactionStoragePreflight.Decision.ACKNOWLEDGEMENT_REQUIRED
+                    || java.time.Duration.between(last.snapshot().measuredAt(), Instant.now()).toSeconds() > 120) {
+                player.sendMessage(color("&cRun &f/fg diagnostics preflight&c first, review its "
+                        + "unknown capacity warnings, then explicitly acknowledge within 2 minutes."));
+                return;
+            }
+        } else {
+            // Each new inspection invalidates older acknowledgement context.
+            capacityLastReports.remove(operator);
+        }
+        long accountMiB = plugin.getConfig().getLong("maintenance-compaction-account-free-mib", -1L);
+        long nativeTempMiB = plugin.getConfig().getLong("maintenance-compaction-sqlite-temp-free-mib", -1L);
+        long safetyMiB = plugin.getConfig().getLong("maintenance-compaction-safety-mib", 256L);
+        if (accountMiB < -1L || nativeTempMiB < -1L || safetyMiB < 0L) {
+            player.sendMessage(color("&cInvalid compaction storage config: use -1 for unknown "
+                    + "capacity, 0 for known zero, and nonnegative MiB for confirmed free space."));
+            return;
+        }
+        CompactionStoragePreflight.Evidence evidence =
+                new CompactionStoragePreflight.Evidence(
+                        accountMiB == -1L ? null : MigrationStoragePolicy.mibToBytes(accountMiB),
+                        nativeTempMiB == -1L ? null : MigrationStoragePolicy.mibToBytes(nativeTempMiB),
+                        safetyMiB, acknowledgeUnknown);
+        player.sendMessage(color("&7Checking compaction disk/quota/temp headroom on a read-only "
+                + "SQLite connection..."));
+        CompletableFuture<CompactionStoragePreflight.Report> request = preflight.run(evidence);
+        if (request.isCompletedExceptionally()) {
+            player.sendMessage(color("&cAnother storage preflight is already running, "
+                    + "or the preflight worker has stopped."));
+            return;
+        }
+        capacityRequests.put(operator, request);
+        request.whenComplete((report, failure) -> onServerThread(() -> {
+            if (capacityRequests.get(operator) != request) return;
+            capacityRequests.remove(operator);
+            if (!player.isOnline() || !player.isOp()
+                    || !player.hasPermission("fragguard.admin")) return;
+            if (failure != null) {
+                plugin.getLogger().log(Level.WARNING, "FragGuard compaction preflight failed", unwrap(failure));
+                player.sendMessage(color("&cStorage preflight failed. No files were changed; "
+                        + "check console for details."));
+                return;
+            }
+            if (!acknowledgeUnknown
+                    && report.decision() == CompactionStoragePreflight.Decision.ACKNOWLEDGEMENT_REQUIRED) {
+                capacityLastReports.put(operator, report);
+            } else {
+                capacityLastReports.remove(operator);
+            }
+            player.sendMessage(color("&8&m------&r &bFragGuard Compaction Storage Preflight &8&m------"));
+            for (String line : report.lines()) player.sendMessage(Component.text(line, NamedTextColor.GRAY));
+            if (report.decision() == CompactionStoragePreflight.Decision.ACKNOWLEDGEMENT_REQUIRED) {
+                player.sendMessage(color("&eKnown capacity checks passed, but quota/temp evidence "
+                        + "is unknown. To explicitly accept those unknowns, use "
+                        + "&f/fg diagnostics preflight acknowledge&e within 2 minutes."));
+            } else if (report.mayReserve()) {
+                player.sendMessage(color("&aStorage estimate accepted. This does not start "
+                        + "compaction or guarantee SQLite won't run out of space."));
+            } else {
+                player.sendMessage(color("&cCompaction capacity preflight refused. "
+                        + "Fix the reported shortages/unsafe candidates before proceeding."));
             }
         }));
     }
@@ -1935,6 +2033,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg diagnostics deep &7- Full read-only integrity/history/hash validation."));
         player.sendMessage(color("&f/fg diagnostics progress &7- Deep scan progress and latest report."));
         player.sendMessage(color("&f/fg diagnostics cancel &7- Cancel deep scan (partial report)."));
+        player.sendMessage(color("&f/fg diagnostics preflight &7- Estimate compaction disk/quota/temp needs."));
+        player.sendMessage(color("&f/fg diagnostics preflight acknowledge &7- Accept unknown headroom, not shortages."));
         player.sendMessage(color("&7Only server operators can use these commands."));
     }
 
@@ -1951,8 +2051,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         String subCommand = args[0].toLowerCase(Locale.ROOT);
         if (subCommand.equals("diagnostics") || subCommand.equals("diag")) {
             return args.length == 2
-                    ? partial(args[1], List.of("overview", "counts", "check", "deep", "progress", "cancel"))
+                    ? partial(args[1], List.of("overview", "counts", "check", "deep", "progress", "cancel", "preflight"))
                     : Collections.emptyList();
+        }
+        if ((subCommand.equals("diagnostics") || subCommand.equals("diag"))
+                && args.length == 3 && args[1].equalsIgnoreCase("preflight")) {
+            return partial(args[2], List.of("acknowledge"));
         }
         if (subCommand.equals("lookup") || subCommand.equals("inspect") || subCommand.equals("l")) {
             boolean playerScope = PlayerLookupArguments.isPlayerScope(
