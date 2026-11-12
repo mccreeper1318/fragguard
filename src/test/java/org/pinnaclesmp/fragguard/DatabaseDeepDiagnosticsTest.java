@@ -125,6 +125,51 @@ class DatabaseDeepDiagnosticsTest {
     }
 
     @Test
+    void requiredRollbackColumnsCannotBeOmittedFromPassingManifest() throws Exception {
+        Path db = seededDatabase(3);
+        // A database with the current v9 user_version can still be missing
+        // fields consumed unconditionally by saved rollback/job reads.
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("ALTER TABLE rollback_job_changes RENAME COLUMN x TO missing_x");
+            statement.execute("ALTER TABLE rollback_jobs RENAME COLUMN last_error TO missing_last_error");
+            statement.execute("ALTER TABLE block_changes RENAME COLUMN server_tick TO missing_tick");
+        }
+        try (DatabaseDeepDiagnostics deep = new DatabaseDeepDiagnostics(directory)) {
+            DatabaseDeepDiagnostics.Report result = deep.run(30).get(40, TimeUnit.SECONDS);
+            assertFalse(result.complete(), "unreadable rollback data cannot be certified complete");
+            assertFalse(result.passed());
+            assertTrue(result.issues().contains("Missing rollback_job_changes.x"));
+            assertTrue(result.issues().contains("Missing rollback_jobs.last_error"));
+            assertTrue(result.issues().contains("Missing block_changes.server_tick"));
+            assertFalse(result.tables().containsKey("rollback_job_changes"));
+            assertTrue(Files.readString(result.manifestFile()).contains("complete=false"));
+            assertTrue(Files.readString(result.manifestFile()).contains("passed=false"));
+        }
+    }
+
+    @Test
+    void noOpRollbackMayBeUndoneEvenWhenNoAppliedMutationWasRecorded() throws Exception {
+        Path db = seededDatabase(2);
+        // applyPreparedBatch can legitimately record a non-conflicting
+        // no-op with applied=0 and before_data present. Undo then sets
+        // undone=1 regardless of applied. The row must remain valid.
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + db);
+             Statement statement = connection.createStatement()) {
+            statement.execute("UPDATE rollback_job_changes "
+                    + "SET applied=0, undone=1, processed=1, conflicted=0 "
+                    + "WHERE job_id=1 AND sequence=0");
+        }
+        try (DatabaseDeepDiagnostics deep = new DatabaseDeepDiagnostics(directory)) {
+            DatabaseDeepDiagnostics.Report report = deep.run(30).get(40, TimeUnit.SECONDS);
+            assertTrue(report.complete(), report.issues().toString());
+            assertTrue(report.passed(), report.issues().toString());
+            assertEquals(1, report.tables().get("rollback_job_changes").rows());
+            assertFalse(report.issues().contains("Invalid rollback change state or identity"));
+        }
+    }
+
+    @Test
     void manyRowsRemainStreamedAndProgressCountsAreAccurate() throws Exception {
         seededDatabase(6000);
         try (DatabaseDeepDiagnostics deep = new DatabaseDeepDiagnostics(directory)) {
@@ -192,7 +237,9 @@ class DatabaseDeepDiagnosticsTest {
                       action TEXT NOT NULL, before_data TEXT NOT NULL, after_data TEXT NOT NULL,
                       before_entity_data BLOB, after_entity_data BLOB,
                       rollback_pending INTEGER NOT NULL DEFAULT 0,
-                      causal_player_uuid TEXT, causal_player_name TEXT)
+                      causal_player_uuid TEXT, causal_player_name TEXT,
+                      coalesce_session TEXT, server_tick INTEGER,
+                      causal_chain_id TEXT, causal_cause_type TEXT)
                     """);
             s.execute("""
                     CREATE TABLE rollback_jobs (
@@ -200,7 +247,16 @@ class DatabaseDeepDiagnosticsTest {
                       actor_uuid TEXT NOT NULL, world_uuid TEXT NOT NULL, status TEXT NOT NULL,
                       total_blocks INTEGER NOT NULL, processed_blocks INTEGER NOT NULL,
                       applied_blocks INTEGER NOT NULL, undo_processed_blocks INTEGER NOT NULL,
-                      scope_type TEXT NOT NULL, snapshot_timestamp INTEGER NOT NULL)
+                      scope_type TEXT NOT NULL, snapshot_timestamp INTEGER NOT NULL,
+                      actor_name TEXT NOT NULL DEFAULT 'actor', world TEXT NOT NULL DEFAULT 'world',
+                      center_x INTEGER NOT NULL DEFAULT 0, center_z INTEGER NOT NULL DEFAULT 0,
+                      radius INTEGER NOT NULL DEFAULT 1, target_timestamp INTEGER NOT NULL DEFAULT 1000,
+                      force INTEGER NOT NULL DEFAULT 0, conflict_blocks INTEGER NOT NULL DEFAULT 0,
+                      last_error TEXT, target_player_uuid TEXT, target_player_name TEXT,
+                      world_scope_uuid TEXT, world_scope_name TEXT,
+                      historical_conflicts INTEGER NOT NULL DEFAULT 0,
+                      affected_worlds INTEGER NOT NULL DEFAULT 1,
+                      affected_chunks INTEGER NOT NULL DEFAULT 0)
                     """);
             s.execute("""
                     CREATE TABLE rollback_job_changes (
@@ -210,6 +266,10 @@ class DatabaseDeepDiagnosticsTest {
                       expected_entity_data BLOB, applied_data TEXT, applied_entity_data BLOB,
                       processed INTEGER, applied INTEGER, conflicted INTEGER, undone INTEGER,
                       pending_audit_id INTEGER, pending_audit_undo INTEGER,
+                      x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 64,
+                      z INTEGER NOT NULL DEFAULT 0,
+                      physical_actor_uuid TEXT, physical_actor_name TEXT,
+                      causal_player_uuid TEXT, causal_chain_id TEXT, causal_cause_type TEXT,
                       PRIMARY KEY(job_id,sequence),
                       FOREIGN KEY(job_id) REFERENCES rollback_jobs(id) ON DELETE CASCADE)
                     """);
@@ -236,10 +296,21 @@ class DatabaseDeepDiagnosticsTest {
             )) {
                 s.execute(index);
             }
-            s.execute("INSERT INTO rollback_jobs VALUES(1,1000,1000,'actor','uuid','COMPLETED',1,1,1,0,'RADIUS',1000)");
-            s.execute("INSERT INTO rollback_job_changes VALUES(1,0,'secret-world','uuid',"
-                    + "'minecraft:diamond_block','minecraft:air','minecraft:diamond_block',"
-                    + "X'010203',X'040506',X'070809','minecraft:air',X'0A0B0C',1,1,0,0,NULL,0)");
+            s.execute("""
+                    INSERT INTO rollback_jobs
+                    (id,created_at,updated_at,actor_uuid,world_uuid,status,total_blocks,
+                    processed_blocks,applied_blocks,undo_processed_blocks,scope_type,snapshot_timestamp)
+                    VALUES(1,1000,1000,'actor','uuid','COMPLETED',1,1,1,0,'RADIUS',1000)
+                    """);
+            s.execute("""
+                    INSERT INTO rollback_job_changes
+                    (job_id,sequence,world,world_uuid,before_data,target_data,expected_data,
+                    before_entity_data,target_entity_data,expected_entity_data,applied_data,
+                    applied_entity_data,processed,applied,conflicted,undone,pending_audit_id,pending_audit_undo)
+                    VALUES(1,0,'secret-world','uuid','minecraft:diamond_block','minecraft:air',
+                    'minecraft:diamond_block',X'010203',X'040506',X'070809','minecraft:air',
+                    X'0A0B0C',1,1,0,0,NULL,0)
+                    """);
             s.execute("INSERT INTO rollback_job_chunks VALUES(1,'uuid',0,0)");
         }
         try (Connection c = DriverManager.getConnection("jdbc:sqlite:" + db)) {
