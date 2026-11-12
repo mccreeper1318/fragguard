@@ -69,6 +69,21 @@ database-migration-sqlite-temp-free-mib: 0
 # Auto-pruning only applies to backups this version has explicitly created and marked as verified;
 # older/unmarked backups are never deleted automatically. At least one verified full migration backup is retained.
 database-migration-backup-retention-count: 1
+
+# Compaction capacity preflight (#164), separate from schema migration above.
+# Estimated free headroom includes a new candidate, WAL growth, SQLite working
+# space, verification allowance, and margin; the original and backups remain intact.
+# -1 = UNKNOWN (default), 0 = confirmed zero free, positive = operator-confirmed
+# CURRENT FREE MiB from your host/account or SQLite's actual native temp mount.
+# These are NOT total plan quotas or Java FileStore / java.io.tmpdir estimates.
+# Stale values can change before/during VACUUM INTO; SQLITE_FULL remains possible.
+maintenance-compaction-account-free-mib: -1
+maintenance-compaction-sqlite-temp-free-mib: -1
+maintenance-compaction-safety-mib: 256
+# Unknown values require an explicit per-request admin acknowledgement in-game.
+# Acknowledgement can NEVER bypass known insufficient capacity, unsafe paths,
+# existing candidates, or a stale preflight. No automatic candidate cleanup.
+
 database-shutdown-timeout-seconds: 15
 # Extra grace period after an active SQLite statement is cancelled during shutdown.
 database-shutdown-cancel-timeout-seconds: 5
