@@ -21,6 +21,10 @@ maintenance-failed-bossbar-title: "&cMAINTENANCE ERROR - STAFF REVIEW REQUIRED"
 maintenance-warning-message: "&eServer maintenance begins in &f%time%&e. Please finish up."
 maintenance-start-message: "&cServer maintenance has started."
 maintenance-postponed-message: "&eMaintenance could not start safely and has been cancelled."
+# Message when a regular player is kicked at maintenance activation, with & color formatting.
+maintenance-kick-message: "&cMaintenance has started. Please return when the server reopens."
+# Message when a regular player tries to reconnect during active maintenance.
+maintenance-login-denied-message: "&cThe server is undergoing database maintenance. Please return later."
 
 # How long block logs are kept before automatic deletion.
 retention-days: 30

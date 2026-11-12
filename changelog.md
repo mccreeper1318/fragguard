@@ -7,6 +7,7 @@
 - Blocked new rollback and undo jobs during active maintenance (#159).
 - Added read-only database overview, record counts, and quick integrity checks (#162).
 - Added maintenance countdown Boss Bar, chat reminders, and staff status indicators (#160).
+- Restricted logins and kicked non-bypass players during maintenance, with configurable messages and OP/staff bypass (#161).
 
 ### Changed
 - Updated Java setup action to 6.2.0 (#174).

@@ -18,6 +18,7 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     private MaintenanceCoordinator maintenance;
     private MaintenanceNoticeDisplay maintenanceNoticeDisplay;
+    private MaintenanceAdmissionGate maintenanceAdmissionGate;
     private Database database;
     private DatabaseQuickDiagnostics quickDiagnostics;
     private FragGuardCommand commandExecutor;
@@ -35,6 +36,9 @@ public final class FragGuardPlugin extends JavaPlugin {
             getLogger().log(Level.SEVERE,
                     "Could not read safe maintenance metadata; do not edit or delete the file blindly. "
                     + "FragGuard will not open the database until this is resolved.", exception);
+            // Unknown maintenance metadata can represent a locked server.
+            // Fail closed rather than silently allowing ordinary players.
+            Bukkit.shutdown();
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
@@ -56,16 +60,38 @@ public final class FragGuardPlugin extends JavaPlugin {
             database.init();
         } catch (SQLException | ClassNotFoundException exception) {
             getLogger().log(Level.SEVERE, "FragGuard could not start because SQLite failed to initialize.", exception);
+            if (maintenance.blocksNewJobs()) {
+                getLogger().severe("Cannot protect active maintenance with FragGuard disabled. Stopping Paper.");
+                Bukkit.shutdown();
+            }
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
         quickDiagnostics = new DatabaseQuickDiagnostics(
                 getDataFolder().toPath().resolve("fragguard.db"));
-        maintenanceNoticeDisplay = new MaintenanceNoticeDisplay(
-                this, maintenance, MaintenanceNoticeSettings.from(getConfig()),
-                System::currentTimeMillis, this::cancelCountdownWithoutAdmissionControls);
-        Bukkit.getPluginManager().registerEvents(maintenanceNoticeDisplay, this);
-        maintenanceNoticeDisplay.start();
+        try {
+            maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
+                    System::currentTimeMillis,
+                    getConfig().getString("maintenance-kick-message",
+                            "&cMaintenance is active. Please return later."),
+                    getConfig().getString("maintenance-login-denied-message",
+                            "&cThe server is undergoing database maintenance. Please return later."));
+            Bukkit.getPluginManager().registerEvents(maintenanceAdmissionGate, this);
+            maintenanceAdmissionGate.start();
+            maintenanceNoticeDisplay = new MaintenanceNoticeDisplay(
+                    this, maintenance, MaintenanceNoticeSettings.from(getConfig()),
+                    System::currentTimeMillis, this::activateMaintenanceAtDeadline);
+            Bukkit.getPluginManager().registerEvents(maintenanceNoticeDisplay, this);
+            maintenanceNoticeDisplay.start();
+        } catch (RuntimeException exception) {
+            getLogger().log(Level.SEVERE, "FragGuard maintenance admission protection failed to initialize.", exception);
+            if (maintenance.blocksNewJobs()) {
+                getLogger().severe("Maintenance access must not run without an admission gate. Stopping Paper.");
+                Bukkit.shutdown();
+            }
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
         changeListener = new BlockChangeListener(this, database);
         Bukkit.getPluginManager().registerEvents(changeListener, this);
         Bukkit.getPluginManager().registerEvents(new ShelfChangeListener(this, database), this);
@@ -83,6 +109,16 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (maintenanceAdmissionGate != null) {
+            boolean wasRestricted = maintenanceAdmissionGate.restricted();
+            maintenanceAdmissionGate.close();
+            maintenanceAdmissionGate = null;
+            if (wasRestricted) {
+                getLogger().severe("FragGuard disabled while maintenance access is restricted. "
+                        + "Stopping Paper rather than exposing an unguarded server.");
+                Bukkit.shutdown();
+            }
+        }
         if (maintenanceNoticeDisplay != null) {
             maintenanceNoticeDisplay.close();
             maintenanceNoticeDisplay = null;
@@ -147,24 +183,34 @@ public final class FragGuardPlugin extends JavaPlugin {
     }
 
     /**
-     * Until #161 adds a real join-denial/kick gate, never switch the persisted
-     * state to ACTIVE and imply that regular players are actually restricted.
-     * The countdown display itself is ready for that future integration.
+     * Close logins on the main thread before requesting the persisted
+     * COUNTDOWN -> ACTIVE transition on the maintenance state worker.
      */
-    private void cancelCountdownWithoutAdmissionControls(MaintenanceSnapshot expired) {
-        getLogger().warning("Maintenance countdown ended without player admission protection. "
-                + "Cancelling the countdown instead of activating an unrestricted maintenance mode.");
-        maintenance.cancel("Maintenance not activated: player access controls are not installed")
-                .whenComplete((cancelled, failure) -> {
-                    if (failure != null) {
-                        getLogger().log(Level.SEVERE, "Could not safely cancel maintenance countdown", failure);
+    private void activateMaintenanceAtDeadline(MaintenanceSnapshot expired) {
+        MaintenanceAdmissionGate gate = maintenanceAdmissionGate;
+        if (gate == null || !gate.beginActivation(expired)) return;
+        maintenance.activate().whenComplete((active, failure) -> {
+            if (!isEnabled()) return;
+            try {
+                Bukkit.getScheduler().runTask(this, () -> {
+                    if (maintenanceAdmissionGate == null) return;
+                    if (failure != null || active == null || active.phase() != MaintenancePhase.ACTIVE) {
+                        getLogger().log(Level.SEVERE, "Could not persist maintenance activation; "
+                                + "admissions remain closed until an operator resolves the failure", failure);
+                        maintenanceAdmissionGate.activationFailed();
                         return;
                     }
-                    if (!isEnabled()) return;
-                    Bukkit.getScheduler().runTask(this, () -> {
-                        if (maintenanceNoticeDisplay != null) maintenanceNoticeDisplay.announcePostponed();
-                    });
+                    // Announce committed activation and update staff bars;
+                    // ordinary players were already removed at the deadline.
+                    if (maintenanceNoticeDisplay != null) maintenanceNoticeDisplay.tick();
+                    maintenanceAdmissionGate.activationCompleted();
                 });
+            } catch (RuntimeException schedulingFailure) {
+                getLogger().log(Level.SEVERE, "Could not complete maintenance activation on the "
+                        + "main thread; stopping Paper to prevent unguarded access", schedulingFailure);
+                Bukkit.shutdown();
+            }
+        });
     }
 
     int getRetentionDays() {
