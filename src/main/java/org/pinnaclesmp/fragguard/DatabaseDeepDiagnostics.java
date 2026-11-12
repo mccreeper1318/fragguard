@@ -1,7 +1,6 @@
 package org.pinnaclesmp.fragguard;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -10,17 +9,18 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -116,6 +116,10 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
             "rollback_jobs", "id",
             "rollback_job_changes", "job_id, sequence",
             "rollback_job_chunks", "job_id, world_uuid, chunk_x, chunk_z");
+
+    private static final int BLOB_SLICE_BYTES = 8192;
+
+    private record TableColumn(String name, boolean blob) { }
 
     record TableDigest(long rows, long blobBytes, String sha256) { }
     record Progress(boolean running, String phase, long recordsScanned, Instant startedAt,
@@ -395,15 +399,30 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                     if (!table.equals(objects.get("table:" + table))) {
                         continue; // Explicit failed/partial manifest, not an invented row count.
                     }
+                    // Inspect the actual columns once. Never SELECT the complete
+                    // contents of a BLOB into the JDBC ResultSet: Xerial's
+                    // getBinaryStream() calls getBytes() and allocates the
+                    // entire value on the Java heap.
+                    List<TableColumn> columns = new ArrayList<>();
+                    try (Statement columnStatement = connection.createStatement()) {
+                        request.statement = columnStatement;
+                        try (ResultSet definitions = columnStatement.executeQuery(
+                                "PRAGMA table_info('" + table + "')")) {
+                            while (definitions.next()) {
+                                request.check();
+                                String name = definitions.getString("name");
+                                String type = definitions.getString("type");
+                                columns.add(new TableColumn(name, type != null
+                                        && type.toUpperCase(Locale.ROOT).contains("BLOB")));
+                            }
+                        } finally {
+                            request.statement = null;
+                        }
+                    }
                     boolean hasColumns = true;
                     for (String required : REQUIRED_COLUMNS.get(table)) {
-                        // Missing columns were recorded in schema phase; skip
-                        // unsafe scans instead of silently hashing a truncated schema.
-                        try (Statement statement = connection.createStatement();
-                             ResultSet cols = statement.executeQuery("PRAGMA table_info('" + table + "')")) {
-                            boolean found = false;
-                            while (cols.next()) if (required.equals(cols.getString("name"))) found = true;
-                            if (!found) hasColumns = false;
+                        if (columns.stream().noneMatch(column -> column.name().equals(required))) {
+                            hasColumns = false;
                         }
                     }
                     if (!hasColumns) continue;
@@ -413,46 +432,62 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                     MessageDigest tableHash = digest();
                     long records = 0L;
                     long blobBytes = 0L;
-                    try (Statement statement = connection.createStatement()) {
-                        request.statement = statement;
-                        try (ResultSet rows = statement.executeQuery(
-                                "SELECT * FROM " + table + " ORDER BY " + ORDER_BY.get(table))) {
-                            ResultSetMetaData metadata = rows.getMetaData();
-                            int columns = metadata.getColumnCount();
-                            for (int col = 1; col <= columns; col++) {
-                                updateText(tableHash, metadata.getColumnName(col));
-                            }
-                            byte[] buffer = new byte[8192];
-                            while (rows.next()) {
-                                request.check();
-                                tableHash.update((byte) 0x7e); // row boundary
-                                for (int col = 1; col <= columns; col++) {
-                                    if (metadata.getColumnType(col) == Types.BLOB) {
-                                        try (InputStream stream = rows.getBinaryStream(col)) {
-                                            if (stream == null) {
+                    // Only scalar fields and BLOB byte LENGTHS are projected
+                    // in the main cursor. Every BLOB is fetched separately via
+                    // SQLite substr() with a hard 8-KiB result cap.
+                    StringBuilder scanSql = new StringBuilder("SELECT rowid AS __fg_diag_rowid");
+                    for (TableColumn column : columns) {
+                        String name = quoteIdentifier(column.name());
+                        scanSql.append(", ");
+                        if (column.blob()) {
+                            scanSql.append("length(").append(name).append(") AS ").append(name);
+                        } else {
+                            scanSql.append(name);
+                        }
+                    }
+                    scanSql.append(" FROM ").append(table)
+                            .append(" ORDER BY ").append(ORDER_BY.get(table));
+                    List<PreparedStatement> blobReaders = new ArrayList<>();
+                    try {
+                        for (TableColumn column : columns) {
+                            blobReaders.add(column.blob()
+                                    ? connection.prepareStatement("SELECT substr("
+                                            + quoteIdentifier(column.name()) + ", ?, ?) FROM "
+                                            + table + " WHERE rowid = ?")
+                                    : null);
+                        }
+                        try (Statement statement = connection.createStatement()) {
+                            request.statement = statement;
+                            try (ResultSet rows = statement.executeQuery(scanSql.toString())) {
+                                for (TableColumn column : columns) {
+                                    updateText(tableHash, column.name());
+                                }
+                                while (rows.next()) {
+                                    request.check();
+                                    long rowId = rows.getLong(1);
+                                    tableHash.update((byte) 0x7e); // row boundary
+                                    for (int col = 0; col < columns.size(); col++) {
+                                        TableColumn column = columns.get(col);
+                                        if (column.blob()) {
+                                            long byteLength = rows.getLong(col + 2);
+                                            if (rows.wasNull()) {
                                                 tableHash.update((byte) 0);
                                             } else {
-                                                // Hash BLOB contents with a framed per-cell
-                                                // digest, so arbitrary BLOB bytes cannot forge
-                                                // a column or row boundary in the table hash.
-                                                MessageDigest cellHash = digest();
-                                                long cellLength = 0L;
-                                                int length;
-                                                while ((length = stream.read(buffer)) != -1) {
-                                                    request.check();
-                                                    cellHash.update(buffer, 0, length);
-                                                    cellLength = Math.addExact(cellLength, length);
+                                                if (byteLength < 0) {
+                                                    throw new SQLException("Invalid BLOB length");
                                                 }
-                                                blobBytes = Math.addExact(blobBytes, cellLength);
+                                                MessageDigest cellHash = digest();
+                                                hashBlobSlices(blobReaders.get(col), statement,
+                                                        rowId, byteLength, cellHash, request);
+                                                blobBytes = Math.addExact(blobBytes, byteLength);
                                                 tableHash.update((byte) 2);
-                                                updateLong(tableHash, cellLength);
+                                                updateLong(tableHash, byteLength);
                                                 tableHash.update(cellHash.digest());
                                             }
+                                        } else {
+                                            updateText(tableHash, rows.getString(col + 2));
                                         }
-                                    } else {
-                                        updateText(tableHash, rows.getString(col));
                                     }
-                                }
                                 if ("block_changes".equals(table)) {
                                     long x = rows.getLong("x");
                                     long z = rows.getLong("z");
@@ -484,14 +519,19 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                                 } else if (rows.getLong("job_id") <= 0) {
                                     issue(issues, "Invalid rollback chunk owner");
                                 }
-                                records++;
-                                request.rows++;
-                                if ((records & 2047L) == 0) {
-                                    request.phase = phase + " (" + records + " rows)";
+                                    records++;
+                                    request.rows++;
+                                    if ((records & 2047L) == 0) {
+                                        request.phase = phase + " (" + records + " rows)";
+                                    }
                                 }
+                            } finally {
+                                request.statement = null;
                             }
-                        } finally {
-                            request.statement = null;
+                        }
+                    } finally {
+                        for (PreparedStatement blobReader : blobReaders) {
+                            if (blobReader != null) blobReader.close();
                         }
                     }
                     tableResults.put(table, new TableDigest(records, blobBytes,
@@ -568,6 +608,44 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
         Files.writeString(manifestFile, manifest, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
         return report;
+    }
+
+    /** Quote schema-derived column identifiers; never interpolate player data. */
+    private static String quoteIdentifier(String name) {
+        return "\"" + name.replace("\"", "\"\"") + "\"";
+    }
+
+    /**
+     * JDBC getBinaryStream() in the pinned sqlite-jdbc driver materializes the
+     * whole BLOB using getBytes(). Fetch SQL substr() slices instead. Every
+     * JDBC byte array is at most BLOB_SLICE_BYTES, including for damaged or
+     * unusually large snapshots; zero-length BLOBs remain distinct from NULL.
+     */
+    private static void hashBlobSlices(PreparedStatement slices, Statement scanStatement,
+                                       long rowId, long byteLength, MessageDigest hash,
+                                       Work request) throws SQLException {
+        long consumed = 0;
+        while (consumed < byteLength) {
+            request.check();
+            int chunkSize = (int) Math.min((long) BLOB_SLICE_BYTES, byteLength - consumed);
+            slices.setLong(1, consumed + 1); // SQLite substr() indexes from 1
+            slices.setInt(2, chunkSize);
+            slices.setLong(3, rowId);
+            request.statement = slices;
+            try (ResultSet result = slices.executeQuery()) {
+                if (!result.next()) {
+                    throw new SQLException("A history BLOB disappeared during validation");
+                }
+                byte[] chunk = result.getBytes(1);
+                if (chunk == null || chunk.length != chunkSize) {
+                    throw new SQLException("A history BLOB could not be read completely");
+                }
+                hash.update(chunk);
+                consumed += chunk.length;
+            } finally {
+                request.statement = scanStatement;
+            }
+        }
     }
 
     private static long scalar(Connection connection, String sql, Work request) throws SQLException {
