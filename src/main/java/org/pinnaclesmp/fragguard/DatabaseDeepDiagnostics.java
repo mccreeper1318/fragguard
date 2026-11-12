@@ -1,0 +1,575 @@
+package org.pinnaclesmp.fragguard;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Types;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Opt-in full-history verification. Scans a single read-only SQLite snapshot on
+ * its own worker, never the main thread or the live writer. This reports
+ * evidence only: it NEVER fixes an index, migrates a schema or changes a row.
+ *
+ * The manifest contains fingerprints/counts, not recorded player, inventory,
+ * world, or block-state values. Future candidate verification (#166) can use
+ * the per-table digests from one consistent snapshot.
+ */
+final class DatabaseDeepDiagnostics implements AutoCloseable {
+    private static final int MAX_ISSUES = 64;
+    private static final int MAX_TIMEOUT_SECONDS = 21_600;
+    private static final List<String> TABLES = List.of(
+            "block_changes", "rollback_jobs", "rollback_job_changes", "rollback_job_chunks");
+    private static final Map<String, List<String>> REQUIRED_COLUMNS = Map.of(
+            "block_changes", List.of("id", "happened_at", "actor_uuid", "actor_name",
+                    "world", "world_uuid", "x", "y", "z", "chunk_x", "chunk_z",
+                    "action", "before_data", "after_data", "before_entity_data",
+                    "after_entity_data", "rollback_pending", "causal_player_uuid"),
+            "rollback_jobs", List.of("id", "created_at", "updated_at", "actor_uuid",
+                    "world_uuid", "status", "total_blocks", "processed_blocks",
+                    "applied_blocks", "undo_processed_blocks", "scope_type", "snapshot_timestamp"),
+            "rollback_job_changes", List.of("job_id", "sequence", "world",
+                    "world_uuid", "before_data", "target_data", "expected_data",
+                    "before_entity_data", "target_entity_data", "expected_entity_data",
+                    "applied_data", "applied_entity_data", "processed", "applied",
+                    "conflicted", "undone", "pending_audit_id", "pending_audit_undo"),
+            "rollback_job_chunks", List.of("job_id", "world_uuid", "chunk_x", "chunk_z"));
+    private static final Map<String, String> REQUIRED_INDEXES = Map.ofEntries(
+            Map.entry("idx_fg_time", "block_changes"),
+            Map.entry("idx_fg_spatial_time", "block_changes"),
+            Map.entry("idx_fg_actor_time", "block_changes"),
+            Map.entry("idx_fg_actor_world_time", "block_changes"),
+            Map.entry("idx_fg_actor_name_uuid", "block_changes"),
+            Map.entry("idx_fg_causal_actor_time", "block_changes"),
+            Map.entry("idx_fg_causal_actor_world_time", "block_changes"),
+            Map.entry("idx_fg_causal_name_uuid", "block_changes"),
+            Map.entry("idx_fg_active_jobs", "rollback_jobs"),
+            Map.entry("idx_fg_pending_changes", "rollback_job_changes"),
+            Map.entry("idx_fg_undo_changes", "rollback_job_changes"),
+            Map.entry("idx_fg_job_chunk_overlap", "rollback_job_chunks"));
+    private static final Map<String, String> ORDER_BY = Map.of(
+            "block_changes", "id",
+            "rollback_jobs", "id",
+            "rollback_job_changes", "job_id, sequence",
+            "rollback_job_chunks", "job_id, world_uuid, chunk_x, chunk_z");
+
+    record TableDigest(long rows, long blobBytes, String sha256) { }
+    record Progress(boolean running, String phase, long recordsScanned, Instant startedAt,
+                    String latestResult) { }
+    record Report(boolean complete, boolean passed, String phase, int schemaVersion,
+                  Instant startedAt, Instant completedAt, long scannedRows,
+                  String schemaSha256, Map<String, TableDigest> tables, List<String> issues,
+                  Path reportFile, Path manifestFile) {
+        Report {
+            tables = Map.copyOf(tables);
+            issues = List.copyOf(issues);
+        }
+        List<String> lines() {
+            List<String> out = new ArrayList<>();
+            out.add("Deep scan: " + (complete ? (passed ? "PASS" : "FAILED CHECKS") : "PARTIAL / UNTRUSTED"));
+            out.add("Started: " + startedAt + " | Finished: " + completedAt);
+            out.add("Phase: " + phase + " | Schema: v" + schemaVersion + " (expected v"
+                    + Database.SCHEMA_VERSION + ")");
+            out.add("Rows examined: " + scannedRows + " | Completed tables: " + tables.size()
+                    + "/" + TABLES.size());
+            for (String table : TABLES) {
+                TableDigest item = tables.get(table);
+                out.add(table + ": " + (item == null ? "incomplete/not scanned"
+                        : item.rows() + " rows, SHA-256 " + item.sha256()));
+            }
+            for (String issue : issues) out.add("Finding: " + issue);
+            out.add("Report: " + reportFile);
+            out.add("Manifest: " + manifestFile);
+            out.add("Only counts, phase names, status and hashes are saved; no raw player/inventory data.");
+            return List.copyOf(out);
+        }
+    }
+
+    private final Path databaseFile;
+    private final Path directory;
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(daemon("FragGuard-Deep-Diagnostics"));
+    private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(
+            daemon("FragGuard-Deep-Diagnostics-Timeout"));
+    private final AtomicReference<Work> active = new AtomicReference<>();
+    private volatile Progress latest = new Progress(false, "not started", 0L, Instant.EPOCH, "none");
+    private volatile boolean closed;
+
+    DatabaseDeepDiagnostics(Path pluginDirectory) {
+        Path root = Objects.requireNonNull(pluginDirectory).toAbsolutePath().normalize();
+        this.databaseFile = root.resolve("fragguard.db");
+        this.directory = root.resolve("diagnostic-reports");
+    }
+
+    Progress progress() {
+        Work work = active.get();
+        return work == null ? latest : work.progress(true);
+    }
+
+    CompletableFuture<Report> run(int timeoutSeconds) {
+        Work request = new Work();
+        if (closed) return CompletableFuture.failedFuture(
+                new IllegalStateException("Deep diagnostics have been stopped"));
+        if (!active.compareAndSet(null, request)) return CompletableFuture.failedFuture(
+                new IllegalStateException("A deep diagnostic scan is already running"));
+        if (closed) {
+            active.compareAndSet(request, null);
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("Deep diagnostics have been stopped"));
+        }
+        int seconds = Math.max(1, Math.min(MAX_TIMEOUT_SECONDS, timeoutSeconds));
+        try {
+            request.task = worker.submit(() -> {
+                if (!request.tryStart()) return;
+                Report result = null;
+                Throwable failure = null;
+                try {
+                    result = inspect(request);
+                } catch (Throwable problem) {
+                    failure = problem;
+                } finally {
+                    // Do not publish a completed response before the SQLite
+                    // connection is closed and the active slot is released.
+                    latest = request.progress(false);
+                    active.compareAndSet(request, null);
+                    ScheduledFuture<?> alarm = request.alarm;
+                    if (alarm != null) alarm.cancel(false);
+                }
+                if (failure == null) request.response.complete(result);
+                else request.response.completeExceptionally(failure);
+            });
+            request.alarm = timer.schedule(() -> {
+                if (!request.response.isDone()) {
+                    request.response.completeExceptionally(new TimeoutException(
+                            "Deep diagnostics timed out after " + seconds
+                                    + " seconds; any saved scan is PARTIAL and not a verified manifest"));
+                    request.cancel("time limit exceeded");
+                }
+            }, seconds, TimeUnit.SECONDS);
+            if (request.response.isDone()) request.alarm.cancel(false);
+            request.response.whenComplete((report, error) -> {
+                if (request.response.isCancelled()) request.cancel("operator cancelled");
+            });
+        } catch (RuntimeException exception) {
+            request.cancel("worker rejected request");
+            active.compareAndSet(request, null);
+            request.response.completeExceptionally(exception);
+        }
+        return request.response;
+    }
+
+    boolean cancel() {
+        Work request = active.get();
+        if (request == null) return false;
+        request.cancel("operator cancelled");
+        request.response.cancel(true);
+        return true;
+    }
+
+    private Report inspect(Work request) throws IOException, SQLException {
+        Instant started = request.started;
+        int schemaVersion = -1;
+        String schemaHash = "";
+        Map<String, TableDigest> tableResults = new LinkedHashMap<>();
+        List<String> issues = new ArrayList<>();
+        boolean complete = false;
+        String phase = "starting";
+        try {
+            if (!Files.isRegularFile(databaseFile, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Active FragGuard database is missing or unsafe");
+            }
+            String url = "jdbc:sqlite:" + databaseFile.toUri() + "?mode=ro";
+            try (Connection connection = DriverManager.getConnection(url)) {
+                // query_only and read-only URI are independent write guards.
+                try (Statement setup = connection.createStatement()) {
+                    setup.execute("PRAGMA query_only = ON");
+                    setup.execute("BEGIN");
+                }
+                request.check();
+                phase = "schema";
+                request.phase = phase;
+                schemaVersion = Math.toIntExact(scalar(connection, "PRAGMA user_version", request));
+                if (schemaVersion != Database.SCHEMA_VERSION) {
+                    issue(issues, "Schema version differs from supported v" + Database.SCHEMA_VERSION);
+                }
+                Map<String, String> objects = new LinkedHashMap<>();
+                MessageDigest schemaDigest = digest();
+                try (Statement statement = connection.createStatement()) {
+                    request.statement = statement;
+                    try (ResultSet rows = statement.executeQuery(
+                            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                                    + "WHERE type IN ('table', 'index') ORDER BY type, name")) {
+                        while (rows.next()) {
+                            request.check();
+                            String type = rows.getString(1);
+                            String name = rows.getString(2);
+                            String owner = rows.getString(3);
+                            String definition = rows.getString(4);
+                            objects.put(type + ":" + name, owner);
+                            updateText(schemaDigest, type);
+                            updateText(schemaDigest, name);
+                            updateText(schemaDigest, owner);
+                            updateText(schemaDigest, definition);
+                        }
+                    } finally {
+                        request.statement = null;
+                    }
+                }
+                schemaHash = HexFormat.of().formatHex(schemaDigest.digest());
+                for (String table : TABLES) {
+                    if (!table.equals(objects.get("table:" + table))) {
+                        issue(issues, "Missing or invalid table " + table);
+                        continue;
+                    }
+                    List<String> columns = new ArrayList<>();
+                    try (Statement statement = connection.createStatement()) {
+                        request.statement = statement;
+                        try (ResultSet rows = statement.executeQuery("PRAGMA table_info('" + table + "')")) {
+                            while (rows.next()) columns.add(rows.getString("name"));
+                        } finally {
+                            request.statement = null;
+                        }
+                    }
+                    for (String column : REQUIRED_COLUMNS.get(table)) {
+                        if (!columns.contains(column)) {
+                            issue(issues, "Missing " + table + "." + column);
+                        }
+                    }
+                }
+                for (Map.Entry<String, String> expected : REQUIRED_INDEXES.entrySet()) {
+                    if (!expected.getValue().equals(objects.get("index:" + expected.getKey()))) {
+                        issue(issues, "Missing or wrongly owned index " + expected.getKey());
+                    }
+                }
+
+                request.check();
+                phase = "integrity_check";
+                request.phase = phase;
+                try (Statement statement = connection.createStatement()) {
+                    request.statement = statement;
+                    try (ResultSet rows = statement.executeQuery("PRAGMA integrity_check(100)")) {
+                        int count = 0;
+                        while (rows.next()) {
+                            request.check();
+                            String outcome = rows.getString(1);
+                            if (!"ok".equalsIgnoreCase(outcome)) {
+                                issue(issues, "SQLite integrity_check detected corruption");
+                                count++;
+                            }
+                        }
+                        if (count > 0) issue(issues, "SQLite integrity errors present (details suppressed)");
+                    } finally {
+                        request.statement = null;
+                    }
+                }
+
+                request.check();
+                phase = "foreign_key_check";
+                request.phase = phase;
+                int foreignFailures = 0;
+                try (Statement statement = connection.createStatement()) {
+                    request.statement = statement;
+                    try (ResultSet rows = statement.executeQuery("PRAGMA foreign_key_check")) {
+                        while (rows.next()) {
+                            request.check();
+                            foreignFailures++;
+                        }
+                    } finally {
+                        request.statement = null;
+                    }
+                }
+                if (foreignFailures > 0) {
+                    issue(issues, "Orphan rollback records / foreign-key violations: "
+                            + foreignFailures);
+                }
+
+                for (String table : TABLES) {
+                    request.check();
+                    if (!table.equals(objects.get("table:" + table))) {
+                        continue; // Explicit failed/partial manifest, not an invented row count.
+                    }
+                    boolean hasColumns = true;
+                    for (String required : REQUIRED_COLUMNS.get(table)) {
+                        // Missing columns were recorded in schema phase; skip
+                        // unsafe scans instead of silently hashing a truncated schema.
+                        try (Statement statement = connection.createStatement();
+                             ResultSet cols = statement.executeQuery("PRAGMA table_info('" + table + "')")) {
+                            boolean found = false;
+                            while (cols.next()) if (required.equals(cols.getString("name"))) found = true;
+                            if (!found) hasColumns = false;
+                        }
+                    }
+                    if (!hasColumns) continue;
+
+                    phase = "scanning " + table;
+                    request.phase = phase;
+                    MessageDigest tableHash = digest();
+                    long records = 0L;
+                    long blobBytes = 0L;
+                    try (Statement statement = connection.createStatement()) {
+                        request.statement = statement;
+                        try (ResultSet rows = statement.executeQuery(
+                                "SELECT * FROM " + table + " ORDER BY " + ORDER_BY.get(table))) {
+                            ResultSetMetaData metadata = rows.getMetaData();
+                            int columns = metadata.getColumnCount();
+                            for (int col = 1; col <= columns; col++) {
+                                updateText(tableHash, metadata.getColumnName(col));
+                            }
+                            byte[] buffer = new byte[8192];
+                            while (rows.next()) {
+                                request.check();
+                                tableHash.update((byte) 0x7e); // row boundary
+                                for (int col = 1; col <= columns; col++) {
+                                    if (metadata.getColumnType(col) == Types.BLOB) {
+                                        try (InputStream stream = rows.getBinaryStream(col)) {
+                                            if (stream == null) {
+                                                tableHash.update((byte) 0);
+                                            } else {
+                                                tableHash.update((byte) 1);
+                                                int length;
+                                                while ((length = stream.read(buffer)) != -1) {
+                                                    request.check();
+                                                    tableHash.update(buffer, 0, length);
+                                                    blobBytes = Math.addExact(blobBytes, length);
+                                                }
+                                            }
+                                        }
+                                        tableHash.update((byte) 0x7f);
+                                    } else {
+                                        updateText(tableHash, rows.getString(col));
+                                    }
+                                }
+                                if ("block_changes".equals(table)) {
+                                    long x = rows.getLong("x");
+                                    long z = rows.getLong("z");
+                                    if (rows.getLong("chunk_x") != Math.floorDiv(x, 16L)
+                                            || rows.getLong("chunk_z") != Math.floorDiv(z, 16L)) {
+                                        issue(issues, "History chunk coordinates disagree with block coordinates");
+                                    }
+                                }
+                                records++;
+                                request.rows++;
+                                if ((records & 2047L) == 0) {
+                                    request.phase = phase + " (" + records + " rows)";
+                                }
+                            }
+                        } finally {
+                            request.statement = null;
+                        }
+                    }
+                    tableResults.put(table, new TableDigest(records, blobBytes,
+                            HexFormat.of().formatHex(tableHash.digest())));
+                }
+
+                complete = tableResults.size() == TABLES.size();
+                if (!complete) issue(issues, "Required tables/columns prevented complete validation");
+                phase = "completed";
+            }
+        } catch (SQLException | IOException | ArithmeticException problem) {
+            // No message from SQLite or any row value is written to reports:
+            // JDBC errors may include sensitive values in exceptional SQL text.
+            issue(issues, request.cancelled ? "Deep scan interrupted or timed out"
+                    : "Deep scan failed while reading SQLite");
+            phase = request.cancelled ? "cancelled / timed out" : "failed / incomplete";
+        } finally {
+            // The SQLite connection and read transaction are already closed.
+            request.phase = "writing redacted report";
+        }
+        Report report = persist(new Report(complete, complete && issues.isEmpty(),
+                phase, schemaVersion, started, Instant.now(), request.rows, schemaHash,
+                tableResults, issues, null, null));
+        request.phase = report.complete ? "finished" : "partial";
+        request.latestResult = report.reportFile.toString();
+        return report;
+    }
+
+    private Report persist(Report unfinished) throws IOException {
+        Path root = directory.getParent();
+        if (Files.isSymbolicLink(root) || Files.isSymbolicLink(directory)) {
+            throw new IOException("Diagnostics report folder must not be a symbolic link");
+        }
+        Files.createDirectories(directory);
+        if (Files.isSymbolicLink(directory)
+                || !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Diagnostics report directory is unsafe");
+        }
+        // A server-created UUID is the ONLY filename input. Never use a name
+        // supplied by players or the database itself for a report filename.
+        String id = UUID.randomUUID().toString();
+        Path reportFile = directory.resolve("fg-deep-" + id + ".txt");
+        Path manifestFile = directory.resolve("fg-deep-" + id + ".manifest");
+        Report report = new Report(unfinished.complete, unfinished.passed,
+                unfinished.phase, unfinished.schemaVersion, unfinished.startedAt,
+                unfinished.completedAt, unfinished.scannedRows, unfinished.schemaSha256,
+                unfinished.tables, unfinished.issues, reportFile, manifestFile);
+        StringBuilder manifest = new StringBuilder();
+        manifest.append("format=fragguard-deep-1\n")
+                .append("complete=").append(report.complete).append('\n')
+                .append("passed=").append(report.passed).append('\n')
+                .append("schema_version=").append(report.schemaVersion).append('\n')
+                .append("schema_sha256=").append(report.schemaSha256).append('\n')
+                .append("started_at=").append(report.startedAt).append('\n')
+                .append("completed_at=").append(report.completedAt).append('\n')
+                .append("scanned_rows=").append(report.scannedRows).append('\n')
+                .append("issue_count=").append(report.issues.size()).append('\n');
+        for (String table : TABLES) {
+            TableDigest info = report.tables.get(table);
+            if (info == null) continue;
+            manifest.append(table).append(".rows=").append(info.rows).append('\n')
+                    .append(table).append(".blob_bytes=").append(info.blobBytes).append('\n')
+                    .append(table).append(".sha256=").append(info.sha256).append('\n');
+        }
+        // Reports contain only fixed schema names, statuses, numerical counts
+        // and digests. No sample row values or raw SQL error details.
+        String text = String.join("\n", report.lines()) + "\n";
+        Files.writeString(reportFile, text, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        Files.writeString(manifestFile, manifest, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        return report;
+    }
+
+    private static long scalar(Connection connection, String sql, Work request) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            request.statement = statement;
+            try (ResultSet rows = statement.executeQuery(sql)) {
+                if (!rows.next()) throw new SQLException("Diagnostic pragma returned no value");
+                return rows.getLong(1);
+            } finally {
+                request.statement = null;
+            }
+        }
+    }
+
+    private static MessageDigest digest() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("Required SHA-256 digest is unavailable", exception);
+        }
+    }
+
+    private static void updateText(MessageDigest hash, String text) {
+        if (text == null) {
+            hash.update((byte) 0);
+            return;
+        }
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        hash.update((byte) 1);
+        hash.update((byte) (bytes.length >>> 24));
+        hash.update((byte) (bytes.length >>> 16));
+        hash.update((byte) (bytes.length >>> 8));
+        hash.update((byte) bytes.length);
+        hash.update(bytes);
+    }
+
+    private static void issue(List<String> found, String code) {
+        if (found.size() < MAX_ISSUES && !found.contains(code)) found.add(code);
+    }
+
+    private static ThreadFactory daemon(String name) {
+        return action -> {
+            Thread thread = new Thread(action, name);
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    @Override public void close() {
+        closed = true;
+        Work existing = active.get();
+        if (existing != null) {
+            existing.cancel("server shutdown");
+            existing.response.cancel(true);
+        }
+        timer.shutdownNow();
+        worker.shutdownNow();
+        try {
+            worker.awaitTermination(2, TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private final class Work {
+        final CompletableFuture<Report> response = new CompletableFuture<>();
+        final Instant started = Instant.now();
+        final Object lock = new Object();
+        volatile String phase = "queued";
+        volatile long rows;
+        volatile String latestResult = "none";
+        volatile Statement statement;
+        volatile Future<?> task;
+        volatile ScheduledFuture<?> alarm;
+        volatile boolean cancelled;
+        private boolean startedWork;
+
+        boolean tryStart() {
+            synchronized (lock) {
+                if (cancelled) return false;
+                startedWork = true;
+                return true;
+            }
+        }
+
+        Progress progress(boolean running) {
+            return new Progress(running, phase, rows, started, latestResult);
+        }
+
+        void check() throws SQLException {
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                throw new SQLException("Deep scan cancelled or interrupted");
+            }
+        }
+
+        void cancel(String why) {
+            boolean notStarted;
+            synchronized (lock) {
+                cancelled = true;
+                phase = why;
+                notStarted = !startedWork;
+            }
+            if (notStarted) {
+                active.compareAndSet(this, null);
+                latest = progress(false);
+            }
+            ScheduledFuture<?> watchdog = alarm;
+            if (watchdog != null) watchdog.cancel(false);
+            Statement ongoing = statement;
+            if (ongoing != null) {
+                try { ongoing.cancel(); } catch (SQLException ignored) { }
+            }
+            Future<?> assigned = task;
+            if (assigned != null) assigned.cancel(true);
+        }
+    }
+}
