@@ -87,7 +87,12 @@ class MaintenanceAdmissionGateTest {
             when(lateJoin.getPlayer()).thenReturn(regular);
             gate.onJoin(lateJoin);
             verify(regular).kick(any(Component.class));
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of(regular, staff));
             assertTrue(gate.beginActivation(countdown));
+            // The deadline callback immediately removes non-bypass players,
+            // without waiting for the asynchronous ACTIVE state write.
+            verify(regular, times(2)).kick(any(Component.class));
+            verify(staff, never()).kick(any(Component.class));
             state.set(countdown.withPhase(MaintenancePhase.ACTIVE, "active"));
             gate.activationCompleted();
             assertDenied(gate, regular);
