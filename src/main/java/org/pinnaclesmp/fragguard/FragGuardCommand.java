@@ -59,6 +59,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     private final Map<UUID, UUID> lookupRequests = new HashMap<>();
     private final Map<UUID, CompletableFuture<DatabaseQuickDiagnostics.Report>>
             diagnosticRequests = new HashMap<>();
+    private final Map<UUID, CompletableFuture<DatabaseDeepDiagnostics.Report>>
+            deepDiagnosticRequests = new HashMap<>();
     private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
@@ -79,6 +81,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         lookupRequests.remove(actor);
         CompletableFuture<DatabaseQuickDiagnostics.Report> diagnostics = diagnosticRequests.remove(actor);
         if (diagnostics != null) diagnostics.cancel(true);
+        CompletableFuture<DatabaseDeepDiagnostics.Report> deep = deepDiagnosticRequests.remove(actor);
+        if (deep != null && plugin.getDeepDiagnostics() != null) plugin.getDeepDiagnostics().cancel();
         removePreviewsFor(actor);
     }
 
@@ -86,6 +90,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         lookupRequests.clear();
         diagnosticRequests.values().forEach(pending -> pending.cancel(true));
         diagnosticRequests.clear();
+        if (plugin.getDeepDiagnostics() != null) plugin.getDeepDiagnostics().cancel();
+        deepDiagnosticRequests.clear();
         pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
@@ -1693,6 +1699,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     }
 
     private void handleDiagnostics(Player player, String[] args) {
+        if (args.length == 1 && (args[0].equalsIgnoreCase("deep")
+                || args[0].equalsIgnoreCase("progress") || args[0].equalsIgnoreCase("cancel"))) {
+            handleDeepDiagnostics(player, args[0].toLowerCase(Locale.ROOT));
+            return;
+        }
         DatabaseQuickDiagnostics.Mode mode;
         if (args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("overview"))) {
             mode = DatabaseQuickDiagnostics.Mode.OVERVIEW;
@@ -1701,7 +1712,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         } else if (args.length == 1 && args[0].equalsIgnoreCase("check")) {
             mode = DatabaseQuickDiagnostics.Mode.QUICK_CHECK;
         } else {
-            player.sendMessage(color("&cUsage: &f/fg diagnostics [overview|counts|check]"));
+            player.sendMessage(color("&cUsage: &f/fg diagnostics [overview|counts|check|deep|progress|cancel]"));
             return;
         }
 
@@ -1739,6 +1750,63 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             player.sendMessage(color("&8&m------&r &bFragGuard Database Diagnostics &8&m------"));
             // Report contents (including the admin-only absolute path and any
             // host error) are plain text, not legacy color markup.
+            for (String line : report.lines()) {
+                player.sendMessage(Component.text(line, NamedTextColor.GRAY));
+            }
+        }));
+    }
+
+    private void handleDeepDiagnostics(Player player, String action) {
+        DatabaseDeepDiagnostics deep = plugin.getDeepDiagnostics();
+        if (deep == null) {
+            player.sendMessage(color("&cFragGuard deep diagnostics are unavailable."));
+            return;
+        }
+        if ("progress".equals(action)) {
+            DatabaseDeepDiagnostics.Progress progress = deep.progress();
+            player.sendMessage(Component.text("Deep diagnostics: "
+                    + (progress.running() ? "RUNNING" : "IDLE")
+                    + " | " + progress.phase() + " | " + progress.recordsScanned()
+                    + " records read", NamedTextColor.GRAY));
+            if (!"none".equals(progress.latestResult())) {
+                player.sendMessage(Component.text("Latest report: " + progress.latestResult(),
+                        NamedTextColor.GRAY));
+            }
+            return;
+        }
+        if ("cancel".equals(action)) {
+            if (deep.cancel()) {
+                player.sendMessage(color("&eDeep diagnostics cancellation requested. "
+                        + "Any saved output will be marked PARTIAL."));
+            } else {
+                player.sendMessage(color("&7No deep diagnostics scan is running."));
+            }
+            return;
+        }
+        int seconds = Math.max(1, Math.min(21_600,
+                plugin.getConfig().getInt("diagnostics-deep-timeout-seconds", 3600)));
+        UUID actor = player.getUniqueId();
+        CompletableFuture<DatabaseDeepDiagnostics.Report> request = deep.run(seconds);
+        deepDiagnosticRequests.put(actor, request);
+        player.sendMessage(color("&7Starting read-only deep database validation. This can take "
+                + "a long time on large histories; use &f/fg diagnostics progress&7 or "
+                + "&f/fg diagnostics cancel&7."));
+        request.whenComplete((report, failure) -> onServerThread(() -> {
+            if (deepDiagnosticRequests.get(actor) != request) return;
+            deepDiagnosticRequests.remove(actor);
+            if (!player.isOnline() || !player.isOp() || !player.hasPermission("fragguard.admin")) {
+                return;
+            }
+            if (failure != null) {
+                Throwable cause = unwrap(failure);
+                plugin.getLogger().log(Level.WARNING, "FragGuard deep diagnostics interrupted", cause);
+                player.sendMessage(color("&cDeep validation stopped or failed ("
+                        + cause.getClass().getSimpleName()
+                        + "). Use /fg diagnostics progress and check diagnostic-reports "
+                        + "for an available PARTIAL report; it must not be treated as verified."));
+                return;
+            }
+            player.sendMessage(color("&8&m------&r &bFragGuard Deep Diagnostics &8&m------"));
             for (String line : report.lines()) {
                 player.sendMessage(Component.text(line, NamedTextColor.GRAY));
             }
@@ -1844,6 +1912,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg diagnostics &7- Read-only database size, schema and health."));
         player.sendMessage(color("&f/fg diagnostics counts &7- Scan exact history and rollback job counts."));
         player.sendMessage(color("&f/fg diagnostics check &7- Run SQLite quick integrity check."));
+        player.sendMessage(color("&f/fg diagnostics deep &7- Full read-only integrity/history/hash validation."));
+        player.sendMessage(color("&f/fg diagnostics progress &7- Deep scan progress and latest report."));
+        player.sendMessage(color("&f/fg diagnostics cancel &7- Cancel deep scan (partial report)."));
         player.sendMessage(color("&7Only server operators can use these commands."));
     }
 
@@ -1860,7 +1931,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         String subCommand = args[0].toLowerCase(Locale.ROOT);
         if (subCommand.equals("diagnostics") || subCommand.equals("diag")) {
             return args.length == 2
-                    ? partial(args[1], List.of("overview", "counts", "check"))
+                    ? partial(args[1], List.of("overview", "counts", "check", "deep", "progress", "cancel"))
                     : Collections.emptyList();
         }
         if (subCommand.equals("lookup") || subCommand.equals("inspect") || subCommand.equals("l")) {
