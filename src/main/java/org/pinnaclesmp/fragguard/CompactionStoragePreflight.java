@@ -166,14 +166,21 @@ final class CompactionStoragePreflight implements AutoCloseable {
         CompletableFuture<Report> result = new CompletableFuture<>();
         try {
             worker.execute(() -> {
+                Report report = null;
+                Throwable failure = null;
                 try {
                     if (closed) throw new IllegalStateException("Compaction preflight has stopped");
-                    result.complete(evaluate(measure(), evidence));
+                    report = evaluate(measure(), evidence);
                 } catch (Throwable error) {
-                    result.completeExceptionally(error);
+                    failure = error;
                 } finally {
+                    // Release the single-inspection slot before waking callers:
+                    // an immediate second preflight must not spuriously report
+                    // "already running" after the first future completes.
                     busy.set(false);
                 }
+                if (failure == null) result.complete(report);
+                else result.completeExceptionally(failure);
             });
         } catch (RejectedExecutionException ex) {
             busy.set(false);
