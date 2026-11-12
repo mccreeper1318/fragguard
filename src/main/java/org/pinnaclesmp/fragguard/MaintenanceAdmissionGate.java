@@ -14,6 +14,7 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.function.LongSupplier;
 
 /**
  * Main-thread maintenance admission protection. PlayerLoginEvent runs after
@@ -29,6 +30,7 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
 
     private final JavaPlugin plugin;
     private final MaintenanceCoordinator coordinator;
+    private final LongSupplier clock;
     private final Component kickReason;
     private final String loginDenial;
     private volatile boolean activationPending;
@@ -36,9 +38,10 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     private boolean stopped;
 
     MaintenanceAdmissionGate(JavaPlugin plugin, MaintenanceCoordinator coordinator,
-                             String kickReason, String loginDenial) {
+                             LongSupplier clock, String kickReason, String loginDenial) {
         this.plugin = Objects.requireNonNull(plugin);
         this.coordinator = Objects.requireNonNull(coordinator);
+        this.clock = Objects.requireNonNull(clock);
         this.kickReason = INPUT.deserialize(Objects.requireNonNull(kickReason));
         this.loginDenial = OUTPUT.serialize(INPUT.deserialize(Objects.requireNonNull(loginDenial)));
     }
@@ -59,7 +62,8 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
         if (stopped || countdown.phase() != MaintenancePhase.COUNTDOWN) return false;
         MaintenanceSnapshot actual = coordinator.snapshot();
         if (actual.phase() != MaintenancePhase.COUNTDOWN
-                || !actual.operationId().equals(countdown.operationId())) return false;
+                || !actual.operationId().equals(countdown.operationId())
+                || clock.getAsLong() < actual.countdownEndsAtMillis()) return false;
         activationPending = true;
         return true;
     }
@@ -77,7 +81,14 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     }
 
     boolean restricted() {
-        return activationPending || coordinator.blocksNewJobs();
+        MaintenanceSnapshot state = coordinator.snapshot();
+        // Close admissions at the actual persisted deadline, even if the
+        // countdown display's next once-per-second tick has not run yet.
+        // The coordinator's job gate additionally fails closed on uncertain
+        // maintenance metadata writes.
+        return activationPending || coordinator.blocksNewJobs()
+                || (state.phase() == MaintenancePhase.COUNTDOWN
+                    && clock.getAsLong() >= state.countdownEndsAtMillis());
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
