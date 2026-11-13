@@ -279,6 +279,13 @@ public final class FragGuardPlugin extends JavaPlugin {
                         getLogger().info("Deleted " + deleted.blockRecordsDeleted() + " old block log records.");
                     if (deleted.rollbackJobsDeleted() > 0)
                         getLogger().info("Deleted " + deleted.rollbackJobsDeleted() + " expired rollback job(s) and their saved snapshots.");
+                    if (deleted.batchesProcessed() > 0
+                            && (deleted.blockRecordsDeleted() > 0 || deleted.rollbackJobsDeleted() > 0))
+                        getLogger().info("Retention cleanup committed " + deleted.batchesProcessed()
+                                + " bounded batch(es); writes were allowed between commits.");
+                    if (deleted.batchBudgetReached())
+                        getLogger().info("Retention cleanup hit its per-run batch budget; "
+                                + "remaining expired rows, if any, will be handled by the next run.");
                 });
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, 20L * 30L, ticks);
     }

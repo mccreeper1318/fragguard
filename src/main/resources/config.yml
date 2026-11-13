@@ -31,6 +31,13 @@ retention-days: 30
 
 # How often old records are removed from SQLite.
 cleanup-interval-minutes: 60
+# P0 (#183): never delete a large history backlog in a single WAL transaction.
+# Each batch commits independently and yields to new history writes.
+# Keep batches modest to avoid SQLITE_FULL from huge transactions.
+database-retention-cleanup-batch-size: 500
+# Maximum individual transactions in one scheduled cleanup pass.
+# If expired history remains, it is processed at the next scheduled interval.
+database-retention-cleanup-max-batches-per-run: 2000
 
 # How long completed/undone rollback jobs remain available before their saved snapshots are deleted.
 # Recoverable failed jobs are kept so /fg undo can still finish them.
