@@ -159,8 +159,13 @@ class DatabaseTest {
                 "undo cannot start after any snapshots have been pruned");
         assertTrue(failure.getCause() instanceof IllegalStateException);
         assertTrue(failure.getCause().getMessage().contains("PURGING"));
-        assertEquals(6, database.loadRollbackChangesAsync(job.id(), false).join().size(),
-                "only one bounded slice was pruned");
+        try (Connection conn = openDatabase(); Statement sql = conn.createStatement();
+             ResultSet rows = sql.executeQuery("SELECT COUNT(*) FROM rollback_job_changes "
+                     + "WHERE job_id = " + job.id())) {
+            assertTrue(rows.next());
+            assertEquals(6, rows.getLong(1),
+                    "exactly one bounded snapshot slice was pruned");
+        }
         // A new cleanup pass must resume PURGING (not regard it as an
         // unfinished rollback job) and finish removing all saved snapshots.
         DatabaseCleanupResult completed = database.cleanupOldRecordsAsync(30, 30).join();
