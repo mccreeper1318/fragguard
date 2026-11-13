@@ -117,8 +117,15 @@ jobs:
             exit 1
           fi
 
-          if [[ "$PROJECT_VERSION" != "$BASE_VERSION" ]]; then
-            echo "Release tag base version does not match the Gradle project version."
+          # Hotfix sources keep their own version for a testable plugin
+          # artifact. They may publish later -h.N releases from the same
+          # base; the release step still injects the exact requested tag.
+          PROJECT_VERSION_BASE="$PROJECT_VERSION"
+          if [[ "$PROJECT_VERSION" =~ ^([0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+\\.[0-9]+)-h\\.[1-9][0-9]*$ ]]; then
+            PROJECT_VERSION_BASE="${BASH_REMATCH[1]}"
+          fi
+          if [[ "$PROJECT_VERSION_BASE" != "$BASE_VERSION" ]]; then
+            echo "Release base version does not match the Gradle project version."
             echo "Release version: $VERSION"
             echo "Base version:    $BASE_VERSION"
             echo "Project version: $PROJECT_VERSION"
