@@ -23,6 +23,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private DatabaseQuickDiagnostics quickDiagnostics;
     private DatabaseDeepDiagnostics deepDiagnostics;
     private CompactionStoragePreflight compactionPreflight;
+    private OnlineDatabaseCompaction onlineCompaction;
     private FragGuardCommand commandExecutor;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
@@ -73,6 +74,8 @@ public final class FragGuardPlugin extends JavaPlugin {
                 getDataFolder().toPath().resolve("fragguard.db"));
         deepDiagnostics = new DatabaseDeepDiagnostics(getDataFolder().toPath());
         compactionPreflight = new CompactionStoragePreflight(getDataFolder().toPath());
+        onlineCompaction = new OnlineDatabaseCompaction(
+                getDataFolder().toPath(), maintenance, compactionPreflight);
         try {
             maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
                     System::currentTimeMillis,
@@ -136,6 +139,19 @@ public final class FragGuardPlugin extends JavaPlugin {
             commandExecutor = null;
         }
 
+        // Stop VACUUM INTO first, before the preflight reservation guard, the
+        // state coordinator, and the live database writer are shut down.
+        if (onlineCompaction != null) {
+            try {
+                onlineCompaction.close();
+            } catch (IllegalStateException exception) {
+                getLogger().log(Level.SEVERE, "Online SQLite compaction could not be stopped safely. "
+                        + "Preserve the active DB, WAL/SHM and unverified candidate.", exception);
+                Bukkit.shutdown();
+            } finally {
+                onlineCompaction = null;
+            }
+        }
         if (compactionPreflight != null) {
             compactionPreflight.close();
             compactionPreflight = null;
@@ -249,6 +265,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     CompactionStoragePreflight getCompactionPreflight() {
         return compactionPreflight;
+    }
+
+    OnlineDatabaseCompaction getOnlineCompaction() {
+        return onlineCompaction;
     }
 
     boolean maintenanceBlocksNewJobs() {
