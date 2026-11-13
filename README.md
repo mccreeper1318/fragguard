@@ -60,6 +60,48 @@ candidate includes later writes**. Candidate verification and post-snapshot
 policies are tracked in #166/#167. Long read transactions can delay WAL
 checkpoint recycling, so use full scans deliberately rather than on a timer.
 
+### Online VACUUM INTO candidate creation (#165)
+
+When the durable maintenance state is **ACTIVE**, an operator can create an
+unverified, compacted SQLite copy **without stopping Paper**. The copy runs
+on its own worker and read-only connection to the live source's coherent
+SQLite/WAL snapshot. It does not use FragGuard's normal database write worker,
+make an intermediate full-size input duplicate, truncate the source, change the
+source schema or substitute files.
+
+1. Run `/fg diagnostics preflight` and review space, hosting quota and
+   native SQLite temp warnings. Use `/fg diagnostics preflight acknowledge`
+   if you deliberately accept *unknown* headroom (never a known shortage).
+2. During **ACTIVE** maintenance only, run `/fg maintenance compact` within
+   25 seconds of an accepted preflight. Use `/fg maintenance status` to
+   monitor progress or `/fg maintenance cancel` to request interruption.
+   Maintenance countdown/start controls are scheduled for #169; this command
+   cannot bypass the active maintenance admission gate.
+3. FragGuard reserves a uniquely named `compaction-candidates/fragguard-compact-*.db`
+   and runs SQLite `VACUUM INTO`. A separate `.snapshot.properties`
+   file records **unverified** candidate metadata (source identity digest,
+   copy invocation/completion interval, copied history and rollback-job
+   high-water marks, schema version, candidate size). These are derived from
+   the actual copied SQLite snapshot, **not from a countdown timestamp**.
+   The wall-clock start is recorded only as a conservative lower bound;
+   SQLite does not expose the exact snapshot acquisition timestamp via JDBC.
+4. A completed copy enters **VERIFYING** and is **not READY_TO_SWAP**.
+   Full source/candidate integrity verification (#166), the strict versus
+   acknowledged snapshot replacement policy (#167), and safe activation
+   (#168) are required before the copy can replace anything.
+
+The source database, WAL/SHM files and existing backups remain unchanged by
+the compaction worker. Operators and permitted background processes may
+continue generating history after SQLite starts its snapshot: **later changes
+may not appear in the candidate**. If this copy were substituted without the
+future #167 checks, history and rollback/undo jobs newer than the copied
+snapshot could be lost; the Minecraft world would NOT automatically revert.
+
+Cancellation, shutdown, `SQLITE_FULL`, or interrupted output never promotes
+a partial copy. Any candidate and reservation are preserved for staff review.
+The next boot automatically treats an interrupted COMPACTING/VERIFYING
+maintenance state as failed, not as a verified replacement.
+
 ### Compaction storage and quota preflight (#164)
 
 Run **/fg diagnostics preflight** as an OP with `fragguard.admin`. The
