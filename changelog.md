@@ -35,6 +35,8 @@
 
 ### Fixed
 
+- Hotfix: Delete expired history and rollback snapshots in bounded, committed batches to avoid large WAL transactions; preserve live logging health on isolated cleanup failures (#183).
+
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).
 - Fixed unrelated TNT inheriting piston ownership without observed TNT movement (PR #146).
