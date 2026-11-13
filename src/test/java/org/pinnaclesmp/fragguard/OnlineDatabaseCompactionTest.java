@@ -14,6 +14,7 @@ import java.sql.Statement;
 import java.util.Arrays;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -186,7 +187,8 @@ class OnlineDatabaseCompactionTest {
                 assertTrue(vacuum.cancel());
                 blocking.countDown();
                 blocker.get(5, TimeUnit.SECONDS);
-                assertThrows(ExecutionException.class, () -> pending.get(20, TimeUnit.SECONDS));
+                assertThrows(CancellationException.class, () -> pending.get(20, TimeUnit.SECONDS),
+                        "CompletableFuture.get propagates cancellation directly");
                 assertEquals(MaintenancePhase.ACTIVE, state.snapshot().phase(),
                         "cancelled-before-start must not transition state or create output");
                 assertFalse(Files.exists(folder.resolve("compaction-candidates")));
