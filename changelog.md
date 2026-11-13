@@ -1,5 +1,11 @@
 # FG Changelog
 
+## 26.3-1.2.1 Hotfix 1
+
+### Fixed
+
+- Hotfix: Delete expired history and rollback snapshots in bounded, committed batches to avoid large WAL transactions; preserve live logging health on isolated cleanup failures (#183).
+
 ## 26.3-1.2.1
 
 ### Changed
@@ -35,7 +41,6 @@
 
 ### Fixed
 
-- Hotfix: Delete expired history and rollback snapshots in bounded, committed batches to avoid large WAL transactions; preserve live logging health on isolated cleanup failures (#183).
 
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).
