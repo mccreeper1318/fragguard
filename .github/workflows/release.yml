@@ -57,35 +57,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           RAW_TAG="$RELEASE_TAG"
-          VERSION="$RAW_TAG"
-
-          if [[ "$VERSION" == v.* ]]; then
-            VERSION="${VERSION#v.}"
-          elif [[ "$VERSION" == v* ]]; then
-            VERSION="${VERSION#v}"
-          fi
-
-          # Stable examples: 26.2-1.1.0, 26.3-1.2.1-h.1, 26.3-1.2.1-h.2
-          # Prerelease examples: 26.2-1.1.0-beta.1, 26.2-1.1.0-rc.1
-          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
-            BASE_VERSION="${BASH_REMATCH[1]}"
-          else
-            echo "Invalid FragGuard release tag: $RAW_TAG"
-            echo "Expected stable 26.3-1.2.1 or 26.3-1.2.1-h.1, or prerelease 26.3-1.2.1-beta.1 (optional v prefix)."
-            exit 1
-          fi
-
-          TAG_IS_PRERELEASE=false
-          if [[ "$VERSION" != "$BASE_VERSION" ]]; then
-            if [[ "$VERSION" =~ ^[0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+\\.[0-9]+-h\\.[1-9][0-9]*$ ]]; then
-              echo "Stable hotfix tag detected: $VERSION"
-            elif [[ "$VERSION" =~ -h\\. ]]; then
-              echo "Invalid hotfix suffix: use -h.1, -h.2, etc. (positive integer)."
-              exit 1
-            else
-              TAG_IS_PRERELEASE=true
-            fi
-          fi
+          # Shared tested parser: -h.1, -h.2, ... are stable hotfixes.
+          # Beta/RC/alpha suffixes are prereleases. Reject malformed tags.
+          VERSION_INFO="$(python3 scripts/release_tag_policy.py "$RAW_TAG")" || exit 1
+          IFS=$'\\t' read -r BASE_VERSION VERSION TAG_IS_PRERELEASE <<< "$VERSION_INFO"
+          echo "Validated release tag: $VERSION (base $BASE_VERSION)"
+          echo "Prerelease: $TAG_IS_PRERELEASE"
 
           RELEASE_IS_PRERELEASE="$(
             gh release view "$RAW_TAG" \
