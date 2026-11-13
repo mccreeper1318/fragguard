@@ -47,7 +47,7 @@ class ReleaseTagPolicyTest(unittest.TestCase):
                 line.strip() for line in workflow.splitlines()
                 if line.strip().startswith(prefix)
             )
-            script = condition + "\\n echo yes\\nelse\\n echo no\\nfi\\n"
+            script = condition + "\n echo yes\nelse\n echo no\nfi\n"
             env = dict(os.environ)
             env[variable] = value
             result = subprocess.run(
