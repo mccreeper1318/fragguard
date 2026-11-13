@@ -22,6 +22,12 @@
 - Made maintenance state updates durable across host crashes (#173).
 - Kept maintenance rollback protection active during server shutdown (#173).
 
+## 26.3-1.2.1 Hotfix 1
+
+### Fixed
+
+- Hotfix: Delete expired history and rollback snapshots in bounded, committed batches to avoid large WAL transactions; preserve live logging health on isolated cleanup failures (#183).
+
 ## 26.3-1.2.1
 
 ### Changed

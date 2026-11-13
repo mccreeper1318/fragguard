@@ -33,6 +33,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
       - name: Check out release tag
@@ -64,19 +65,26 @@ jobs:
             VERSION="${VERSION#v}"
           fi
 
-          # Stable example: 26.2-1.1.0
+          # Stable examples: 26.2-1.1.0 and 26.3-1.2.1-h.1 (Hotfix 1)
           # Prerelease examples: 26.2-1.1.0-beta.1, 26.2-1.1.0-rc.1
           if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
             BASE_VERSION="${BASH_REMATCH[1]}"
           else
             echo "Invalid FragGuard release tag: $RAW_TAG"
-            echo "Expected a tag such as 26.2-1.1.0, 26.2-1.1.0-beta.1, v26.2-1.1.0, or v26.2-1.1.0-rc.1."
+            echo "Expected 26.2-1.1.0, 26.3-1.2.1-h.1 (stable), or 26.2-1.1.0-beta.1 (prerelease); optional v prefix."
             exit 1
           fi
 
           TAG_IS_PRERELEASE=false
           if [[ "$VERSION" != "$BASE_VERSION" ]]; then
-            TAG_IS_PRERELEASE=true
+            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+-h\.[1-9][0-9]*$ ]]; then
+              echo "Stable hotfix tag: $VERSION"
+            elif [[ "$VERSION" == *-h* ]]; then
+              echo "Invalid hotfix suffix; expected -h.1, -h.2, etc."
+              exit 1
+            else
+              TAG_IS_PRERELEASE=true
+            fi
           fi
 
           RELEASE_IS_PRERELEASE="$(
@@ -105,7 +113,13 @@ jobs:
             exit 1
           fi
 
-          if [[ "$PROJECT_VERSION" != "$BASE_VERSION" ]]; then
+          # The hotfix branch builds a distinct -h.1 JAR for pre-merge testing.
+          # A later hotfix tag from that same base can still be packaged.
+          PROJECT_VERSION_BASE="$PROJECT_VERSION"
+          if [[ "$PROJECT_VERSION" =~ ^([0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+)-h\.[1-9][0-9]*$ ]]; then
+            PROJECT_VERSION_BASE="${BASH_REMATCH[1]}"
+          fi
+          if [[ "$PROJECT_VERSION_BASE" != "$BASE_VERSION" ]]; then
             echo "Release tag base version does not match the Gradle project version."
             echo "Release version: $VERSION"
             echo "Base version:    $BASE_VERSION"
@@ -321,3 +335,15 @@ jobs:
             exit 1
           fi
           gh release upload "$RELEASE_TAG" "${FILES[@]}" --clobber
+
+          # GitHub may not auto-rank custom -h.N versions as the newest stable.
+          # Only hotfixes are explicitly promoted: rebuilding an old stable
+          # release must not unexpectedly displace the current Latest release.
+          if [[ "$RELEASE_TAG" =~ -h\.[1-9][0-9]*$ ]]; then
+            if [[ "${{ needs.build-release.outputs.prerelease }}" != "false" ]]; then
+              echo "Refusing to mark a prerelease hotfix as Latest."
+              exit 1
+            fi
+            gh release edit "$RELEASE_TAG" --latest
+            echo "Marked stable hotfix $RELEASE_TAG as Latest."
+          fi
