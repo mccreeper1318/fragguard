@@ -98,12 +98,16 @@ final class MaintenanceCoordinator implements AutoCloseable {
     }
 
     /**
-     * Must only be supplied from an actual consistent SQLite snapshot by the
-     * future compaction worker (#165), not from maintenance start/countdown.
+     * Only the real VACUUM INTO worker (#165) may record its conservative
+     * invocation-time LOWER BOUND after copying the SQLite snapshot. JDBC
+     * cannot expose the precise internal WAL snapshot acquisition instant.
+     * The candidate and its snapshot evidence identify the actual copied
+     * rows; do not treat this timestamp as proof all later writes are present.
      */
     CompletableFuture<MaintenanceSnapshot> recordSnapshotCutoff(long cutoffMillis) {
         return commit(existing -> existing.withCutoff(cutoffMillis,
-                "Consistent compacted snapshot captured"));
+                "SQLite copy completed; conservative cutoff bound recorded. "
+                        + "Candidate evidence identifies the actual snapshot."));
     }
 
     CompletableFuture<MaintenanceSnapshot> beginVerification() {
