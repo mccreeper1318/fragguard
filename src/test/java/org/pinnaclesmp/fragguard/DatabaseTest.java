@@ -118,6 +118,62 @@ class DatabaseTest {
     }
 
     @Test
+    void partiallyPurgedTerminalJobCannotStartUndoAndCleanupResumesSafely() throws Exception {
+        database = startDatabase();
+        long now = System.currentTimeMillis();
+        java.util.ArrayList<RollbackTarget> targets = new java.util.ArrayList<>();
+        for (int x = 1; x <= 9; x++) {
+            targets.add(new RollbackTarget("world", x, 64, 3,
+                    "minecraft:air", "minecraft:stone"));
+        }
+        RollbackJob job = database.createRollbackJobAsync(
+                ACTOR_UUID.toString(), "Builder", "world",
+                5, 3, 8, now - 1_000, now, false, targets).join();
+        List<RollbackJobChange> changes =
+                database.loadRollbackChangesAsync(job.id(), false).join();
+        assertEquals(9, changes.size());
+        database.prepareRollbackBatchAsync(job.id(),
+                changes.stream().map(change -> change.withBeforeData("minecraft:air")).toList()).join();
+        database.markRollbackBatchAppliedAsync(job.id(),
+                changes.stream().map(change ->
+                        new RollbackStepResult(change.sequence(), true, false)).toList()).join();
+        assertEquals("COMPLETED", database.completeRollbackJobAsync(job.id(), false)
+                .join().status());
+
+        // Age the completed job to the retention cutoff. The main database
+        // worker stays operational; this isolated test never alters production.
+        long expired = now - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
+        try (Connection conn = openDatabase(); Statement sql = conn.createStatement()) {
+            sql.executeUpdate("UPDATE rollback_jobs SET updated_at = " + expired
+                    + " WHERE id = " + job.id());
+            conn.setAutoCommit(false);
+            RetentionCleanupBatcher.Step first =
+                    RetentionCleanupBatcher.deleteExpiredJobStep(
+                            conn, now - java.util.concurrent.TimeUnit.DAYS.toMillis(30), 3);
+            conn.commit();
+            assertEquals(0, first.jobsDeleted());
+        }
+        assertEquals("PURGING", database.loadRollbackJobAsync(job.id()).join().status());
+        CompletionException failure = assertThrows(CompletionException.class,
+                () -> database.beginUndoAsync(job.id()).join(),
+                "undo cannot start after any snapshots have been pruned");
+        assertTrue(failure.getCause() instanceof IllegalStateException);
+        assertTrue(failure.getCause().getMessage().contains("PURGING"));
+        assertEquals(6, database.loadRollbackChangesAsync(job.id(), false).join().size(),
+                "only one bounded slice was pruned");
+        // A new cleanup pass must resume PURGING (not regard it as an
+        // unfinished rollback job) and finish removing all saved snapshots.
+        DatabaseCleanupResult completed = database.cleanupOldRecordsAsync(30, 30).join();
+        assertEquals(1, completed.rollbackJobsDeleted());
+        try (Connection conn = openDatabase(); Statement sql = conn.createStatement();
+             ResultSet rows = sql.executeQuery(
+                     "SELECT COUNT(*) FROM rollback_jobs WHERE id = " + job.id())) {
+            assertTrue(rows.next());
+            assertEquals(0, rows.getLong(1));
+        }
+    }
+
+    @Test
     void migratesVersionOneDatabaseAndRetainsVerifiedPreUpgradeBackup() throws Exception {
         database = startDatabase();
         database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
