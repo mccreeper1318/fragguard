@@ -24,8 +24,7 @@ class ReleaseTagPolicyTest(unittest.TestCase):
         for tag in ("26.3-1.2.1-h.0", "26.3-1.2.1-h.01",
                     "26.3-1.2.1-h", "26.3-1.2.1-h.bad",
                     "26.3-1.2.1-h.1.beta", "26.3-1.2.1-h.-1",
-                    "26.3-1.2.1-h.1;echo bad", "26.3-1.2.1
-BAD",
+                    "26.3-1.2.1-h.1;echo bad", "26.3-1.2.1\nBAD",
                     "latest", "26.3-1.2.1-"):
             with self.subTest(tag=tag):
                 with self.assertRaises(ValueError):
