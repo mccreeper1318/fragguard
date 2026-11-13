@@ -345,9 +345,13 @@ jobs:
           # not a beta/RC. Explicitly set Latest after artifacts are verified
           # and uploaded, because GitHub's automatic semantic sorting may not
           # recognize this repository-specific version convention.
-          if [[ "${{ needs.build-release.outputs.prerelease }}" == "false" ]]; then
+          if [[ "$RELEASE_TAG" =~ -h\\.[1-9][0-9]*$ ]]; then
+            if [[ "${{ needs.build-release.outputs.prerelease }}" != "false" ]]; then
+              echo "Cannot mark a prerelease hotfix as Latest."
+              exit 1
+            fi
             gh release edit "$RELEASE_TAG" --latest
-            echo "Marked stable release $RELEASE_TAG as Latest."
+            echo "Marked stable hotfix $RELEASE_TAG as Latest."
           fi
 \t' read -r BASE_VERSION VERSION TAG_IS_PRERELEASE <<< "$VERSION_INFO"
           echo "Validated release tag: $VERSION (base $BASE_VERSION)"
