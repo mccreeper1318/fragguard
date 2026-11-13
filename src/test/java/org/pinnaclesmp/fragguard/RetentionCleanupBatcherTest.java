@@ -121,6 +121,12 @@ class RetentionCleanupBatcherTest {
                 deletedAudits += step.blocksDeleted();
                 assertTrue(step.blocksDeleted() <= 7);
                 assertTrue(step.jobsDeleted() <= 1);
+                if (batches == 1) {
+                    assertEquals(1, scalar(db,
+                            "SELECT COUNT(*) FROM rollback_jobs "
+                            + "WHERE id=1 AND status='PURGING'"),
+                            "first destructive batch must durably revoke undo eligibility");
+                }
                 assertEquals(0, scalar(db, """
                         SELECT COUNT(*) FROM block_changes bc
                         WHERE bc.rollback_pending = 1 AND NOT EXISTS (
