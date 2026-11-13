@@ -60,6 +60,42 @@ candidate includes later writes**. Candidate verification and post-snapshot
 policies are tracked in #166/#167. Long read transactions can delay WAL
 checkpoint recycling, so use full scans deliberately rather than on a timer.
 
+### Compaction storage and quota preflight (#164)
+
+Run **/fg diagnostics preflight** as an OP with `fragguard.admin`. The
+asynchronous read-only check reports active SQLite main/WAL/SHM sizes, page
+statistics, a conservative **new output** estimate, extra WAL growth,
+verification allowance, SQLite working files and a configurable safety margin.
+These are additional *free* bytes needed **on top of** the active database,
+WAL/SHM, existing backups and any reserved candidates. The calculated number
+is advisory, not a guarantee of a fixed upper bound while history is growing.
+
+Three capacity signals are shown separately: the **actual data filesystem's**
+reported usable bytes, the **hosting account/container quota** (unknown by
+default), and **SQLite's native temp free space** (unknown by default).
+Java's temp filesystem is displayed only as an advisory; it cannot prove where
+SQLite's native temporary pages are stored. If your host confirms current free
+capacity, set `maintenance-compaction-account-free-mib` and
+`maintenance-compaction-sqlite-temp-free-mib` in `config.yml`; use **-1**
+for unknown, **0** for known zero, and positive MiB for confirmed free bytes.
+The extra margin defaults to 256 MiB.
+
+Known shortages, suspicious storage paths, and any existing compaction
+candidates/reservation markers are always **REFUSED**. Unknown capacity causes
+`ACKNOWLEDGEMENT_REQUIRED`. After reading the warning, an OP can type
+**/fg diagnostics preflight acknowledge** within two minutes to explicitly
+accept *unknown* headroom and rerun the estimate; this never bypasses a known
+shortage. It **does not start a compaction**. Future #165 compaction must obtain
+a fresh approved preflight and reserve a unique internally named output under
+`plugins/FragGuard/compaction-candidates/` before starting any write.
+An atomic single-operation marker prevents two compactions on one data folder.
+Unverified/partial candidates and user backups are never automatically deleted.
+
+If SQLite later reports `SQLITE_FULL`, the compaction must stop without
+promoting a candidate. Keep the original main DB and matching WAL/SHM and
+preserve the partial output for operator inspection. Workload changes, hosting
+quotas, and SQLite temporary files make **all** preflight estimates imperfect.
+
 ### Maintenance countdown and status display (#160)
 
 When a future maintenance control schedules an operation, FragGuard now has a

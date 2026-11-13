@@ -6,6 +6,7 @@
 - Added persistent database maintenance states with safe cancellation and restart recovery (#159).
 - Blocked new rollback and undo jobs during active maintenance (#159).
 - Added read-only database overview, record counts, and quick integrity checks (#162).
+- Added storage/quota preflight, explicit unknown-capacity acknowledgement, and safe candidate reservations (#164).
 - Added cancellable deep SQLite checks and full-history SHA-256 validation reports (#163).
 - Added maintenance countdown Boss Bar, chat reminders, and staff status indicators (#160).
 - Restricted logins and kicked non-bypass players during maintenance, with configurable messages and OP/staff bypass (#161).
