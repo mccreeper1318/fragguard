@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -77,6 +78,8 @@ final class Database {
     private volatile boolean workerStopped = true;
     private volatile int activeWriteBatchSize;
     private volatile String lastError = "";
+    private final Object cleanupLock = new Object();
+    private CompletableFuture<DatabaseCleanupResult> activeCleanup;
     private volatile String startupStage = "starting database worker";
     private volatile long lastWarningAt;
     private volatile Statement activeStatement;
@@ -447,67 +450,96 @@ final class Database {
                 droppedWrites.get(), coalescedWrites.get(), healthy, lastError);
     }
 
+    /**
+     * Issue #183: run independent bounded cleanup transactions on the ordered
+     * SQLite writer. Each batch commits before another is queued, allowing
+     * normal block writes and other operations to run between cleanup steps.
+     */
     CompletableFuture<DatabaseCleanupResult> cleanupOldRecordsAsync(
-            int retentionDays,
-            int rollbackJobRetentionDays
-    ) {
-        return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            int retentionDays, int rollbackJobRetentionDays) {
+        synchronized (cleanupLock) {
+            if (activeCleanup != null && !activeCleanup.isDone()) return activeCleanup;
+            int limit = Math.max(1, Math.min(5000,
+                    plugin.getConfig().getInt("database-retention-cleanup-batch-size", 500)));
+            int maximum = Math.max(1, Math.min(10000,
+                    plugin.getConfig().getInt("database-retention-cleanup-max-batches-per-run", 2000)));
             long now = System.currentTimeMillis();
-            long blockCutoff = now - TimeUnit.DAYS.toMillis(Math.max(1, retentionDays));
-            long rollbackJobCutoff = now - TimeUnit.DAYS.toMillis(Math.max(1, rollbackJobRetentionDays));
+            CleanupRun run = new CleanupRun(now - TimeUnit.DAYS.toMillis(Math.max(1, retentionDays)),
+                    now - TimeUnit.DAYS.toMillis(Math.max(1, rollbackJobRetentionDays)),
+                    limit, maximum);
+            activeCleanup = run.finished;
+            scheduleCleanupBatch(run);
+            return run.finished;
+        }
+    }
 
-            int deletedBlockRecords;
-            try (PreparedStatement statement = databaseConnection.prepareStatement(
-                    "DELETE FROM block_changes WHERE happened_at < ? AND rollback_pending = 0")) {
-                statement.setLong(1, blockCutoff);
-                deletedBlockRecords = statement.executeUpdate();
+    private void scheduleCleanupBatch(CleanupRun run) {
+        if (run.finished.isDone()) return;
+        if (run.batches >= run.maxBatches) {
+            run.finished.complete(new DatabaseCleanupResult(run.blockDeleted, run.jobsDeleted,
+                    run.batches, true));
+            return;
+        }
+        // Maintenance failures are not by themselves proof that block
+        // INSERTs cannot proceed. The actual write path tracks write health.
+        CompletableFuture<RetentionCleanupBatcher.Step> attempt = submit(db ->
+                inTransaction(db, () -> run.jobsPhase
+                        ? RetentionCleanupBatcher.deleteExpiredJobStep(db, run.jobCutoff, run.batchSize)
+                        : RetentionCleanupBatcher.deleteExpiredHistory(db, run.blockCutoff, run.batchSize)),
+                false, true);
+        attempt.whenComplete((step, failure) -> {
+            if (failure != null) {
+                Throwable cause = failure instanceof CompletionException wrapper
+                        ? wrapper.getCause() : failure;
+                if (cause instanceof SQLException sql && MigrationStoragePolicy.isSqliteFull(sql)
+                        && run.batchSize > 1) {
+                    int old = run.batchSize;
+                    run.batchSize = Math.max(1, old / 2);
+                    if (!run.warnedAboutSpace) {
+                        run.warnedAboutSpace = true;
+                        plugin.getLogger().warning("Retention cleanup reached SQLITE_FULL; "
+                                + "retrying smaller transactions (" + old + " -> "
+                                + run.batchSize + "). SQLite WAL, temp and quota limits "
+                                + "remain unverified; originals are preserved.");
+                    }
+                    scheduleCleanupBatch(run);
+                    return;
+                }
+                run.finished.completeExceptionally(failure);
+                return;
             }
-
-            String terminalJobCondition = """
-                    updated_at < ?
-                    AND (
-                        status IN ('COMPLETED', 'UNDONE')
-                        OR (
-                            status = 'FAILED'
-                            AND NOT EXISTS (
-                                SELECT 1
-                                FROM rollback_job_changes
-                                WHERE job_id = rollback_jobs.id
-                                  AND before_data IS NOT NULL
-                                  AND conflicted = 0
-                                  AND undone = 0
-                            )
-                        )
-                    )
-                    """;
-
-            try (PreparedStatement statement = databaseConnection.prepareStatement("""
-                    DELETE FROM block_changes
-                    WHERE rollback_pending = 1
-                      AND id IN (
-                          SELECT pending_audit_id
-                          FROM rollback_job_changes
-                          WHERE pending_audit_id IS NOT NULL
-                            AND job_id IN (
-                                SELECT id
-                                FROM rollback_jobs
-                                WHERE %s
-                            )
-                      )
-                    """.formatted(terminalJobCondition))) {
-                statement.setLong(1, rollbackJobCutoff);
-                statement.executeUpdate();
+            run.blockDeleted += step.blocksDeleted();
+            run.jobsDeleted += step.jobsDeleted();
+            run.batches++;
+            if (!run.jobsPhase && step.blocksDeleted() < run.batchSize) {
+                run.jobsPhase = true;
+            } else if (run.jobsPhase && !step.selectedWork()) {
+                run.finished.complete(new DatabaseCleanupResult(run.blockDeleted,
+                        run.jobsDeleted, run.batches, false));
+                return;
             }
+            scheduleCleanupBatch(run);
+        });
+    }
 
-            int deletedRollbackJobs;
-            try (PreparedStatement statement = databaseConnection.prepareStatement(
-                    "DELETE FROM rollback_jobs WHERE " + terminalJobCondition)) {
-                statement.setLong(1, rollbackJobCutoff);
-                deletedRollbackJobs = statement.executeUpdate();
-            }
+    private static final class CleanupRun {
+        final long blockCutoff;
+        final long jobCutoff;
+        final int maxBatches;
+        final CompletableFuture<DatabaseCleanupResult> finished = new CompletableFuture<>();
+        int batchSize;
+        int batches;
+        long blockDeleted;
+        long jobsDeleted;
+        boolean jobsPhase;
+        boolean warnedAboutSpace;
 
-            return new DatabaseCleanupResult(deletedBlockRecords, deletedRollbackJobs);
-        }), false);
+        CleanupRun(long blockCutoff, long jobCutoff, int batchSize, int maxBatches) {
+            this.blockCutoff = blockCutoff;
+            this.jobCutoff = jobCutoff;
+            this.batchSize = batchSize;
+            this.maxBatches = maxBatches;
+        }
     }
 
     /**
@@ -2128,6 +2160,11 @@ final class Database {
     }
 
     private <T> CompletableFuture<T> submit(SqlOperation<T> work, boolean timedQuery) {
+        return submit(work, timedQuery, false);
+    }
+
+    private <T> CompletableFuture<T> submit(SqlOperation<T> work, boolean timedQuery,
+                                             boolean cleanupOperation) {
         CompletableFuture<T> future = new CompletableFuture<>();
         if (!running) {
             future.completeExceptionally(new IllegalStateException("FragGuard's database is not running."));
@@ -2140,7 +2177,8 @@ final class Database {
                 future.completeExceptionally(new IllegalStateException("FragGuard's database is not running."));
                 return future;
             }
-            operation = new DatabaseOperation<>(acceptedWriteSequence.get(), work, future, timedQuery);
+            operation = new DatabaseOperation<>(acceptedWriteSequence.get(), work, future,
+                    timedQuery, cleanupOperation);
             if (!operationQueue.offer(operation)) {
                 future.completeExceptionally(new IllegalStateException("FragGuard's database operation queue is full."));
                 warnStorage("FragGuard database operation queue is full (" + operationCapacity + ").", null);
@@ -2343,15 +2381,22 @@ final class Database {
         try {
             T result = operation.work.execute(connection);
             operation.future.complete(result);
-            healthy = true;
-            lastError = "";
+            if (!operation.cleanupOperation) {
+                healthy = true;
+                lastError = "";
+            }
         } catch (Throwable exception) {
             if (exception instanceof SQLException sqlException
                     && !isExpectedTimedQueryCancellation(operation.timedQuery,
                     operation.cancellationRequested, sqlException)) {
-                healthy = false;
-                lastError = exception.getMessage();
-                warnStorage("FragGuard database operation failed; check SQLite storage health.", exception);
+                if (operation.cleanupOperation) {
+                    warnStorage("FragGuard retention cleanup batch failed; check SQLite WAL/temp/quota. "
+                            + "Live logging health is measured separately.", exception);
+                } else {
+                    healthy = false;
+                    lastError = exception.getMessage();
+                    warnStorage("FragGuard database operation failed; check SQLite storage health.", exception);
+                }
             }
             operation.future.completeExceptionally(exception);
         } finally {
@@ -2963,14 +3008,17 @@ final class Database {
         private final SqlOperation<T> work;
         private final CompletableFuture<T> future;
         private final boolean timedQuery;
+        private final boolean cleanupOperation;
         private volatile boolean cancellationRequested;
 
         private DatabaseOperation(long writeBarrier, SqlOperation<T> work,
-                                  CompletableFuture<T> future, boolean timedQuery) {
+                                  CompletableFuture<T> future, boolean timedQuery,
+                                  boolean cleanupOperation) {
             this.writeBarrier = writeBarrier;
             this.work = work;
             this.future = future;
             this.timedQuery = timedQuery;
+            this.cleanupOperation = cleanupOperation;
         }
     }
 }
