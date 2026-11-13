@@ -76,6 +76,48 @@ class DatabaseTest {
     }
 
     @Test
+    void isolatedRetentionFailureKeepsPriorCommitsAndNewBlockLoggingHealthy() throws Exception {
+        database = startDatabase();
+        long expired = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
+        java.util.ArrayList<BlockChange> oldHistory = new java.util.ArrayList<>();
+        for (int x = 1; x <= 12; x++) {
+            oldHistory.add(change(expired, 100L, x, 64, 2,
+                    "minecraft:stone", "minecraft:air"));
+        }
+        database.insertRequiredAsync(oldHistory).join();
+
+        // First batch (4 rows) commits. The second batch fails on row x=5.
+        // This simulates a later SQL failure without touching production files.
+        try (Connection conn = openDatabase(); Statement stmt = conn.createStatement()) {
+            stmt.execute("""
+                    CREATE TRIGGER reject_later_retention_batch
+                    BEFORE DELETE ON block_changes WHEN OLD.x = 5
+                    BEGIN SELECT RAISE(ABORT, 'simulated cleanup failure'); END
+                    """);
+        }
+        assertThrows(CompletionException.class,
+                () -> database.cleanupOldRecordsAsync(30, 30).join());
+        assertTrue(database.health().storageAvailable(),
+                "a failed cleanup DELETE is not proof that block logging failed");
+        assertTrue(database.health().lastError().isBlank(),
+                "the cleanup error must not falsely mark logging unavailable");
+
+        try (Connection conn = openDatabase(); Statement stmt = conn.createStatement();
+             ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(8, rows.getInt(1), "committed first batch must survive later rollback");
+        }
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(),
+                105L, 200, 64, 2, "minecraft:stone", "minecraft:air"))).join();
+        assertTrue(database.health().storageAvailable());
+        try (Connection conn = openDatabase(); Statement stmt = conn.createStatement();
+             ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(9, rows.getInt(1), "new history still records after cleanup failure");
+        }
+    }
+
+    @Test
     void migratesVersionOneDatabaseAndRetainsVerifiedPreUpgradeBackup() throws Exception {
         database = startDatabase();
         database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
@@ -1384,6 +1426,7 @@ class DatabaseTest {
         YamlConfiguration configuration = new YamlConfiguration();
         configuration.set("database-write-queue-capacity", 64);
         configuration.set("database-write-batch-size", 16);
+        configuration.set("database-retention-cleanup-batch-size", 4);
         configuration.set("database-query-timeout-seconds", 5);
         if (knownAccountFreeMiB > 0L) {
             configuration.set("database-migration-account-free-mib", knownAccountFreeMiB);
