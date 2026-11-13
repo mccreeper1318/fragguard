@@ -14,14 +14,15 @@ final class RetentionCleanupBatcher {
     record Step(int blocksDeleted, int jobsDeleted, boolean selectedWork) { }
 
     private static final String ELIGIBLE_JOB = """
-            updated_at < ?
-            AND (status IN ('COMPLETED', 'UNDONE')
-                 OR (status = 'FAILED' AND NOT EXISTS (
-                     SELECT 1 FROM rollback_job_changes rc
-                     WHERE rc.job_id = rollback_jobs.id
-                       AND rc.before_data IS NOT NULL
-                       AND rc.conflicted = 0 AND rc.undone = 0
-                 )))
+            status = 'PURGING'
+            OR (updated_at < ?
+                AND (status IN ('COMPLETED', 'UNDONE')
+                     OR (status = 'FAILED' AND NOT EXISTS (
+                         SELECT 1 FROM rollback_job_changes rc
+                         WHERE rc.job_id = rollback_jobs.id
+                           AND rc.before_data IS NOT NULL
+                           AND rc.conflicted = 0 AND rc.undone = 0
+                     ))))
             """;
 
     private RetentionCleanupBatcher() { }
@@ -59,13 +60,31 @@ final class RetentionCleanupBatcher {
         Long jobId = null;
         try (PreparedStatement select = db.prepareStatement(
                 "SELECT id FROM rollback_jobs WHERE " + ELIGIBLE_JOB
-                + " ORDER BY updated_at, id LIMIT 1")) {
+                + " ORDER BY CASE WHEN status = 'PURGING' THEN 0 ELSE 1 END, "
+                + "updated_at, id LIMIT 1")) {
             select.setLong(1, cutoff);
             try (ResultSet rows = select.executeQuery()) {
                 if (rows.next()) jobId = rows.getLong(1);
             }
         }
         if (jobId == null) return new Step(0, 0, false);
+
+        // P1 safety gate: permanently remove undo eligibility BEFORE the
+        // first destructive slice commits. BEGIN UNDO only accepts COMPLETED
+        // or FAILED; a PURGING job can never run with missing undo snapshots.
+        // The status is persisted in the SAME transaction as the deletion,
+        // and survives a batch-budget stop, SQLite error or server restart.
+        // Do not update updated_at: ongoing PURGING jobs must be resumed even
+        // after a process restart; they are always selected before new jobs.
+        try (PreparedStatement marker = db.prepareStatement("""
+                UPDATE rollback_jobs SET status = 'PURGING'
+                WHERE id = ? AND (""" + ELIGIBLE_JOB + ")")) {
+            marker.setLong(1, jobId);
+            marker.setLong(2, cutoff);
+            if (marker.executeUpdate() != 1) {
+                throw new SQLException("Rollback job stopped being eligible for safe retention purging");
+            }
+        }
 
         // Delete audit rows linked to EXACTLY the same bounded sequence slice
         // we will remove from the job below. Never delete audit links from
