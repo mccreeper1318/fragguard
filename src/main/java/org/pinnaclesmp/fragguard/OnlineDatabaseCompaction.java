@@ -215,7 +215,18 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
             Result evidence = readCandidateEvidence(candidate, sourceIdentity,
                     invocationMillis, completedMillis);
             job.check();
-            saveEvidence(evidence);
+            // SQLite VACUUM INTO does not promise an fsync of its output.
+            // Flush the candidate and its evidence before publishing VERIFYING;
+            // a power loss must never turn an unflushed file into a ready copy.
+            try (FileChannel output = FileChannel.open(candidate, StandardOpenOption.WRITE)) {
+                output.force(true);
+            }
+            job.check();
+            String operationId = maintenance.snapshot().operationId();
+            if (operationId.isBlank()) {
+                throw new IOException("Cannot bind candidate evidence to maintenance operation");
+            }
+            saveEvidence(evidence, operationId);
             job.check();
             // Persist only a lower-bound timestamp; exact copy identity is in
             // the candidate evidence file for downstream verification (#166).
@@ -322,11 +333,12 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
         }
     }
 
-    private static void saveEvidence(Result result) throws IOException {
+    private static void saveEvidence(Result result, String operationId) throws IOException {
         Path evidence = result.snapshotEvidence();
         Properties values = new Properties();
         values.setProperty("format", "fragguard-vacuum-snapshot-1");
         values.setProperty("verified", "false");
+        values.setProperty("maintenance_operation_id", operationId);
         values.setProperty("candidate", result.candidate().getFileName().toString());
         values.setProperty("source_identity_sha256", result.sourceIdentitySha256());
         values.setProperty("sqlite_snapshot_time", "between_invocation_and_completion");
@@ -354,6 +366,13 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
                 throw new IOException("Atomic compaction evidence persistence is unavailable", exception);
             }
             moved = true;
+            // Candidate directory rename durability is independent of the
+            // state store in the parent data directory. Fail closed if this
+            // host cannot persist the snapshot evidence directory update.
+            try (FileChannel directory = FileChannel.open(evidence.getParent(),
+                    StandardOpenOption.READ)) {
+                directory.force(true);
+            }
         } finally {
             // Never remove a partially written candidate or marker.
             // A failed temp metadata write is not a verified snapshot.
