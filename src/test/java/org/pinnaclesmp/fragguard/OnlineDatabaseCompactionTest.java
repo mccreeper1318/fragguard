@@ -68,6 +68,8 @@ class OnlineDatabaseCompactionTest {
             }
             assertEquals("fragguard-vacuum-snapshot-1", evidence.getProperty("format"));
             assertEquals("false", evidence.getProperty("verified"));
+            assertEquals(coordinator.snapshot().operationId(),
+                    evidence.getProperty("maintenance_operation_id"));
             assertEquals("between_invocation_and_completion",
                     evidence.getProperty("sqlite_snapshot_time"));
             assertEquals(result.candidate().getFileName().toString(),
