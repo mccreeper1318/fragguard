@@ -76,6 +76,109 @@ class DatabaseTest {
     }
 
     @Test
+    void isolatedRetentionFailureKeepsPriorCommitsAndNewBlockLoggingHealthy() throws Exception {
+        database = startDatabase();
+        long expired = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
+        java.util.ArrayList<BlockChange> oldHistory = new java.util.ArrayList<>();
+        for (int x = 1; x <= 12; x++) {
+            oldHistory.add(change(expired, 100L, x, 64, 2,
+                    "minecraft:stone", "minecraft:air"));
+        }
+        database.insertRequiredAsync(oldHistory).join();
+
+        // First batch (4 rows) commits. The second batch fails on row x=5.
+        // This simulates a later SQL failure without touching production files.
+        try (Connection conn = openDatabase(); Statement stmt = conn.createStatement()) {
+            stmt.execute("""
+                    CREATE TRIGGER reject_later_retention_batch
+                    BEFORE DELETE ON block_changes WHEN OLD.x = 5
+                    BEGIN SELECT RAISE(ABORT, 'simulated cleanup failure'); END
+                    """);
+        }
+        assertThrows(CompletionException.class,
+                () -> database.cleanupOldRecordsAsync(30, 30).join());
+        assertTrue(database.health().storageAvailable(),
+                "a failed cleanup DELETE is not proof that block logging failed");
+        assertTrue(database.health().lastError().isBlank(),
+                "the cleanup error must not falsely mark logging unavailable");
+
+        try (Connection conn = openDatabase(); Statement stmt = conn.createStatement();
+             ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(8, rows.getInt(1), "committed first batch must survive later rollback");
+        }
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(),
+                105L, 200, 64, 2, "minecraft:stone", "minecraft:air"))).join();
+        assertTrue(database.health().storageAvailable());
+        try (Connection conn = openDatabase(); Statement stmt = conn.createStatement();
+             ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(9, rows.getInt(1), "new history still records after cleanup failure");
+        }
+    }
+
+    @Test
+    void partiallyPurgedTerminalJobCannotStartUndoAndCleanupResumesSafely() throws Exception {
+        database = startDatabase();
+        long now = System.currentTimeMillis();
+        java.util.ArrayList<RollbackTarget> targets = new java.util.ArrayList<>();
+        for (int x = 1; x <= 9; x++) {
+            targets.add(new RollbackTarget("world", x, 64, 3,
+                    "minecraft:air", "minecraft:stone"));
+        }
+        RollbackJob job = database.createRollbackJobAsync(
+                ACTOR_UUID.toString(), "Builder", "world",
+                5, 3, 8, now - 1_000, now, false, targets).join();
+        List<RollbackJobChange> changes =
+                database.loadRollbackChangesAsync(job.id(), false).join();
+        assertEquals(9, changes.size());
+        database.prepareRollbackBatchAsync(job.id(),
+                changes.stream().map(change -> change.withBeforeData("minecraft:air")).toList()).join();
+        database.markRollbackBatchAppliedAsync(job.id(),
+                changes.stream().map(change ->
+                        new RollbackStepResult(change.sequence(), true, false)).toList()).join();
+        assertEquals("COMPLETED", database.completeRollbackJobAsync(job.id(), false)
+                .join().status());
+
+        // Age the completed job to the retention cutoff. The main database
+        // worker stays operational; this isolated test never alters production.
+        long expired = now - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
+        try (Connection conn = openDatabase(); Statement sql = conn.createStatement()) {
+            sql.executeUpdate("UPDATE rollback_jobs SET updated_at = " + expired
+                    + " WHERE id = " + job.id());
+            conn.setAutoCommit(false);
+            RetentionCleanupBatcher.Step first =
+                    RetentionCleanupBatcher.deleteExpiredJobStep(
+                            conn, now - java.util.concurrent.TimeUnit.DAYS.toMillis(30), 3);
+            conn.commit();
+            assertEquals(0, first.jobsDeleted());
+        }
+        assertEquals("PURGING", database.loadRollbackJobAsync(job.id()).join().status());
+        CompletionException failure = assertThrows(CompletionException.class,
+                () -> database.beginUndoAsync(job.id()).join(),
+                "undo cannot start after any snapshots have been pruned");
+        assertTrue(failure.getCause() instanceof IllegalStateException);
+        assertTrue(failure.getCause().getMessage().contains("PURGING"));
+        try (Connection conn = openDatabase(); Statement sql = conn.createStatement();
+             ResultSet rows = sql.executeQuery("SELECT COUNT(*) FROM rollback_job_changes "
+                     + "WHERE job_id = " + job.id())) {
+            assertTrue(rows.next());
+            assertEquals(6, rows.getLong(1),
+                    "exactly one bounded snapshot slice was pruned");
+        }
+        // A new cleanup pass must resume PURGING (not regard it as an
+        // unfinished rollback job) and finish removing all saved snapshots.
+        DatabaseCleanupResult completed = database.cleanupOldRecordsAsync(30, 30).join();
+        assertEquals(1, completed.rollbackJobsDeleted());
+        try (Connection conn = openDatabase(); Statement sql = conn.createStatement();
+             ResultSet rows = sql.executeQuery(
+                     "SELECT COUNT(*) FROM rollback_jobs WHERE id = " + job.id())) {
+            assertTrue(rows.next());
+            assertEquals(0, rows.getLong(1));
+        }
+    }
+
+    @Test
     void migratesVersionOneDatabaseAndRetainsVerifiedPreUpgradeBackup() throws Exception {
         database = startDatabase();
         database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
@@ -1384,6 +1487,7 @@ class DatabaseTest {
         YamlConfiguration configuration = new YamlConfiguration();
         configuration.set("database-write-queue-capacity", 64);
         configuration.set("database-write-batch-size", 16);
+        configuration.set("database-retention-cleanup-batch-size", 4);
         configuration.set("database-query-timeout-seconds", 5);
         if (knownAccountFreeMiB > 0L) {
             configuration.set("database-migration-account-free-mib", knownAccountFreeMiB);
