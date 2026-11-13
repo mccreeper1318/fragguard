@@ -33,6 +33,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
       - name: Check out release tag
@@ -64,19 +65,26 @@ jobs:
             VERSION="${VERSION#v}"
           fi
 
-          # Stable example: 26.2-1.1.0
+          # Stable examples: 26.2-1.1.0, 26.3-1.2.1-h.1, 26.3-1.2.1-h.2
           # Prerelease examples: 26.2-1.1.0-beta.1, 26.2-1.1.0-rc.1
           if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
             BASE_VERSION="${BASH_REMATCH[1]}"
           else
             echo "Invalid FragGuard release tag: $RAW_TAG"
-            echo "Expected a tag such as 26.2-1.1.0, 26.2-1.1.0-beta.1, v26.2-1.1.0, or v26.2-1.1.0-rc.1."
+            echo "Expected stable 26.3-1.2.1 or 26.3-1.2.1-h.1, or prerelease 26.3-1.2.1-beta.1 (optional v prefix)."
             exit 1
           fi
 
           TAG_IS_PRERELEASE=false
           if [[ "$VERSION" != "$BASE_VERSION" ]]; then
-            TAG_IS_PRERELEASE=true
+            if [[ "$VERSION" =~ ^[0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+\\.[0-9]+-h\\.[1-9][0-9]*$ ]]; then
+              echo "Stable hotfix tag detected: $VERSION"
+            elif [[ "$VERSION" =~ -h\\. ]]; then
+              echo "Invalid hotfix suffix: use -h.1, -h.2, etc. (positive integer)."
+              exit 1
+            else
+              TAG_IS_PRERELEASE=true
+            fi
           fi
 
           RELEASE_IS_PRERELEASE="$(
@@ -321,3 +329,12 @@ jobs:
             exit 1
           fi
           gh release upload "$RELEASE_TAG" "${FILES[@]}" --clobber
+
+          # The hotfix suffix -h.N represents a production STABLE release,
+          # not a beta/RC. Explicitly set Latest after artifacts are verified
+          # and uploaded, because GitHub's automatic semantic sorting may not
+          # recognize this repository-specific version convention.
+          if [[ "${{ needs.build-release.outputs.prerelease }}" == "false" ]]; then
+            gh release edit "$RELEASE_TAG" --latest
+            echo "Marked stable release $RELEASE_TAG as Latest."
+          fi
