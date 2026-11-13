@@ -67,22 +67,25 @@ final class RetentionCleanupBatcher {
         }
         if (jobId == null) return new Step(0, 0, false);
 
-        // Delete any pending audit rows before removing the saved job links
-        // used to find them. Both selections order by the same sequence,
-        // so an audit associated with a removed child was handled first.
+        // Delete audit rows linked to EXACTLY the same bounded sequence slice
+        // we will remove from the job below. Never delete audit links from
+        // later slices, or earlier audits could be orphaned.
         int deletedAudits;
         try (PreparedStatement audits = db.prepareStatement("""
                 DELETE FROM block_changes
                 WHERE rollback_pending = 1
                   AND id IN (
-                      SELECT pending_audit_id
-                      FROM rollback_job_changes
+                      SELECT pending_audit_id FROM rollback_job_changes
                       WHERE job_id = ? AND pending_audit_id IS NOT NULL
-                      ORDER BY sequence LIMIT ?
+                        AND sequence IN (
+                            SELECT sequence FROM rollback_job_changes
+                            WHERE job_id = ? ORDER BY sequence LIMIT ?
+                        )
                   )
                 """)) {
             audits.setLong(1, jobId);
-            audits.setInt(2, limit);
+            audits.setLong(2, jobId);
+            audits.setInt(3, limit);
             deletedAudits = audits.executeUpdate();
         }
         try (PreparedStatement saved = db.prepareStatement("""
