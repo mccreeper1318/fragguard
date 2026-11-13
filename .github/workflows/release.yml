@@ -60,7 +60,7 @@ jobs:
           # Shared tested parser: -h.1, -h.2, ... are stable hotfixes.
           # Beta/RC/alpha suffixes are prereleases. Reject malformed tags.
           VERSION_INFO="$(python3 scripts/release_tag_policy.py "$RAW_TAG")" || exit 1
-          IFS= read -r BASE_VERSION VERSION TAG_IS_PRERELEASE <<< "$VERSION_INFO"
+          read -r BASE_VERSION VERSION TAG_IS_PRERELEASE <<< "$VERSION_INFO"
           echo "Validated release tag: $VERSION (base $BASE_VERSION)"
           echo "Prerelease: $TAG_IS_PRERELEASE"
 
