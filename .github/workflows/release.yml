@@ -59,8 +59,35 @@ jobs:
           RAW_TAG="$RELEASE_TAG"
           # Shared tested parser: -h.1, -h.2, ... are stable hotfixes.
           # Beta/RC/alpha suffixes are prereleases. Reject malformed tags.
-          VERSION_INFO="$(python3 scripts/release_tag_policy.py "$RAW_TAG")" || exit 1
-          read -r BASE_VERSION VERSION TAG_IS_PRERELEASE <<< "$VERSION_INFO"
+          if [[ -f scripts/release_tag_policy.py ]]; then
+            VERSION_INFO="$(python3 scripts/release_tag_policy.py "$RAW_TAG")" || exit 1
+            read -r BASE_VERSION VERSION TAG_IS_PRERELEASE <<< "$VERSION_INFO"
+          else
+            # workflow_dispatch can rebuild historical tags predating the
+            # shared parser. Keep their original validation and prerelease
+            # behavior; no extra source files need be added to older tags.
+            echo "Historical release tag: using built-in legacy tag validator."
+            VERSION="$RAW_TAG"
+            if [[ "$VERSION" == v.* ]]; then
+              VERSION="${VERSION#v.}"
+            elif [[ "$VERSION" == v* ]]; then
+              VERSION="${VERSION#v}"
+            fi
+            if [[ "$VERSION" =~ ^([0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+\\.[0-9]+)(-[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?$ ]]; then
+              BASE_VERSION="${BASH_REMATCH[1]}"
+            else
+              echo "Invalid historical FragGuard release tag: $RAW_TAG"
+              exit 1
+            fi
+            TAG_IS_PRERELEASE=false
+            if [[ "$VERSION" != "$BASE_VERSION" ]]; then
+              if [[ "$VERSION" =~ ^[0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+\\.[0-9]+-h\\.[1-9][0-9]*$ ]]; then
+                TAG_IS_PRERELEASE=false
+              else
+                TAG_IS_PRERELEASE=true
+              fi
+            fi
+          fi
           echo "Validated release tag: $VERSION (base $BASE_VERSION)"
           echo "Prerelease: $TAG_IS_PRERELEASE"
 
