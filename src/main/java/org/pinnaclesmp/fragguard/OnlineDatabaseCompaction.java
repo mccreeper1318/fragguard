@@ -127,7 +127,10 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
                 } finally {
                     // The result is only observable when the SQLite connection,
                     // reservation and any state transitions have finished.
-                    latest = job.progress;
+                    Progress finished = job.progress;
+                    latest = new Progress(false, finished.stage(), finished.candidateFile(),
+                            finished.startedMillis(), finished.lowerBoundCutoffMillis(),
+                            finished.candidateBytes(), finished.detail());
                     active.compareAndSet(job, null);
                 }
                 if (error == null) job.response.complete(result);
