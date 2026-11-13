@@ -695,6 +695,25 @@ build/libs/FragGuard-26.3-1.2.2.jar
 
 Put the JAR in the server's `plugins` folder and restart Paper.
 
+### Stable hotfix releases
+
+For urgent production fixes, release from the approved `main` hotfix commit
+using `26.3-1.2.1-h.1`, `26.3-1.2.1-h.2`, etc. Future base versions use
+the same `<base-version>-h.<positive-number>` pattern.
+
+These are **stable** GitHub releases, not prereleases. When publishing a
+release, select **Set as latest** and **do not** mark it as a prerelease.
+The release workflow validates the tag against the base Gradle version,
+rebuilds the tagged commit as `FragGuard-26.3-1.2.1-h.1.jar`, verifies the
+embedded plugin version and service packaging, uploads the JAR plus its
+SHA-256, and explicitly marks the completed stable release as **Latest**.
+The normal `-beta.N` and `-rc.N` tags remain prereleases.
+
+The emergency retention fix is documented separately under
+**26.3-1.2.1 Hotfix 1** in `changelog.md`; the original 1.2.1 release
+notes stay intact. Do not tag, publish or deploy an unmerged, untested
+hotfix branch.
+
 ## Notes and limitations
 
 - The `26.3-1.2.0` GUI implements investigation, structured filtering, rollback preset/preview/confirmation controls, and a browser for undoable rollback jobs.
