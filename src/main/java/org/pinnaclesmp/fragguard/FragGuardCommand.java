@@ -141,6 +141,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             }
             case "undo" -> handleUndo(player, args);
             case "diagnostics", "diag" -> handleDiagnostics(player, Arrays.copyOfRange(args, 1, args.length));
+            case "maintenance" -> handleMaintenance(player, Arrays.copyOfRange(args, 1, args.length));
             case "status" -> {
                 if (args.length == 2) {
                     sendRollbackJobStatus(player, args[1]);
@@ -1836,8 +1837,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         + "check console for details."));
                 return;
             }
-            if (!acknowledgeUnknown
-                    && report.decision() == CompactionStoragePreflight.Decision.ACKNOWLEDGEMENT_REQUIRED) {
+            // Keep the operator's explicitly inspected, successful preflight
+            // only for the short handoff into a maintenance compaction. The
+            // worker separately enforces a fresh (<30s) reservation check.
+            if (report.decision() == CompactionStoragePreflight.Decision.ACKNOWLEDGEMENT_REQUIRED
+                    || report.mayReserve()) {
                 capacityLastReports.put(operator, report);
             } else {
                 capacityLastReports.remove(operator);
@@ -1855,6 +1859,102 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 player.sendMessage(color("&cCompaction capacity preflight refused. "
                         + "Fix the reported shortages/unsafe candidates before proceeding."));
             }
+        }));
+    }
+
+    private void handleMaintenance(Player player, String[] args) {
+        MaintenanceCoordinator coordinator = plugin.getMaintenanceCoordinator();
+        OnlineDatabaseCompaction compaction = plugin.getOnlineCompaction();
+        if (coordinator == null || compaction == null) {
+            player.sendMessage(color("&cFragGuard maintenance controls are unavailable."));
+            return;
+        }
+        if (args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("status"))) {
+            MaintenanceSnapshot snapshot = coordinator.snapshot();
+            OnlineDatabaseCompaction.Progress progress = compaction.progress();
+            player.sendMessage(Component.text("Maintenance: " + snapshot.phase()
+                    + " | Operation " + snapshot.operationId(), NamedTextColor.GRAY));
+            player.sendMessage(Component.text("Compaction: " + progress.stage()
+                    + (progress.running() ? " (RUNNING)" : " (not running)")
+                    + " | Candidate " + (progress.candidateFile().isEmpty()
+                        ? "none" : progress.candidateFile()), NamedTextColor.GRAY));
+            player.sendMessage(Component.text(progress.detail(), NamedTextColor.GRAY));
+            player.sendMessage(color("&eA finished candidate is UNVERIFIED until #166. "
+                    + "Never manually replace the active database before verification."));
+            return;
+        }
+        if (args.length != 1) {
+            player.sendMessage(color("&cUsage: &f/fg maintenance [status|compact|cancel]"));
+            return;
+        }
+        if ("cancel".equalsIgnoreCase(args[0])) {
+            if (compaction.cancel()) {
+                player.sendMessage(color("&eSQLite compaction cancellation requested. "
+                        + "The worker will preserve the active DB, WAL/SHM and any "
+                        + "partial unverified candidate."));
+            } else {
+                player.sendMessage(color("&7No SQLite compaction is running."));
+            }
+            return;
+        }
+        if (!"compact".equalsIgnoreCase(args[0])) {
+            player.sendMessage(color("&cUsage: &f/fg maintenance [status|compact|cancel]"));
+            return;
+        }
+        if (coordinator.snapshot().phase() != MaintenancePhase.ACTIVE) {
+            player.sendMessage(color("&cCompaction requires ACTIVE maintenance with "
+                    + "player admission restrictions. The countdown/scheduling controls "
+                    + "are handled by a later maintenance issue."));
+            return;
+        }
+        UUID operator = player.getUniqueId();
+        CompactionStoragePreflight.Report approved = capacityLastReports.get(operator);
+        long ageMs = approved == null ? Long.MAX_VALUE
+                : java.time.Duration.between(approved.snapshot().measuredAt(),
+                    Instant.now()).toMillis();
+        if (approved == null || !approved.mayReserve() || ageMs < 0 || ageMs > 25_000L) {
+            capacityLastReports.remove(operator);
+            player.sendMessage(color("&cA fresh approved storage preflight (within 25 seconds) "
+                    + "is required. Run &f/fg diagnostics preflight&c, and if it reports "
+                    + "unknown quota/temp space, use &f/fg diagnostics preflight acknowledge&c."));
+            return;
+        }
+        // Preflight can authorize this invocation only once. A retry requires
+        // a new reading of the live filesystem/quota evidence.
+        capacityLastReports.remove(operator);
+        CompletableFuture<OnlineDatabaseCompaction.Result> future = compaction.start(approved);
+        if (future.isCompletedExceptionally()) {
+            player.sendMessage(color("&cCannot begin compaction: check maintenance state, "
+                    + "storage preflight, and running candidate status."));
+            return;
+        }
+        player.sendMessage(color("&eStarting an asynchronous SQLite VACUUM INTO. "
+                + "Existing DB/WAL/SHM are preserved. The compacted copy is "
+                + "UNVERIFIED until #166; writes after its SQLite snapshot may "
+                + "not be included."));
+        future.whenComplete((result, failure) -> onServerThread(() -> {
+            if (!player.isOnline() || !player.isOp() || !player.hasPermission("fragguard.admin")) {
+                return;
+            }
+            if (failure != null) {
+                Throwable cause = unwrap(failure);
+                plugin.getLogger().log(Level.WARNING,
+                        "FragGuard online SQLite compaction failed; source retained", cause);
+                player.sendMessage(color("&cOnline compaction failed or was cancelled. "
+                        + "Active history is untouched; see /fg maintenance status and "
+                        + "review any unverified candidate before trying again."));
+                return;
+            }
+            player.sendMessage(Component.text("Compacted candidate: "
+                    + result.candidate().getFileName()
+                    + " (" + MigrationStoragePolicy.formatBytes(result.candidateBytes()) + ")",
+                    NamedTextColor.GRAY));
+            player.sendMessage(color("&eSnapshot is UNVERIFIED; the exact SQLite snapshot is "
+                    + "represented by the candidate and its evidence, not a guessed "
+                    + "countdown timestamp. #166 must verify it before activation."));
+            player.sendMessage(color("&eSource logging may have continued after the snapshot. "
+                    + "Replacing with this copy without #167 policy checks could lose "
+                    + "newer history and saved rollback information."));
         }));
     }
 
@@ -2035,6 +2135,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg diagnostics cancel &7- Cancel deep scan (partial report)."));
         player.sendMessage(color("&f/fg diagnostics preflight &7- Estimate compaction disk/quota/temp needs."));
         player.sendMessage(color("&f/fg diagnostics preflight acknowledge &7- Accept unknown headroom, not shortages."));
+        player.sendMessage(color("&f/fg maintenance status &7- Show current database maintenance and copy status."));
+        player.sendMessage(color("&f/fg maintenance compact &7- During ACTIVE maintenance, start an unverified SQLite copy."));
+        player.sendMessage(color("&f/fg maintenance cancel &7- Interrupt active SQLite compaction."));
         player.sendMessage(color("&7Only server operators can use these commands."));
     }
 
@@ -2045,10 +2148,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
 
         if (args.length == 1) {
-            return partial(args[0], List.of("lookup", "rollback", "undo", "status", "diagnostics", "help"));
+            return partial(args[0], List.of("lookup", "rollback", "undo", "status", "diagnostics", "maintenance", "help"));
         }
 
         String subCommand = args[0].toLowerCase(Locale.ROOT);
+        if (subCommand.equals("maintenance")) {
+            return args.length == 2
+                    ? partial(args[1], List.of("status", "compact", "cancel"))
+                    : Collections.emptyList();
+        }
         if (subCommand.equals("diagnostics") || subCommand.equals("diag")) {
             if (args.length == 2) {
                 return partial(args[1], List.of("overview", "counts", "check", "deep",

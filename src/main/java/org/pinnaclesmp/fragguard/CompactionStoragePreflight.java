@@ -357,8 +357,8 @@ final class CompactionStoragePreflight implements AutoCloseable {
             }
         }
         Path marker = candidatesDirectory.resolve(RESERVATION_FILE);
-        Path candidate = candidatesDirectory.resolve("fragguard-"
-                + UUID.randomUUID() + ".candidate.db");
+        Path candidate = candidatesDirectory.resolve("fragguard-compact-"
+                + UUID.randomUUID() + ".db");
         // The atomic fixed-name marker rejects a simultaneous reservation in
         // this process or another process using the same server data folder.
         Files.writeString(marker, candidate.getFileName().toString() + "\n",
