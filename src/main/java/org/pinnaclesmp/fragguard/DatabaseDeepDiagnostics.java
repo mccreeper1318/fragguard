@@ -155,6 +155,7 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
 
     private final Path databaseFile;
     private final Path directory;
+    private final boolean fullIntegrityCheck;
     private final ExecutorService worker = Executors.newSingleThreadExecutor(daemon("FragGuard-Deep-Diagnostics"));
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(
             daemon("FragGuard-Deep-Diagnostics-Timeout"));
@@ -163,8 +164,19 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
     private volatile boolean closed;
 
     DatabaseDeepDiagnostics(Path pluginDirectory) {
+        this(pluginDirectory, null);
+    }
+
+    /**
+     * Scan one immutable compaction candidate, not the mutable production DB.
+     * A candidate must receive an unbounded integrity_check before its
+     * digest can be used for any approval decision (#166).
+     */
+    DatabaseDeepDiagnostics(Path pluginDirectory, Path candidateFile) {
         Path root = Objects.requireNonNull(pluginDirectory).toAbsolutePath().normalize();
-        this.databaseFile = root.resolve("fragguard.db");
+        this.databaseFile = candidateFile == null ? root.resolve("fragguard.db")
+                : candidateFile.toAbsolutePath().normalize();
+        this.fullIntegrityCheck = candidateFile != null;
         this.directory = root.resolve("diagnostic-reports");
     }
 
@@ -346,7 +358,7 @@ final class DatabaseDeepDiagnostics implements AutoCloseable {
                 request.phase = phase;
                 try (Statement statement = connection.createStatement()) {
                     request.statement = statement;
-                    try (ResultSet rows = statement.executeQuery("PRAGMA integrity_check(100)")) {
+                    try (ResultSet rows = statement.executeQuery(fullIntegrityCheck ? "PRAGMA integrity_check" : "PRAGMA integrity_check(100)")) {
                         int count = 0;
                         while (rows.next()) {
                             request.check();

@@ -24,6 +24,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private DatabaseDeepDiagnostics deepDiagnostics;
     private CompactionStoragePreflight compactionPreflight;
     private OnlineDatabaseCompaction onlineCompaction;
+    private CompactionCandidateVerifier candidateVerifier;
     private FragGuardCommand commandExecutor;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
@@ -76,6 +77,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         compactionPreflight = new CompactionStoragePreflight(getDataFolder().toPath());
         onlineCompaction = new OnlineDatabaseCompaction(
                 getDataFolder().toPath(), maintenance, compactionPreflight);
+        candidateVerifier = new CompactionCandidateVerifier(getDataFolder().toPath(), maintenance);
         try {
             maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
                     System::currentTimeMillis,
@@ -137,6 +139,20 @@ public final class FragGuardPlugin extends JavaPlugin {
         if (commandExecutor != null) {
             commandExecutor.clearRollbackPreviews();
             commandExecutor = null;
+        }
+
+        // Stop candidate read-only verification before releasing the maintenance
+        // state coordinator; verification must not outlive its state gate.
+        if (candidateVerifier != null) {
+            try {
+                candidateVerifier.close();
+            } catch (IllegalStateException exception) {
+                getLogger().log(Level.SEVERE, "Candidate verifier could not stop safely. "
+                        + "Keep the source and candidate until the process exits.", exception);
+                Bukkit.shutdown();
+            } finally {
+                candidateVerifier = null;
+            }
         }
 
         // Stop VACUUM INTO first, before the preflight reservation guard, the
@@ -269,6 +285,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     OnlineDatabaseCompaction getOnlineCompaction() {
         return onlineCompaction;
+    }
+
+    CompactionCandidateVerifier getCandidateVerifier() {
+        return candidateVerifier;
     }
 
     boolean maintenanceBlocksNewJobs() {
