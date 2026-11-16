@@ -65,7 +65,8 @@ final class CompactionReplacementPolicy implements AutoCloseable {
 
     /** A READY snapshot cannot reopen the source writer until #168 validates activation. */
     static boolean blocksWriterStartup(MaintenanceSnapshot state) {
-        return state.phase() == MaintenancePhase.READY_TO_SWAP;
+        return state.phase() == MaintenancePhase.READY_TO_SWAP
+                || state.phase() == MaintenancePhase.ACTIVATING;
     }
 
     record Decision(MaintenancePolicy policy, String status, Path policyFile,
@@ -235,7 +236,8 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     static ApprovedEvidence approvedEvidence(Path root, MaintenanceSnapshot state)
             throws IOException {
         if (state.phase() != MaintenancePhase.VERIFYING
-                && state.phase() != MaintenancePhase.READY_TO_SWAP) {
+                && state.phase() != MaintenancePhase.READY_TO_SWAP
+                && state.phase() != MaintenancePhase.ACTIVATING) {
             throw new IOException("Replacement policy requires a verified maintenance phase");
         }
         Path base = root.toAbsolutePath().normalize();

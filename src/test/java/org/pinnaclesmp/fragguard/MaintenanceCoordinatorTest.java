@@ -225,7 +225,7 @@ class MaintenanceCoordinatorTest {
         for (MaintenancePhase phase : new MaintenancePhase[]{
                 MaintenancePhase.ACTIVE, MaintenancePhase.COMPACTING,
                 MaintenancePhase.VERIFYING, MaintenancePhase.READY_TO_SWAP,
-                MaintenancePhase.FAILED}) {
+                MaintenancePhase.ACTIVATING, MaintenancePhase.FAILED}) {
             assertTrue(phase.blocksNewJobs(), () -> phase + " must block new rollback and undo jobs");
         }
     }

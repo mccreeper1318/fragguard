@@ -142,6 +142,9 @@ For a candidate named
    the original backup's SHA-256 and recorded sidecars, the installed
    candidate's exact SHA-256/size, operation/policy/consent evidence, and
    full read-only SQLite integrity, schema, indexes, history and undo digests.
+   It durably records **ACTIVATING** before opening the SQLite writer, so a
+   restart after a partial initialization revalidates the logical history
+   and new candidate WAL/SHM without mistaking them for the original's sidecars.
    Maintenance clears **only if** SQLite initialization also succeeds.
    On any mismatch Paper refuses to open FragGuard; stop the server and
    preserve **all files** for recovery.

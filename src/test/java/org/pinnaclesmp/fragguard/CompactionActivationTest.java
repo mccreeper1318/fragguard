@@ -37,7 +37,11 @@ class CompactionActivationTest {
                 assertEquals(receipt.candidateSha256(), verified.candidateSha256());
                 assertEquals(9L, verified.verifiedRows(),
                         "Six history records, a rollback job, undo snapshot and chunk reservation");
-                // This hook is called by the plugin only AFTER its writer initialized.
+                // The plugin persists ACTIVATING before DB.init() can
+                // switch journal_mode or create fresh WAL/SHM sidecars.
+                reopened.beginActivation().get(10, TimeUnit.SECONDS);
+                assertEquals(MaintenancePhase.ACTIVATING, reopened.snapshot().phase());
+                // This hook is called only AFTER successful DB.init().
                 reopened.finishVerifiedActivation().get(10, TimeUnit.SECONDS);
                 assertEquals(MaintenancePhase.IDLE, reopened.snapshot().phase());
             }
@@ -218,6 +222,76 @@ class CompactionActivationTest {
             assertTrue(instructions.contains("history"));
             assertTrue(instructions.contains("do not delete"));
             assertTrue(instructions.contains("is NOT rolled back"));
+        }
+    }
+
+    @Test
+    void interruptedBeforeSqliteOpenRecoversDurableActivatingState() throws Exception {
+        try (var job = prepared(MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
+            CompactionActivation.recordCleanShutdown(root, job.state.snapshot(), true);
+            manualSwap(job);
+            CompactionActivation.verifyInstalled(root, job.state.snapshot());
+            job.state.beginActivation().get(10, TimeUnit.SECONDS);
+            assertEquals(MaintenancePhase.ACTIVATING, job.state.snapshot().phase());
+            assertTrue(job.state.snapshot().blocksNewJobs());
+        }
+        try (MaintenanceCoordinator recovering = MaintenanceCoordinator.open(root)) {
+            assertEquals(MaintenancePhase.ACTIVATING, recovering.snapshot().phase());
+            assertEquals(9, CompactionActivation.verifyRecovering(root,
+                    recovering.snapshot()).verifiedRows());
+            recovering.finishVerifiedActivation().get(10, TimeUnit.SECONDS);
+            assertEquals(MaintenancePhase.IDLE, recovering.snapshot().phase());
+        }
+    }
+
+    @Test
+    void interruptedAfterSqliteChangesJournalModeStillRecoversWithoutDeletingBackup()
+            throws Exception {
+        Path backup;
+        try (var job = prepared(MaintenancePolicy.STRICT)) {
+            CompactionActivation.recordCleanShutdown(root, job.state.snapshot(), true);
+            manualSwap(job);
+            CompactionActivation.verifyInstalled(root, job.state.snapshot());
+            job.state.beginActivation().get(10, TimeUnit.SECONDS);
+            backup = root.resolve(CompactionActivation.backupName(job.state.snapshot()));
+            // DB.init() switches the copied DB's header to WAL; it can create
+            // NEW -wal/-shm sidecars before finishVerifiedActivation commits.
+            try (Connection sqlite = DriverManager.getConnection("jdbc:sqlite:" + job.source);
+                 Statement command = sqlite.createStatement()) {
+                command.execute("PRAGMA journal_mode=WAL");
+            }
+        }
+        assertTrue(Files.isRegularFile(backup));
+        try (MaintenanceCoordinator recovering = MaintenanceCoordinator.open(root)) {
+            assertEquals(MaintenancePhase.ACTIVATING, recovering.snapshot().phase());
+            var scan = CompactionActivation.verifyRecovering(root, recovering.snapshot());
+            assertEquals(9, scan.verifiedRows());
+            recovering.finishVerifiedActivation().get(10, TimeUnit.SECONDS);
+            assertEquals(MaintenancePhase.IDLE, recovering.snapshot().phase());
+        }
+        assertTrue(Files.isRegularFile(backup), "manual original backup must survive recovery");
+    }
+
+    @Test
+    void interruptedActivationRejectsChangedRollbackJobsAndPreservesLockedState()
+            throws Exception {
+        try (var job = prepared(MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
+            CompactionActivation.recordCleanShutdown(root, job.state.snapshot(), true);
+            manualSwap(job);
+            CompactionActivation.verifyInstalled(root, job.state.snapshot());
+            job.state.beginActivation().get(10, TimeUnit.SECONDS);
+            try (Connection sqlite = DriverManager.getConnection("jdbc:sqlite:" + job.source);
+                 Statement command = sqlite.createStatement()) {
+                command.execute("UPDATE rollback_jobs SET updated_at=updated_at+501 WHERE id=1");
+            }
+        }
+        try (MaintenanceCoordinator recovering = MaintenanceCoordinator.open(root)) {
+            assertEquals(MaintenancePhase.ACTIVATING, recovering.snapshot().phase());
+            assertThrows(IOException.class,
+                    () -> CompactionActivation.verifyRecovering(root, recovering.snapshot()));
+            assertEquals(MaintenancePhase.ACTIVATING, recovering.snapshot().phase(),
+                    "failed recovery cannot silently clear durable maintenance");
+            assertTrue(Files.isRegularFile(root.resolve("fragguard.db")));
         }
     }
 

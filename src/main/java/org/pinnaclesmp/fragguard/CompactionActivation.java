@@ -194,6 +194,118 @@ final class CompactionActivation {
         checkBackupSidecars(base, state, receipt);
     }
 
+    /**
+     * Startup after a crash DURING Database.init() is different from the
+     * initial manual swap: SQLite may already have changed journal_mode to
+     * WAL and created NEW sidecars. The durable ACTIVATING phase proves the
+     * first startup finished a no-WAL byte-for-byte candidate validation
+     * before permitting those changes. Never accept an ACTIVATING phase
+     * without its intact original backup and shutdown receipt.
+     */
+    static void requireRecoverableActivation(Path root, MaintenanceSnapshot state)
+            throws IOException {
+        Path base = root.toAbsolutePath().normalize();
+        safeRoot(base);
+        if (state.phase() != MaintenancePhase.ACTIVATING) {
+            throw new IOException("No durable in-progress activation to recover");
+        }
+        var approved = CompactionReplacementPolicy.approvedEvidence(base, state);
+        Properties receipt = read(receiptPath(base, state));
+        validateReceipt(base, state, approved, receipt);
+        Path candidate = base.resolve("compaction-candidates").resolve(state.candidateFile());
+        Path originalBackup = base.resolve(backupName(state));
+        Path installed = base.resolve("fragguard.db");
+        if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Unexpected pre-activation candidate in an ACTIVATING operation");
+        }
+        regular(originalBackup);
+        regular(installed);
+        checkBackupSidecars(base, state, receipt);
+        for (String suffix : SIDEcars) {
+            // Unlike the first startup, these can be legitimate NEW sidecars
+            // written by DB.init(). They must be safe regular files and the
+            // full read-only verification must validate their logical rows.
+            Path sidecar = base.resolve("fragguard.db" + suffix);
+            if (Files.exists(sidecar, LinkOption.NOFOLLOW_LINKS)) regular(sidecar);
+        }
+    }
+
+    static Activated verifyRecovering(Path root, MaintenanceSnapshot state)
+            throws Exception {
+        Path base = root.toAbsolutePath().normalize();
+        requireRecoverableActivation(base, state);
+        var approval = CompactionReplacementPolicy.approvedEvidence(base, state);
+        Properties receipt = read(receiptPath(base, state));
+        Path installed = base.resolve("fragguard.db");
+        Path backup = base.resolve(backupName(state));
+        if (Files.size(backup) != number(receipt, "original_bytes")
+                || !OnlineDatabaseCompaction.fileSha256(backup).equals(
+                        receipt.getProperty("original_sha256"))) {
+            throw new IOException("Original backup changed during interrupted activation");
+        }
+        String originalHash = approval.policy().getProperty("strict_source_final_sha256", "");
+        if (state.policy() == MaintenancePolicy.STRICT
+                && !originalHash.equals(receipt.getProperty("original_sha256"))) {
+            throw new IOException("Recovered STRICT original backup no longer matches approval");
+        }
+
+        String before = OnlineDatabaseCompaction.fileSha256(installed);
+        java.util.Map<String, String> sidecarsBefore = new java.util.LinkedHashMap<>();
+        for (String suffix : SIDEcars) {
+            Path sidecar = base.resolve("fragguard.db" + suffix);
+            sidecarsBefore.put(suffix, Files.exists(sidecar, LinkOption.NOFOLLOW_LINKS)
+                    ? OnlineDatabaseCompaction.fileSha256(sidecar) : "absent");
+        }
+
+        // A WAL-mode header changes the *file* SHA without changing any
+        // retained rows. The logical schema+table hashes MUST still equal
+        // the verified, original VACUUM snapshot; otherwise refuse recovery.
+        DatabaseDeepDiagnostics.Report report;
+        try (DatabaseDeepDiagnostics diagnostic = new DatabaseDeepDiagnostics(base, installed)) {
+            report = diagnostic.run(SCAN_TIMEOUT_SECONDS)
+                    .get(SCAN_TIMEOUT_SECONDS + 60L, TimeUnit.SECONDS);
+        }
+        if (!report.complete() || !report.passed()
+                || report.schemaVersion() != Database.SCHEMA_VERSION
+                || report.tables().size() != 4
+                || !report.schemaSha256().equals(
+                        approval.verified().getProperty("schema_sha256"))) {
+            throw new IOException("Interrupted activation failed full SQLite schema or integrity checks");
+        }
+        for (var entry : report.tables().entrySet()) {
+            String key = entry.getKey() + ".";
+            var digest = entry.getValue();
+            if (!Long.toString(digest.rows()).equals(
+                    approval.verified().getProperty(key + "rows"))
+                    || !Long.toString(digest.blobBytes()).equals(
+                            approval.verified().getProperty(key + "blob_bytes"))
+                    || !digest.sha256().equals(
+                            approval.verified().getProperty(key + "sha256"))) {
+                throw new IOException("Interrupted activation has different saved history "
+                        + "or rollback/undo records: " + entry.getKey());
+            }
+        }
+        requireRecoverableActivation(base, state);
+        if (!before.equals(OnlineDatabaseCompaction.fileSha256(installed))) {
+            throw new IOException("Installed SQLite database changed during activation recovery");
+        }
+        for (String suffix : SIDEcars) {
+            Path sidecar = base.resolve("fragguard.db" + suffix);
+            String after = Files.exists(sidecar, LinkOption.NOFOLLOW_LINKS)
+                    ? OnlineDatabaseCompaction.fileSha256(sidecar) : "absent";
+            if (!after.equals(sidecarsBefore.get(suffix))) {
+                throw new IOException("SQLite " + suffix + " changed during activation verification");
+            }
+        }
+        if (!receipt.getProperty("original_sha256").equals(
+                OnlineDatabaseCompaction.fileSha256(backup))) {
+            throw new IOException("Original recovery backup was modified during verification");
+        }
+        return new Activated(installed, backup,
+                approval.verified().getProperty("candidate_sha256"),
+                report.scannedRows(), state.policy().name());
+    }
+
     static Activated verifyInstalled(Path root, MaintenanceSnapshot state)
             throws Exception {
         Path base = root.toAbsolutePath().normalize();

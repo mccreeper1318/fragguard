@@ -55,12 +55,24 @@ public final class FragGuardPlugin extends JavaPlugin {
         boolean activationVerified = false;
         if (CompactionReplacementPolicy.blocksWriterStartup(maintenance.snapshot())) {
             try {
-                // Full snapshot/data integrity and original backup checks
-                // BEFORE DB.init() can create or modify any SQLite file.
-                var installed = CompactionActivation.verifyInstalled(
-                        getDataFolder().toPath(), maintenance.snapshot());
+                // The first startup requires the ORIGINAL candidate SHA and
+                // zero active sidecars. A crashed prior startup is only allowed
+                // through a persisted ACTIVATING stage and complete logical
+                // re-verification of the installed WAL-capable candidate.
+                boolean resuming = maintenance.snapshot().phase() == MaintenancePhase.ACTIVATING;
+                var installed = resuming
+                        ? CompactionActivation.verifyRecovering(
+                                getDataFolder().toPath(), maintenance.snapshot())
+                        : CompactionActivation.verifyInstalled(
+                                getDataFolder().toPath(), maintenance.snapshot());
+                if (!resuming) {
+                    // Persist this stage before DB.init() can change journal
+                    // mode, create new WAL/SHM, or initialize SQLite metadata.
+                    maintenance.beginActivation().get(30, TimeUnit.SECONDS);
+                }
                 activationVerified = true;
-                getLogger().info("Verified manual SQLite activation of "
+                getLogger().info((resuming ? "Recovered" : "Verified")
+                        + " manual SQLite activation of "
                         + installed.installed().getFileName()
                         + " (preserved backup: " + installed.backup().getFileName()
                         + ", checked records: " + installed.verifiedRows()
