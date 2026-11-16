@@ -95,9 +95,12 @@ final class IncrementalSqliteReclamation {
         int request = (int) Math.min(freeBefore, limit);
         // Fixed numeric SQL assembled only from our capped int; no arbitrary SQL.
         // The query timeout limits a stalled SQLite statement; no full VACUUM.
+        // sqlite-jdbc's Statement.execute() advances PRAGMA incremental_vacuum
+        // only once; executeUpdate() drains all requested vacuum steps before
+        // closing the statement, allowing the configured page budget to work.
         try (Statement statement = connection.createStatement()) {
             statement.setQueryTimeout(3);
-            statement.execute("PRAGMA incremental_vacuum(" + request + ")");
+            statement.executeUpdate("PRAGMA incremental_vacuum(" + request + ")");
         }
         long pagesAfter = pragma(connection, "page_count");
         long freeAfter = pragma(connection, "freelist_count");
