@@ -19,7 +19,7 @@
 
 ### Changed
 - Updated Java setup action to 6.2.0 (#174).
-- Updated Gradle wrapper to 9.9.0 (#175).
+- Updated Gradle wrapper to 9.9.1 (#175, #193).
 
 ### Fixed
 - Fixed cancelled database scans blocking future diagnostics (#176).
