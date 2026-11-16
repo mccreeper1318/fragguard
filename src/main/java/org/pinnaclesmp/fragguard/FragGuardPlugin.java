@@ -27,6 +27,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private CompactionCandidateVerifier candidateVerifier;
     private CompactionReplacementPolicy replacementPolicy;
     private FragGuardCommand commandExecutor;
+    private FragGuardGui gui;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
     private long lastStorageWarningAt;
@@ -163,7 +164,8 @@ public final class FragGuardPlugin extends JavaPlugin {
         changeListener = new BlockChangeListener(this, database);
         Bukkit.getPluginManager().registerEvents(changeListener, this);
         Bukkit.getPluginManager().registerEvents(new ShelfChangeListener(this, database), this);
-        Bukkit.getPluginManager().registerEvents(new FragGuardGui(this, database), this);
+        gui = new FragGuardGui(this, database);
+        Bukkit.getPluginManager().registerEvents(gui, this);
         commandExecutor = new FragGuardCommand(this, database);
         Bukkit.getPluginManager().registerEvents(commandExecutor, this);
         PluginCommand command = Objects.requireNonNull(getCommand("fg"), "Command /fg is missing from plugin.yml");
@@ -199,6 +201,7 @@ public final class FragGuardPlugin extends JavaPlugin {
             commandExecutor.clearRollbackPreviews();
             commandExecutor = null;
         }
+        gui = null;
 
         // Keep the policy worker alive through the final database shutdown.
         // STRICT needs the *finished*, checkpointed source for its final scan.
@@ -414,6 +417,15 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     FragGuardCommand getFragGuardCommand() {
         return commandExecutor;
+    }
+
+    FragGuardGui getFragGuardGui() {
+        return gui;
+    }
+
+    boolean maintenanceControlsReady() {
+        return maintenance != null && maintenanceAdmissionGate != null
+                && maintenanceNoticeDisplay != null && isEnabled();
     }
 
     int getGuiLookupFetchSize() {

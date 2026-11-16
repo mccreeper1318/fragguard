@@ -1,6 +1,6 @@
 # Player notifications for upcoming FragGuard database maintenance.
-# The countdown is scheduled by the future maintenance controls (#169); these
-# settings do NOT automatically start maintenance or run database compaction.
+# A trusted OP can schedule the countdown through /fg maintenance start.
+# These settings do NOT automatically start maintenance or run compaction.
 maintenance-countdown-seconds: 600
 # Chat warnings in seconds remaining (duplicates and out-of-range values ignored).
 maintenance-warning-seconds: [600, 300, 180, 60, 30, 10]

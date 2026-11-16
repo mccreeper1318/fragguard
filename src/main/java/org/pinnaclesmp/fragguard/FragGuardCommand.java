@@ -1862,6 +1862,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }));
     }
 
+    private volatile OnlineDatabaseCompaction.Result latestCompaction;
+    private final java.util.concurrent.atomic.AtomicBoolean maintenanceTransitionPending =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
     private void handleMaintenance(Player player, String[] args) {
         MaintenanceCoordinator coordinator = plugin.getMaintenanceCoordinator();
         OnlineDatabaseCompaction compaction = plugin.getOnlineCompaction();
@@ -1869,42 +1873,364 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             player.sendMessage(color("&cFragGuard maintenance controls are unavailable."));
             return;
         }
-        if (args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("status"))) {
-            MaintenanceSnapshot snapshot = coordinator.snapshot();
-            OnlineDatabaseCompaction.Progress progress = compaction.progress();
-            player.sendMessage(Component.text("Maintenance: " + snapshot.phase()
-                    + " | Operation " + snapshot.operationId(), NamedTextColor.GRAY));
-            player.sendMessage(Component.text("Compaction: " + progress.stage()
-                    + (progress.running() ? " (RUNNING)" : " (not running)")
-                    + " | Candidate " + (progress.candidateFile().isEmpty()
-                        ? "none" : progress.candidateFile()), NamedTextColor.GRAY));
-            player.sendMessage(Component.text(progress.detail(), NamedTextColor.GRAY));
-            player.sendMessage(color("&eA finished candidate is UNVERIFIED until #166. "
-                    + "Never manually replace the active database before verification."));
+        if (args.length == 0 || (args.length == 1 && args[0].equalsIgnoreCase("menu"))) {
+            FragGuardGui gui = plugin.getFragGuardGui();
+            if (gui != null) gui.openMaintenance(player);
+            else player.sendMessage(color("&cMaintenance menu is unavailable."));
             return;
         }
-        if (args.length != 1) {
-            player.sendMessage(color("&cUsage: &f/fg maintenance [status|compact|cancel]"));
-            return;
-        }
-        if ("cancel".equalsIgnoreCase(args[0])) {
-            if (compaction.cancel()) {
-                player.sendMessage(color("&eSQLite compaction cancellation requested. "
-                        + "The worker will preserve the active DB, WAL/SHM and any "
-                        + "partial unverified candidate."));
-            } else {
-                player.sendMessage(color("&7No SQLite compaction is running."));
+        String action = args[0].toLowerCase(Locale.ROOT);
+        MaintenanceSnapshot state = coordinator.snapshot();
+        switch (action) {
+            case "status" -> {
+                if (args.length != 1) {
+                    maintenanceUsage(player);
+                    return;
+                }
+                showMaintenanceStatus(player, state, compaction.progress());
             }
+            case "help" -> maintenanceUsage(player);
+            case "preview" -> {
+                if (args.length != 1) { maintenanceUsage(player); return; }
+                handleCapacityPreflight(player, false);
+            }
+            case "start" -> {
+                if (args.length > 3) { maintenanceUsage(player); return; }
+                String mode = args.length >= 2 ? args[1] : "strict";
+                MaintenancePolicy policy;
+                try {
+                    policy = MaintenanceUiActions.requestedPolicy(mode);
+                } catch (IllegalArgumentException incorrect) {
+                    maintenanceUsage(player);
+                    return;
+                }
+                if (policy == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                        && (args.length != 3 || !args[2].equalsIgnoreCase("acknowledge"))) {
+                    player.sendMessage(color("&cSnapshot mode can discard saved history, rollback/undo "
+                            + "records and retention changes after SQLite's actual copy. "
+                            + "Worlds do NOT roll back. To opt in explicitly, run "
+                            + "&f/fg maintenance start snapshot acknowledge&c."));
+                    return;
+                }
+                if (policy == MaintenancePolicy.STRICT
+                        && args.length == 3) { maintenanceUsage(player); return; }
+                if (!MaintenanceUiActions.canSchedule(state)) {
+                    player.sendMessage(color("&cExisting maintenance must finish or be safely cancelled first."));
+                    return;
+                }
+                if (!plugin.maintenanceControlsReady()) {
+                    player.sendMessage(color("&cMaintenance admission/countdown protection is not running."));
+                    return;
+                }
+                long now = System.currentTimeMillis();
+                long seconds = MaintenanceUiActions.countdownSeconds(
+                        plugin.getConfig().getInt("maintenance-countdown-seconds", 600));
+                if (now > Long.MAX_VALUE - seconds * 1_000L) {
+                    player.sendMessage(color("&cSystem clock is outside the scheduling range."));
+                    return;
+                }
+                if (!maintenanceTransitionPending.compareAndSet(false, true)) {
+                    player.sendMessage(color("&eA maintenance state change is already being saved."));
+                    return;
+                }
+                coordinator.schedule(player.getUniqueId(), now, now + seconds * 1_000L, policy)
+                        .whenComplete((saved, error) -> onServerThread(() -> {
+                            maintenanceTransitionPending.set(false);
+                            if (error != null || saved == null) {
+                                player.sendMessage(color("&cCould not schedule maintenance. No countdown started."));
+                                plugin.getLogger().log(Level.WARNING,
+                                        "Unable to persist maintenance countdown", error);
+                                return;
+                            }
+                            player.sendMessage(color("&eMaintenance scheduled: &f" + policy
+                                    + "&e; countdown &f" + seconds + " seconds&e."));
+                            if (policy == MaintenancePolicy.MAINTENANCE_SNAPSHOT) {
+                                player.sendMessage(color("&cSnapshot mode is NOT yet approved. "
+                                        + "An additional explicit history-loss acknowledgement "
+                                        + "is required after verification."));
+                            }
+                            player.sendMessage(color("&7Regular players see the configured yellow "
+                                    + "countdown Boss Bar and warnings. The server admission gate "
+                                    + "becomes restricted when the deadline arrives."));
+                        }));
+            }
+            case "cancel" -> cancelMaintenance(player, state, coordinator, compaction);
+            case "compact" -> {
+                if (args.length != 1) { maintenanceUsage(player); return; }
+                startMaintenanceCompaction(player, state, compaction);
+            }
+            case "verify" -> {
+                if (args.length != 1) { maintenanceUsage(player); return; }
+                if (!MaintenanceUiActions.canVerify(state)) {
+                    player.sendMessage(color("&cA compaction candidate in VERIFYING without "
+                            + "a verified manifest is required."));
+                    return;
+                }
+                OnlineDatabaseCompaction.Result result = latestCompaction;
+                if (result == null || !state.candidateFile().equals(
+                        result.candidate().getFileName().toString())) {
+                    player.sendMessage(color("&cNo candidate from the current running server "
+                            + "is available to verify. Do not reconstruct a candidate or "
+                            + "bypass snapshot evidence after a restart."));
+                    return;
+                }
+                CompactionCandidateVerifier verifier = plugin.getCandidateVerifier();
+                if (verifier == null) {
+                    player.sendMessage(color("&cDatabase candidate verifier is unavailable."));
+                    return;
+                }
+                CompletableFuture<CompactionCandidateVerifier.Result> task = verifier.verify(result);
+                if (task.isCompletedExceptionally()) {
+                    player.sendMessage(color("&cVerification is already running or unavailable."));
+                    return;
+                }
+                player.sendMessage(color("&eVerifying full SQLite integrity, history and undo "
+                        + "records in the background. No source files will be replaced."));
+                task.whenComplete((verified, error) -> onServerThread(() -> {
+                    if (error != null) {
+                        plugin.getLogger().log(Level.WARNING,
+                                "FragGuard candidate verification failed", unwrap(error));
+                        if (player.isOnline()) player.sendMessage(color("&cCandidate verification failed; "
+                                + "original preserved and replacement remains blocked. "
+                                + "Review console and maintenance status."));
+                    } else if (player.isOnline()) {
+                        player.sendMessage(color("&aCandidate verified: &f"
+                                + verified.candidate().getFileName()
+                                + "&a. A replacement policy must still be approved."));
+                    }
+                }));
+            }
+            case "approve" -> approveMaintenancePolicy(player, args, state);
+            case "instructions" -> {
+                if (args.length != 1) { maintenanceUsage(player); return; }
+                boolean strictPending = state.phase() == MaintenancePhase.VERIFYING
+                        && state.policy() == MaintenancePolicy.STRICT
+                        && !state.manifestFile().isBlank();
+                if (state.phase() != MaintenancePhase.READY_TO_SWAP && !strictPending) {
+                    player.sendMessage(color("&cThe candidate is not verified and approved. "
+                            + "Do not rename any SQLite files."));
+                    return;
+                }
+                player.sendMessage(color(strictPending
+                        ? "&eSTRICT approval is pending final clean-shutdown comparison. "
+                            + "These are PREVIEW instructions only; STOP Paper first and "
+                            + "DO NOT rename any files unless a clean shutdown receipt is written."
+                        : "&eStop Paper completely. Only after the clean "
+                            + "shutdown receipt is written may you follow these steps:"));
+                try {
+                    for (String line : CompactionActivation.manualInstructions(
+                            plugin.getDataFolder().toPath(), state)) {
+                        player.sendMessage(Component.text(line, NamedTextColor.GRAY));
+                    }
+                } catch (RuntimeException problem) {
+                    player.sendMessage(color("&cCould not resolve safe candidate filenames."));
+                }
+            }
+            default -> maintenanceUsage(player);
+        }
+    }
+
+    private void maintenanceUsage(Player player) {
+        player.sendMessage(color("&bMaintenance commands:"));
+        player.sendMessage(color("&f/fg maintenance &7- Open in-game database maintenance menu."));
+        player.sendMessage(color("&f/fg maintenance start [strict] &7- Start configured countdown (default STRICT)."));
+        player.sendMessage(color("&f/fg maintenance start snapshot acknowledge &7- Opt in to snapshot scheduling."));
+        player.sendMessage(color("&f/fg maintenance status &7- Stage, progress, sizes, policy."));
+        player.sendMessage(color("&f/fg maintenance preview &7- Read-only storage preflight."));
+        player.sendMessage(color("&f/fg maintenance compact &7- Make one SQLite candidate while ACTIVE."));
+        player.sendMessage(color("&f/fg maintenance verify &7- Full read-only candidate validation."));
+        player.sendMessage(color("&f/fg maintenance approve &7- Prepare STRICT approval at clean shutdown."));
+        player.sendMessage(color("&f/fg maintenance approve snapshot-acknowledge &7- Explicitly accept snapshot loss."));
+        player.sendMessage(color("&f/fg maintenance instructions &7- Manual stopped-server file steps."));
+        player.sendMessage(color("&f/fg maintenance cancel &7- Cancel only safe pre-swap stages."));
+    }
+
+    private void showMaintenanceStatus(Player player, MaintenanceSnapshot state,
+                                       OnlineDatabaseCompaction.Progress copying) {
+        player.sendMessage(color("&8&m-----&r &bFragGuard Database Maintenance &8&m-----"));
+        player.sendMessage(Component.text("Stage: " + state.phase()
+                + " | Policy: " + state.policy()
+                + " | Operation: " + (state.operationId().isBlank()
+                        ? "none" : state.operationId()), NamedTextColor.GRAY));
+        if (state.phase() == MaintenancePhase.COUNTDOWN) {
+            long seconds = Math.max(0L,
+                    (state.countdownEndsAtMillis() - System.currentTimeMillis() + 999L) / 1000L);
+            player.sendMessage(Component.text("Time remaining: " + seconds + " seconds ("
+                    + MaintenanceUiActions.countdownPercent(state, System.currentTimeMillis())
+                    + "% of countdown remaining)", NamedTextColor.YELLOW));
+        }
+        if (copying.running()) {
+            player.sendMessage(Component.text("Compaction: " + copying.stage()
+                    + " | Current size: " + MigrationStoragePolicy.formatBytes(
+                        Math.max(0L, copying.candidateBytes()))
+                    + " (total is unknown; no estimated percent)",
+                    NamedTextColor.GRAY));
+        }
+        CompactionCandidateVerifier verifier = plugin.getCandidateVerifier();
+        if (verifier != null && verifier.progress().running()) {
+            var progress = verifier.progress();
+            player.sendMessage(Component.text("Verification: " + progress.stage()
+                    + " | " + progress.recordsScanned() + " records inspected (total unknown)",
+                    NamedTextColor.GRAY));
+        }
+        if (!state.candidateFile().isBlank()) {
+            player.sendMessage(Component.text("Candidate: " + state.candidateFile(),
+                    NamedTextColor.GRAY));
+            try {
+                java.nio.file.Path root = plugin.getDataFolder().toPath();
+                java.nio.file.Path original = root.resolve("fragguard.db");
+                java.nio.file.Path candidate = root.resolve("compaction-candidates")
+                        .resolve(state.candidateFile());
+                if (java.nio.file.Files.isRegularFile(original)
+                        && java.nio.file.Files.isRegularFile(candidate)) {
+                    long before = java.nio.file.Files.size(original);
+                    long after = java.nio.file.Files.size(candidate);
+                    player.sendMessage(Component.text("Original main DB "
+                            + MigrationStoragePolicy.formatBytes(before)
+                            + " | Candidate " + MigrationStoragePolicy.formatBytes(after)
+                            + " | Difference " + MigrationStoragePolicy.formatBytes(
+                                Math.abs(before - after))
+                            + (after <= before ? " smaller" : " larger")
+                            + " (excludes live WAL/SHM)", NamedTextColor.GRAY));
+                }
+            } catch (java.io.IOException exception) {
+                player.sendMessage(color("&7Size comparison unavailable; files remain unchanged."));
+            }
+        }
+        player.sendMessage(color(state.manifestFile().isBlank()
+                ? "&eCandidate: not yet fully verified."
+                : "&aCandidate integrity manifest: &f" + state.manifestFile()));
+        player.sendMessage(Component.text(state.detail(), NamedTextColor.GRAY));
+        if (state.phase() == MaintenancePhase.READY_TO_SWAP) {
+            player.sendMessage(color("&eSTOP Paper and confirm its clean-shutdown receipt "
+                    + "before moving files. Use /fg maintenance instructions."));
+        } else if (state.phase() == MaintenancePhase.FAILED
+                || state.phase() == MaintenancePhase.ACTIVATING) {
+            player.sendMessage(color("&cKeep source, backup, candidate, WAL/SHM and manifests. "
+                    + "Do not delete or mix SQLite files."));
+        }
+        if (state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                && state.phase() != MaintenancePhase.IDLE) {
+            player.sendMessage(color("&cSnapshot cutoff is within the actual VACUUM "
+                    + "invocation-to-completion window, NOT a precise countdown time. "
+                    + "Post-snapshot history/undo/retention may be lost; worlds never roll back."));
+        }
+    }
+
+    private void cancelMaintenance(Player player, MaintenanceSnapshot state,
+                                   MaintenanceCoordinator coordinator,
+                                   OnlineDatabaseCompaction compaction) {
+        if (!MaintenanceUiActions.canCancel(state)) {
+            player.sendMessage(color("&cCancellation is not available at this stage. "
+                    + "READY/ACTIVATING requires preserving recovery evidence."));
             return;
         }
-        if (!"compact".equalsIgnoreCase(args[0])) {
-            player.sendMessage(color("&cUsage: &f/fg maintenance [status|compact|cancel]"));
+        if (state.phase() == MaintenancePhase.COMPACTING && compaction.cancel()) {
+            player.sendMessage(color("&eCompaction cancellation requested. SQLite "
+                    + "worker will preserve the source and unverified candidate."));
             return;
         }
-        if (coordinator.snapshot().phase() != MaintenancePhase.ACTIVE) {
+        if (state.phase() == MaintenancePhase.VERIFYING) {
+            CompactionCandidateVerifier verifier = plugin.getCandidateVerifier();
+            if (verifier != null && verifier.cancel()) {
+                player.sendMessage(color("&eVerification cancellation requested. "
+                        + "Original and candidate files remain available."));
+                return;
+            }
+        }
+        if (state.phase() == MaintenancePhase.COMPACTING) {
+            player.sendMessage(color("&cCompaction worker is already stopping or unavailable. "
+                    + "Status may change; try again after checking."));
+            return;
+        }
+        CompactionCandidateVerifier runningVerifier = plugin.getCandidateVerifier();
+        if (state.phase() == MaintenancePhase.FAILED
+                && (compaction.progress().running()
+                    || (runningVerifier != null && runningVerifier.progress().running()))) {
+            player.sendMessage(color("&cMaintenance worker still stopping. "
+                    + "Wait for it to finish before cancelling FAILED state."));
+            return;
+        }
+        if (!maintenanceTransitionPending.compareAndSet(false, true)) {
+            player.sendMessage(color("&eA maintenance transition is already pending."));
+            return;
+        }
+        coordinator.cancel("Cancelled explicitly by administrator "
+                + player.getUniqueId() + "; original database preserved")
+                .whenComplete((saved, error) -> onServerThread(() -> {
+                    maintenanceTransitionPending.set(false);
+                    if (error != null) {
+                        player.sendMessage(color("&cCould not persist maintenance cancellation. "
+                                + "Restrictions remain until resolved."));
+                        plugin.getLogger().log(Level.SEVERE, "Maintenance cancellation failed", error);
+                    } else {
+                        player.sendMessage(color("&aMaintenance cancelled; original database "
+                                + "and any candidate are preserved for staff review."));
+                    }
+                }));
+    }
+
+    private void approveMaintenancePolicy(Player player, String[] args,
+                                         MaintenanceSnapshot state) {
+        if (!MaintenanceUiActions.canApprove(state)) {
+            player.sendMessage(color("&cFull candidate verification must complete first."));
+            return;
+        }
+        CompactionReplacementPolicy policy = plugin.getReplacementPolicy();
+        if (policy == null) {
+            player.sendMessage(color("&cDatabase replacement policy service is unavailable."));
+            return;
+        }
+        if (state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                && (args.length != 2
+                    || !args[1].equalsIgnoreCase("snapshot-acknowledge"))) {
+            player.sendMessage(color("&cSNAPSHOT REPLACEMENT WARNING: The actual SQLite "
+                    + "snapshot is captured between VACUUM invocation and completion, not "
+                    + "the maintenance countdown. Replacing the DB may permanently lose "
+                    + "ALL FragGuard history, rollback/undo and retention updates after "
+                    + "that snapshot. The Minecraft world does NOT roll back. "
+                    + "To explicitly accept: &f/fg maintenance approve snapshot-acknowledge"));
+            return;
+        }
+        if (state.policy() == MaintenancePolicy.STRICT && args.length != 1) {
+            maintenanceUsage(player);
+            return;
+        }
+        if (!maintenanceTransitionPending.compareAndSet(false, true)) {
+            player.sendMessage(color("&eA maintenance operation is already pending."));
+            return;
+        }
+        String acknowledgement = state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                ? CompactionReplacementPolicy.SNAPSHOT_ACKNOWLEDGEMENT : "";
+        policy.prepare(player.getUniqueId(), acknowledgement)
+                .whenComplete((decision, error) -> onServerThread(() -> {
+                    maintenanceTransitionPending.set(false);
+                    if (error != null || decision == null) {
+                        player.sendMessage(color("&cReplacement policy not approved. Original "
+                                + "database remains active and unchanged; see server console."));
+                        plugin.getLogger().log(Level.WARNING,
+                                "Failed to prepare maintenance replacement policy", error);
+                        return;
+                    }
+                    if (decision.approved()) {
+                        player.sendMessage(color("&aSnapshot replacement policy approved. "
+                                + "WARNING: post-snapshot FragGuard history, rollback/undo and "
+                                + "retention changes can be lost. Minecraft worlds are unchanged. "
+                                + "Stop Paper completely; wait for a clean shutdown receipt."));
+                    } else {
+                        player.sendMessage(color("&eSTRICT policy pending: stop Paper cleanly. "
+                                + "After all writes drain and SQLite checkpoints, FragGuard will "
+                                + "compare the original against the candidate and issue the "
+                                + "activation receipt only if every retained record matches."));
+                    }
+                }));
+    }
+
+    private void startMaintenanceCompaction(Player player, MaintenanceSnapshot state,
+                                            OnlineDatabaseCompaction compaction) {
+        if (!MaintenanceUiActions.canCompact(state)) {
             player.sendMessage(color("&cCompaction requires ACTIVE maintenance with "
-                    + "player admission restrictions. The countdown/scheduling controls "
-                    + "are handled by a later maintenance issue."));
+                    + "the admission gate closed. Use /fg maintenance start first."));
             return;
         }
         UUID operator = player.getUniqueId();
@@ -1915,46 +2241,36 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         if (approved == null || !approved.mayReserve() || ageMs < 0 || ageMs > 25_000L) {
             capacityLastReports.remove(operator);
             player.sendMessage(color("&cA fresh approved storage preflight (within 25 seconds) "
-                    + "is required. Run &f/fg diagnostics preflight&c, and if it reports "
-                    + "unknown quota/temp space, use &f/fg diagnostics preflight acknowledge&c."));
+                    + "is required. Run /fg diagnostics preflight, and acknowledge "
+                    + "unknown headroom only after inspecting the report."));
             return;
         }
-        // Preflight can authorize this invocation only once. A retry requires
-        // a new reading of the live filesystem/quota evidence.
         capacityLastReports.remove(operator);
         CompletableFuture<OnlineDatabaseCompaction.Result> future = compaction.start(approved);
         if (future.isCompletedExceptionally()) {
-            player.sendMessage(color("&cCannot begin compaction: check maintenance state, "
-                    + "storage preflight, and running candidate status."));
+            player.sendMessage(color("&cCompaction already running or blocked by state/preflight."));
             return;
         }
-        player.sendMessage(color("&eStarting an asynchronous SQLite VACUUM INTO. "
-                + "Existing DB/WAL/SHM are preserved. The compacted copy is "
-                + "UNVERIFIED until #166; writes after its SQLite snapshot may "
-                + "not be included."));
+        latestCompaction = null;
+        player.sendMessage(color("&eCreating an asynchronous SQLite compacted candidate. "
+                + "The original and its WAL/SHM remain untouched. No guessed progress % "
+                + "or automatic DB replacement."));
         future.whenComplete((result, failure) -> onServerThread(() -> {
-            if (!player.isOnline() || !player.isOp() || !player.hasPermission("fragguard.admin")) {
-                return;
-            }
             if (failure != null) {
-                Throwable cause = unwrap(failure);
                 plugin.getLogger().log(Level.WARNING,
-                        "FragGuard online SQLite compaction failed; source retained", cause);
-                player.sendMessage(color("&cOnline compaction failed or was cancelled. "
-                        + "Active history is untouched; see /fg maintenance status and "
-                        + "review any unverified candidate before trying again."));
+                        "FragGuard online SQLite compaction failed; source retained", unwrap(failure));
+                if (player.isOnline()) player.sendMessage(color("&cCompaction failed or was cancelled. "
+                        + "Preserve files and inspect maintenance status."));
                 return;
             }
-            player.sendMessage(Component.text("Compacted candidate: "
-                    + result.candidate().getFileName()
-                    + " (" + MigrationStoragePolicy.formatBytes(result.candidateBytes()) + ")",
-                    NamedTextColor.GRAY));
-            player.sendMessage(color("&eSnapshot is UNVERIFIED; the exact SQLite snapshot is "
-                    + "represented by the candidate and its evidence, not a guessed "
-                    + "countdown timestamp. #166 must verify it before activation."));
-            player.sendMessage(color("&eSource logging may have continued after the snapshot. "
-                    + "Replacing with this copy without #167 policy checks could lose "
-                    + "newer history and saved rollback information."));
+            latestCompaction = result; // Only the current process' actual snapshot evidence.
+            if (player.isOnline()) {
+                player.sendMessage(color("&aCompaction candidate created: &f"
+                        + result.candidate().getFileName()
+                        + " &7(" + MigrationStoragePolicy.formatBytes(result.candidateBytes()) + ")"));
+                player.sendMessage(color("&eRun &f/fg maintenance verify&e to check full "
+                        + "SQLite integrity, every history record and saved rollback/undo data."));
+            }
         }));
     }
 
@@ -2135,9 +2451,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg diagnostics cancel &7- Cancel deep scan (partial report)."));
         player.sendMessage(color("&f/fg diagnostics preflight &7- Estimate compaction disk/quota/temp needs."));
         player.sendMessage(color("&f/fg diagnostics preflight acknowledge &7- Accept unknown headroom, not shortages."));
+        player.sendMessage(color("&f/fg maintenance &7- Open Database Maintenance GUI."));
+        player.sendMessage(color("&f/fg maintenance start [strict] &7- Begin maintenance countdown."));
+        player.sendMessage(color("&f/fg maintenance start snapshot acknowledge &7- Opt in to snapshot mode."));
         player.sendMessage(color("&f/fg maintenance status &7- Show current database maintenance and copy status."));
         player.sendMessage(color("&f/fg maintenance compact &7- During ACTIVE maintenance, start an unverified SQLite copy."));
-        player.sendMessage(color("&f/fg maintenance cancel &7- Interrupt active SQLite compaction."));
+        player.sendMessage(color("&f/fg maintenance verify &7- Check candidate history/undo integrity."));
+        player.sendMessage(color("&f/fg maintenance approve &7- Prepare STRICT post-shutdown approval."));
+        player.sendMessage(color("&f/fg maintenance approve snapshot-acknowledge &7- Accept data-loss warning."));
+        player.sendMessage(color("&f/fg maintenance instructions &7- View stopped-server file steps."));
+        player.sendMessage(color("&f/fg maintenance cancel &7- Cancel a safe pre-activation stage."));
         player.sendMessage(color("&7Only server operators can use these commands."));
     }
 
@@ -2153,9 +2476,21 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
 
         String subCommand = args[0].toLowerCase(Locale.ROOT);
         if (subCommand.equals("maintenance")) {
-            return args.length == 2
-                    ? partial(args[1], List.of("status", "compact", "cancel"))
-                    : Collections.emptyList();
+            if (args.length == 2) {
+                return partial(args[1], List.of("menu", "start", "status", "preview", "compact",
+                        "verify", "approve", "instructions", "cancel", "help"));
+            }
+            if (args.length == 3 && args[1].equalsIgnoreCase("start")) {
+                return partial(args[2], List.of("strict", "snapshot"));
+            }
+            if (args.length == 4 && args[1].equalsIgnoreCase("start")
+                    && args[2].equalsIgnoreCase("snapshot")) {
+                return partial(args[3], List.of("acknowledge"));
+            }
+            if (args.length == 3 && args[1].equalsIgnoreCase("approve")) {
+                return partial(args[2], List.of("snapshot-acknowledge"));
+            }
+            return Collections.emptyList();
         }
         if (subCommand.equals("diagnostics") || subCommand.equals("diag")) {
             if (args.length == 2) {

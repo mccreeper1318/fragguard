@@ -102,6 +102,50 @@ a partial copy. Any candidate and reservation are preserved for staff review.
 The next boot automatically treats an interrupted COMPACTING/VERIFYING
 maintenance state as failed, not as a verified replacement.
 
+### Database Maintenance commands and GUI (#169)
+
+Open **/fg** and select **Database Maintenance**, or use **/fg maintenance**
+to open the same panel. The inventory shows the current persistent maintenance
+phase, selected replacement policy, countdown, compaction/verification status,
+candidate filename and approximate before/after SQLite main-file sizes.
+Unknown totals have **no invented percentage**. Staff see existing Boss Bar
+stages and players receive the configured yellow countdown warnings.
+
+All operations are restricted to OPs with `fragguard.admin`. The GUI routes
+actions through the **same validated commands**, uses confirmation screens
+for changes, and closes before submitting an action to prevent duplicate clicks.
+It never bypasses storage preflight, snapshot policy, or saved database safety.
+
+- `/fg maintenance start` or `/fg maintenance start strict`: schedule the
+  configured countdown (default STRICT); players are warned before admissions
+  close and maintenance becomes ACTIVE.
+- `/fg maintenance start snapshot acknowledge`: explicitly opt in to a
+  potentially lossy copy, but **does not approve replacement**.
+- `/fg maintenance preview` or `/fg diagnostics preflight`: read-only
+  capacity estimate; unknown headroom requires separate acknowledgment.
+- `/fg maintenance compact`: when ACTIVE and a fresh preflight has passed,
+  produce one compacted snapshot without changing the original.
+- `/fg maintenance verify`: run a full asynchronous candidate scan using the
+  original copy-time evidence from the **same running process**.
+- `/fg maintenance approve`: after verified STRICT mode, queue a full
+  comparison at clean shutdown. Any later history, rollback or retention
+  mismatch refuses activation.
+- `/fg maintenance approve snapshot-acknowledge`: after verification,
+  explicitly accept that **all FragGuard history, rollback/undo and retention
+  changes after the actual SQLite snapshot may be lost**. Minecraft worlds
+  do **not** roll back. Confirmation is required again even if scheduling
+  selected Snapshot Mode.
+- `/fg maintenance status`, `/fg maintenance cancel`, and
+  `/fg maintenance instructions`: inspect stage/progress, cancel eligible
+  operations without deleting the original, or view the exact stopped-server
+  file-manager steps.
+
+**Do not rename SQLite files while Paper is running.** An approved replacement
+still requires a clean shutdown receipt and full restart verification (#168).
+Recovery-sensitive READY_TO_SWAP/ACTIVATING stages cannot be cancelled through
+the quick maintenance menu. Live-server validation is scheduled for the final
+1.2.2 testing phase.
+
 ### Manual compacted-database activation (#168)
 
 **No shell, external utility or custom launch command is required.** A verified
