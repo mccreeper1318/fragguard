@@ -35,6 +35,30 @@ and the overview intentionally doesn't scan millions of records. Only server
 operators with `fragguard.admin` can view database details. No external tools
 are required.
 
+### Optional storage recommendations (#170)
+
+FragGuard can periodically sample SQLite's page count and free-list pages
+without scanning the history or slowing down the server tick. It also shows
+the separate WAL footprint and how the combined main DB + WAL file sizes have
+changed since the previous sample. These numbers are **estimates**, not a
+guarantee of bytes saved by `VACUUM INTO`; a large WAL file alone is not proof
+that the main database needs compaction.
+
+Monitoring is **off by default**. Set
+`database-reclaimable-monitor-enabled: true` in `config.yml` to sample
+every 60 minutes by default. Both the free-list estimate (1,024 MiB) and
+percentage of database pages (10%) must meet the configurable warning
+thresholds. Repeated notices have a default 24-hour cooldown. Notices go only
+to the server console and online operators with `fragguard.admin`, never
+to regular players.
+
+The Database Maintenance GUI includes a cached, timestamped recommendation.
+Use its recommendation item or `/fg diagnostics` to request a fresh, read-only
+overview even with monitoring disabled. Monitoring **never** runs a VACUUM,
+starts maintenance, modifies the retention schedule, or replaces the original
+DB/WAL/SHM; compaction still requires explicit administrator action and
+preflight checks.
+
 ### Deep history validation (#163)
 
 Use **/fg diagnostics deep** to run opt-in, full read-only SQLite validation on

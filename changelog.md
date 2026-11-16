@@ -3,6 +3,7 @@
 ## 26.3-1.2.2
 
 ### Added
+- Added opt-in read-only SQLite free-list monitoring with admin-only compaction advice, WAL/growth context, configurable thresholds and cooldown (#170).
 - Added in-game Database Maintenance menu and administrator commands for scheduling, diagnostics, compaction, verification and policy approval (#169).
 - Added host-file-manager database activation with clean-shutdown receipts, original/WAL backup checks and verified startup recovery (#168).
 - Added strict final-source comparison and explicit, persisted snapshot-loss consent before compacted database replacement (#167).

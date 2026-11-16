@@ -1771,6 +1771,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         : cause.getMessage()), NamedTextColor.RED));
                 return;
             }
+            ReclaimableSpaceMonitor monitor = plugin.getReclaimableSpaceMonitor();
+            if (monitor != null) monitor.accept(report, System.currentTimeMillis(), false);
             player.sendMessage(color("&8&m------&r &bFragGuard Database Diagnostics &8&m------"));
             // Report contents (including the admin-only absolute path and any
             // host error) are plain text, not legacy color markup.

@@ -267,13 +267,17 @@ final class FragGuardGui implements Listener {
         MaintenanceMenuView view = MaintenanceMenuView.from(current,
                 copying.progress(), verifying.progress(), sourceBytes, candidateBytes,
                 System.currentTimeMillis());
+        ReclaimableSpaceMonitor monitor = plugin.getReclaimableSpaceMonitor();
+        ReclaimableSpaceMonitor.Snapshot space = monitor == null ? null : monitor.latest();
+        boolean enabled = monitor != null && monitor.settings().enabled();
         show(player, session, Screen.MAINTENANCE,
-                () -> FragGuardGuiRenderer.maintenanceMenu(view), "database maintenance");
+                () -> FragGuardGuiRenderer.maintenanceMenu(view, space, enabled),
+                "database maintenance");
     }
 
     private void clickMaintenance(Player player, Session session, int slot) {
         switch (slot) {
-            case 10 -> maintenanceCommand(player, "fg diagnostics");
+            case 10, 18 -> maintenanceCommand(player, "fg diagnostics");
             case 12 -> maintenanceCommand(player, "fg diagnostics deep");
             case 14 -> maintenanceCommand(player, "fg diagnostics preflight");
             case 16, 45 -> renderMaintenance(player, session);
