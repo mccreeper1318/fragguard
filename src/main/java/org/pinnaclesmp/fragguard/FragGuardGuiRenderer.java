@@ -120,6 +120,7 @@ final class FragGuardGuiRenderer {
         inv.setItem(34, item(view.canCancel() ? Material.BARRIER : Material.GRAY_DYE,
                 "&cCancel Maintenance",
                 "&7Does not delete original or candidate.",
+                "&7FAILED can be acknowledged once workers stop.",
                 "&7Never bypass READY/ACTIVATING recovery checks.",
                 view.canCancel() ? "&eClick to review" : "&8Unavailable in this stage"));
         inv.setItem(45, item(Material.SPECTRAL_ARROW, "&bRefresh this view",

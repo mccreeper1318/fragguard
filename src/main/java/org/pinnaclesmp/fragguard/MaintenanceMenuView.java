@@ -42,7 +42,8 @@ record MaintenanceMenuView(
     boolean canApprove() { return phase == MaintenancePhase.VERIFYING && verified; }
     boolean canCancel() {
         return phase == MaintenancePhase.COUNTDOWN || phase == MaintenancePhase.ACTIVE
-                || phase == MaintenancePhase.COMPACTING || phase == MaintenancePhase.VERIFYING;
+                || phase == MaintenancePhase.COMPACTING || phase == MaintenancePhase.VERIFYING
+                || phase == MaintenancePhase.FAILED;
     }
     String sizeSummary() {
         if (sourceBytes < 0 || candidateBytes < 0) return "Size comparison unavailable";

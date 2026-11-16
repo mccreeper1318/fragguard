@@ -27,7 +27,7 @@ final class MaintenanceUiActions {
 
     static boolean canCancel(MaintenanceSnapshot state) {
         return switch (state.phase()) {
-            case COUNTDOWN, ACTIVE, COMPACTING, VERIFYING -> true;
+            case COUNTDOWN, ACTIVE, COMPACTING, VERIFYING, FAILED -> true;
             default -> false; // Never discard READY/ACTIVATING recovery evidence in the UI.
         };
     }

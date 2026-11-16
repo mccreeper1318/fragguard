@@ -2003,13 +2003,20 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             case "approve" -> approveMaintenancePolicy(player, args, state);
             case "instructions" -> {
                 if (args.length != 1) { maintenanceUsage(player); return; }
-                if (state.phase() != MaintenancePhase.READY_TO_SWAP) {
-                    player.sendMessage(color("&cThe candidate is not approved for activation. "
-                            + "Do not rename any SQLite files yet."));
+                boolean strictPending = state.phase() == MaintenancePhase.VERIFYING
+                        && state.policy() == MaintenancePolicy.STRICT
+                        && !state.manifestFile().isBlank();
+                if (state.phase() != MaintenancePhase.READY_TO_SWAP && !strictPending) {
+                    player.sendMessage(color("&cThe candidate is not verified and approved. "
+                            + "Do not rename any SQLite files."));
                     return;
                 }
-                player.sendMessage(color("&eStop Paper completely. Only after the clean "
-                        + "shutdown receipt is written may you follow these steps:"));
+                player.sendMessage(color(strictPending
+                        ? "&eSTRICT approval is pending final clean-shutdown comparison. "
+                            + "These are PREVIEW instructions only; STOP Paper first and "
+                            + "DO NOT rename any files unless a clean shutdown receipt is written."
+                        : "&eStop Paper completely. Only after the clean "
+                            + "shutdown receipt is written may you follow these steps:"));
                 try {
                     for (String line : CompactionActivation.manualInstructions(
                             plugin.getDataFolder().toPath(), state)) {
@@ -2134,6 +2141,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         if (state.phase() == MaintenancePhase.COMPACTING) {
             player.sendMessage(color("&cCompaction worker is already stopping or unavailable. "
                     + "Status may change; try again after checking."));
+            return;
+        }
+        CompactionCandidateVerifier runningVerifier = plugin.getCandidateVerifier();
+        if (state.phase() == MaintenancePhase.FAILED
+                && (compaction.progress().running()
+                    || (runningVerifier != null && runningVerifier.progress().running()))) {
+            player.sendMessage(color("&cMaintenance worker still stopping. "
+                    + "Wait for it to finish before cancelling FAILED state."));
             return;
         }
         if (!maintenanceTransitionPending.compareAndSet(false, true)) {

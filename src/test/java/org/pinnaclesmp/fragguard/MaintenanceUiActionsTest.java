@@ -61,6 +61,14 @@ class MaintenanceUiActionsTest {
         assertFalse(MaintenanceConfirmAction.APPROVE_SNAPSHOT.available(verified));
         // The actual approval is only possible through #167's durable checks.
         assertFalse(MaintenanceConfirmAction.START_STRICT.available(verified));
+        MaintenanceSnapshot failed = verified.withPhase(MaintenancePhase.FAILED, "verification failed");
+        assertTrue(MaintenanceUiActions.canCancel(failed),
+                "explicit cancellation must recover admissions from FAILED after worker shutdown");
+        assertTrue(MaintenanceConfirmAction.CANCEL.available(failed));
+        assertFalse(MaintenanceConfirmAction.APPROVE_STRICT.available(failed));
+        assertFalse(MaintenanceConfirmAction.START_STRICT.available(failed));
+        assertFalse(MaintenanceUiActions.canSchedule(failed));
+
     }
 
     @Test
