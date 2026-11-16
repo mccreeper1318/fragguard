@@ -52,20 +52,28 @@ public final class FragGuardPlugin extends JavaPlugin {
                     + " — " + maintenance.snapshot().detail()
                     + ". The database has not been automatically replaced or reset.");
         }
+        boolean activationVerified = false;
         if (CompactionReplacementPolicy.blocksWriterStartup(maintenance.snapshot())) {
-            // #167: a final STRICT attestation is not permission to reopen
-            // the old source writer. Any new logging/retention update would
-            // immediately stale it. #168 will verify a manual DB activation
-            // before permitting the SQLite writer to start. Until then, fail
-            // closed even if the READY policy manifest itself is valid.
-            getLogger().severe("Compacted database is awaiting verified manual activation. "
-                    + "Refusing to start the SQLite writer in READY_TO_SWAP: doing so "
-                    + "could invalidate the approved snapshot. Preserve the source, "
-                    + "matching WAL/SHM, candidate and policy files until #168 "
-                    + "implements the offline startup activation check.");
-            Bukkit.shutdown();
-            Bukkit.getPluginManager().disablePlugin(this);
-            return;
+            try {
+                // Full snapshot/data integrity and original backup checks
+                // BEFORE DB.init() can create or modify any SQLite file.
+                var installed = CompactionActivation.verifyInstalled(
+                        getDataFolder().toPath(), maintenance.snapshot());
+                activationVerified = true;
+                getLogger().info("Verified manual SQLite activation of "
+                        + installed.installed().getFileName()
+                        + " (preserved backup: " + installed.backup().getFileName()
+                        + ", checked records: " + installed.verifiedRows()
+                        + ", policy: " + installed.policy() + ").");
+            } catch (Exception exception) {
+                getLogger().log(Level.SEVERE, "Cannot start FragGuard: manual compacted "
+                        + "database replacement has not passed provenance, backup, WAL/SHM "
+                        + "and full-history verification. Stop Paper and preserve all DB "
+                        + "and manifest files for recovery.", exception);
+                Bukkit.shutdown();
+                Bukkit.getPluginManager().disablePlugin(this);
+                return;
+            }
         }
         int configuredGuiLookupFetchSize = getConfig().getInt(
                 "gui-lookup-fetch-size", DEFAULT_GUI_LOOKUP_FETCH_SIZE);
@@ -86,6 +94,22 @@ public final class FragGuardPlugin extends JavaPlugin {
             }
             Bukkit.getPluginManager().disablePlugin(this);
             return;
+        }
+        if (activationVerified) {
+            try {
+                // Only now, after the installed candidate was validated AND
+                // the actual SQLite writer successfully initialized, can
+                // the durable maintenance gate be cleared.
+                maintenance.finishVerifiedActivation().get(30, TimeUnit.SECONDS);
+                getLogger().info("Verified compacted database activation complete. "
+                        + "The preserved original and its sidecars were not deleted.");
+            } catch (Exception failure) {
+                getLogger().log(Level.SEVERE, "Could not commit verified activation state; "
+                        + "stopping Paper with recovery files preserved.", failure);
+                Bukkit.shutdown();
+                Bukkit.getPluginManager().disablePlugin(this);
+                return;
+            }
         }
         quickDiagnostics = new DatabaseQuickDiagnostics(
                 getDataFolder().toPath().resolve("fragguard.db"));
@@ -158,19 +182,9 @@ public final class FragGuardPlugin extends JavaPlugin {
             commandExecutor = null;
         }
 
-        // Policy approval is a separate database-independent worker. Stop it
-        // before closing state coordination or the live SQLite writer.
-        if (replacementPolicy != null) {
-            try {
-                replacementPolicy.close();
-            } catch (IllegalStateException exception) {
-                getLogger().log(Level.SEVERE, "Replacement policy did not stop safely; "
-                        + "preserve every database and policy manifest.", exception);
-                Bukkit.shutdown();
-            } finally {
-                replacementPolicy = null;
-            }
-        }
+        // Keep the policy worker alive through the final database shutdown.
+        // STRICT needs the *finished*, checkpointed source for its final scan.
+        // The policy worker closes after the clean-shutdown receipt is stored.
 
         // Stop candidate read-only verification before releasing the maintenance
         // state coordinator; verification must not outlive its state gate.
@@ -244,8 +258,58 @@ public final class FragGuardPlugin extends JavaPlugin {
                     if (!after.lastError().isBlank())
                         getLogger().warning("FragGuard final storage error: " + after.lastError());
                 }
+                // Seal the approved database replacement only after *all*
+                // accepted writes stop and SQLite confirms a clean checkpoint.
+                // This never moves or deletes the original, WAL, SHM or copy.
+                if (maintenance != null && replacementPolicy != null
+                        && (maintenance.snapshot().phase() == MaintenancePhase.READY_TO_SWAP
+                            || replacementPolicy.hasPendingStrict())) {
+                    if (!report.clean()) {
+                        getLogger().severe("No compaction activation receipt was written: "
+                                + "FragGuard shutdown was not clean. Do not swap SQLite files.");
+                    } else {
+                        try {
+                            if (replacementPolicy.hasPendingStrict()) {
+                                var approved = replacementPolicy.finalizeStrictAfterShutdown(
+                                        report.workerStopped(), report.walCheckpointCompleted(),
+                                        report.clean()).get(21_660L, TimeUnit.SECONDS);
+                                getLogger().info("STRICT maintenance source matched the verified "
+                                        + "snapshot at clean shutdown; policy " + approved.status());
+                            }
+                            if (maintenance.snapshot().phase() == MaintenancePhase.READY_TO_SWAP) {
+                                var receipt = CompactionActivation.recordCleanShutdown(
+                                        getDataFolder().toPath(), maintenance.snapshot(), true);
+                                getLogger().info("Clean SQLite shutdown receipt: "
+                                        + receipt.path().getFileName()
+                                        + "; original backup name: "
+                                        + receipt.backup().getFileName()
+                                        + ". Only now may the operator perform a manual swap.");
+                                for (String instruction : CompactionActivation.manualInstructions(
+                                        getDataFolder().toPath(), maintenance.snapshot())) {
+                                    getLogger().info(instruction);
+                                }
+                            }
+                        } catch (Exception exception) {
+                            getLogger().log(Level.SEVERE, "Could not seal safe manual SQLite "
+                                    + "activation. The original and its WAL/SHM remain in place. "
+                                    + "DO NOT perform a database swap until the issue is resolved.",
+                                    exception);
+                        }
+                    }
+                }
             }
         } finally {
+            if (replacementPolicy != null) {
+                try {
+                    replacementPolicy.close();
+                } catch (IllegalStateException exception) {
+                    getLogger().log(Level.SEVERE, "Could not stop the replacement policy worker; "
+                            + "preserve every SQLite/manifest file.", exception);
+                    Bukkit.shutdown();
+                } finally {
+                    replacementPolicy = null;
+                }
+            }
             if (maintenance != null) {
                 try {
                     maintenance.close();

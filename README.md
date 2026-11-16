@@ -102,6 +102,57 @@ a partial copy. Any candidate and reservation are preserved for staff review.
 The next boot automatically treats an interrupted COMPACTING/VERIFYING
 maintenance state as failed, not as a verified replacement.
 
+### Manual compacted-database activation (#168)
+
+**No shell, external utility or custom launch command is required.** A verified
+candidate **must** first have an approved replacement policy (#167). STRICT
+(default) requires final full-history comparison **after the FragGuard writer
+has stopped** and SQLite's shutdown checkpoint completed. Snapshot mode must
+have the exact administrator consent acknowledging that **all FragGuard history,
+undo/rollback jobs and retention updates after the SQLite snapshot may be
+lost**. Minecraft worlds are **never** rolled back along with a database.
+
+**Keep Paper stopped for the entire file-manager operation.** When the plugin
+finishes a clean shutdown, its console prints a *per-operation* original-backup
+filename and writes a non-overwriting `.shutdown.properties` receipt. If no
+clean-shutdown receipt was created, **do not swap any files**. The presence of
+`READY_TO_SWAP` alone is not a clean checkpoint.
+
+For a candidate named
+`plugins/FragGuard/compaction-candidates/fragguard-compact-EXAMPLE.db`:
+
+1. **Stop Paper completely.** Confirm the clean FragGuard checkpoint and
+   `fragguard-compact-EXAMPLE.shutdown.properties` receipt. Never rename an
+   open SQLite database.
+2. In your host file manager rename
+   `plugins/FragGuard/fragguard.db` to
+   `plugins/FragGuard/fragguard-original-EXAMPLE.db`.
+   **Preserve this original backup. Never overwrite/delete it.**
+3. **If they exist**, rename the *matching* original sidecars alongside it:
+   `fragguard.db-wal` → `fragguard-original-EXAMPLE.db-wal`, and
+   `fragguard.db-shm` → `fragguard-original-EXAMPLE.db-shm`.
+   Do not delete sidecars, discard nonempty WAL data, attach them to the
+   compacted copy, or mix unrelated WAL/SHM files.
+4. **Move/rename**, not copy, the verified
+   `compaction-candidates/fragguard-compact-EXAMPLE.db`
+   to `plugins/FragGuard/fragguard.db`. Keep the `.manifest`,
+   `.policy.properties`, `.snapshot.properties` and `.shutdown.properties`
+   files inside `compaction-candidates/`, unchanged.
+5. Start Paper normally. Before starting live logging, FragGuard checks
+   the original backup's SHA-256 and recorded sidecars, the installed
+   candidate's exact SHA-256/size, operation/policy/consent evidence, and
+   full read-only SQLite integrity, schema, indexes, history and undo digests.
+   Maintenance clears **only if** SQLite initialization also succeeds.
+   On any mismatch Paper refuses to open FragGuard; stop the server and
+   preserve **all files** for recovery.
+
+Use the **actual** filename reported by FragGuard; `EXAMPLE` is not a valid
+stand-in. A partial rename, missing original backup, nonempty WAL at shutdown,
+wrong sidecar, corrupted candidate or missing receipt is never treated as a
+successful activation. The original SQLite files remain available for manual
+recovery, subject to schema compatibility: **an older plugin may not be able to
+read a database migrated by a newer release**. Never assume downgrade is safe.
+
 ### Compaction storage and quota preflight (#164)
 
 Run **/fg diagnostics preflight** as an OP with `fragguard.admin`. The

@@ -54,11 +54,19 @@ final class MaintenanceCoordinator implements AutoCloseable {
         Objects.requireNonNull(store, "store");
         MaintenanceSnapshot loaded = store.load();
         if (loaded.phase() == MaintenancePhase.READY_TO_SWAP) {
-            // Ready is a persistent privilege: validate the external policy
-            // again before opening the SQLite writer or allowing admissions.
-            // Until #168 implements authenticated file activation, a missing
-            // candidate/changed original is a hard startup refusal.
-            CompactionReplacementPolicy.requireApproved(store.directory(), loaded);
+            // Before the manual file swap, both source and candidate are still
+            // present and the old approval gate applies. After the operator
+            // moves the candidate, require a sealed clean-shutdown receipt,
+            // the original backup, and matched sidecars. The expensive full
+            // read-only DB verification runs in FragGuardPlugin before init().
+            Path candidate = store.directory().resolve("compaction-candidates")
+                    .resolve(loaded.candidateFile());
+            if (java.nio.file.Files.isRegularFile(candidate,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                CompactionReplacementPolicy.requireApproved(store.directory(), loaded);
+            } else {
+                CompactionActivation.requirePreparedActivation(store.directory(), loaded);
+            }
         }
         MaintenanceSnapshot recovered = switch (loaded.phase()) {
             case COUNTDOWN -> loaded.withPhase(MaintenancePhase.CANCELLED,
