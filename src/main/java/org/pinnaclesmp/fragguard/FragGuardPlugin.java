@@ -52,6 +52,21 @@ public final class FragGuardPlugin extends JavaPlugin {
                     + " — " + maintenance.snapshot().detail()
                     + ". The database has not been automatically replaced or reset.");
         }
+        if (maintenance.snapshot().phase() == MaintenancePhase.READY_TO_SWAP) {
+            // #167: a final STRICT attestation is not permission to reopen
+            // the old source writer. Any new logging/retention update would
+            // immediately stale it. #168 will verify a manual DB activation
+            // before permitting the SQLite writer to start. Until then, fail
+            // closed even if the READY policy manifest itself is valid.
+            getLogger().severe("Compacted database is awaiting verified manual activation. "
+                    + "Refusing to start the SQLite writer in READY_TO_SWAP: doing so "
+                    + "could invalidate the approved snapshot. Preserve the source, "
+                    + "matching WAL/SHM, candidate and policy files until #168 "
+                    + "implements the offline startup activation check.");
+            Bukkit.shutdown();
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
         int configuredGuiLookupFetchSize = getConfig().getInt(
                 "gui-lookup-fetch-size", DEFAULT_GUI_LOOKUP_FETCH_SIZE);
         guiLookupFetchSize = resolveGuiLookupFetchSize(configuredGuiLookupFetchSize);
