@@ -63,6 +63,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             + "A stale candidate is rejected. The file swap itself still requires "
             + "the independent offline activation checks from #168.";
 
+    /** A READY snapshot cannot reopen the source writer until #168 validates activation. */
+    static boolean blocksWriterStartup(MaintenanceSnapshot state) {
+        return state.phase() == MaintenancePhase.READY_TO_SWAP;
+    }
+
     record Decision(MaintenancePolicy policy, String status, Path policyFile,
                     String operationId, long snapshotLowerBoundMillis,
                     long snapshotUpperBoundMillis, long consentMillis,
