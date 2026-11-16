@@ -480,6 +480,10 @@ public final class FragGuardPlugin extends JavaPlugin {
         ReclaimableSpaceMonitor monitor = reclaimableSpaceMonitor;
         if (monitor == null || !monitor.settings().enabled()) return;
         long ticks = TimeUnit.MINUTES.toSeconds(monitor.settings().intervalMinutes()) * 20L;
+        int historyRetentionDays = getRetentionDays();
+        int jobRetentionDays = getRollbackJobRetentionDays();
+        int queryTimeoutSeconds = Math.max(1, getConfig().getInt(
+                "diagnostics-query-timeout-seconds", 15));
         // The timer merely queues a bounded, read-only overview on the existing
         // diagnostics worker. No SQLite or filesystem scan runs on the tick path.
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
