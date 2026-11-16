@@ -42,6 +42,8 @@ class CompactionReplacementPolicyTest {
             assertEquals(setup.copy.completedMillis(), approval.snapshotUpperBoundMillis());
             assertTrue(approval.detail().contains("Minecraft world is NEVER rolled back"));
             assertEquals(MaintenancePhase.READY_TO_SWAP, setup.state.snapshot().phase());
+            assertTrue(CompactionReplacementPolicy.blocksWriterStartup(setup.state.snapshot()),
+                    "approved snapshot may not reopen the original SQLite writer on restart");
             assertTrue(Files.isRegularFile(approval.policyFile()));
             Properties props = load(approval.policyFile());
             assertEquals("APPROVED", props.getProperty("status"));
@@ -118,6 +120,8 @@ class CompactionReplacementPolicyTest {
                     .get(90, TimeUnit.SECONDS);
             assertTrue(approved.approved());
             assertEquals(MaintenancePhase.READY_TO_SWAP, setup.state.snapshot().phase());
+            assertTrue(CompactionReplacementPolicy.blocksWriterStartup(setup.state.snapshot()),
+                    "strict approval may not become stale after writer restarts");
             Properties proof = load(approved.policyFile());
             assertEquals("STRICT", proof.getProperty("policy"));
             assertEquals("APPROVED", proof.getProperty("status"));
