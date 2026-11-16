@@ -46,12 +46,26 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
             long freelistCount,
             long recyclableBytes,
             int schemaVersion,
+            int autoVacuumMode,
             Long historyRows,
             Long rollbackJobs,
             String quickCheck,
             DatabaseHealth health,
             int retentionDays,
             int rollbackRetentionDays) {
+
+        // Keep the legacy constructor for call sites that construct synthetic
+        // diagnostics reports in tests and monitoring. -1 means not sampled.
+        Report(Mode mode, Instant measuredAt, Path databasePath,
+               Long mainBytes, Long walBytes, Long shmBytes, Long hostUsableBytes,
+               long pageCount, long pageSize, long freelistCount, long recyclableBytes,
+               int schemaVersion, Long historyRows, Long rollbackJobs, String quickCheck,
+               DatabaseHealth health, int retentionDays, int rollbackRetentionDays) {
+            this(mode, measuredAt, databasePath, mainBytes, walBytes, shmBytes,
+                    hostUsableBytes, pageCount, pageSize, freelistCount, recyclableBytes,
+                    schemaVersion, -1, historyRows, rollbackJobs, quickCheck, health,
+                    retentionDays, rollbackRetentionDays);
+        }
 
         Report {
             Objects.requireNonNull(mode);
@@ -72,6 +86,10 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
                     + " (FragGuard expects v" + Database.SCHEMA_VERSION + ")");
             out.add("Files: main " + size(mainBytes) + ", WAL " + size(walBytes)
                     + ", SHM " + size(shmBytes));
+            out.add("SQLite auto_vacuum: " + IncrementalSqliteReclamation.modeName(autoVacuumMode)
+                    + (autoVacuumMode == IncrementalSqliteReclamation.INCREMENTAL
+                    ? " (eligible for opt-in bounded incremental_vacuum)"
+                    : " (incremental_vacuum unavailable; no automatic mode conversion)"));
             out.add("Pages: " + pageCount + " x " + size(pageSize)
                     + " | Free-list pages: " + freelistCount);
             out.add("Reusable DB pages: about " + size(recyclableBytes)
@@ -200,6 +218,7 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
             long pageCount = pragma(connection, "page_count", request);
             long pageSize = pragma(connection, "page_size", request);
             long freelistCount = pragma(connection, "freelist_count", request);
+            int autoVacuumMode = Math.toIntExact(pragma(connection, "auto_vacuum", request));
             int schemaVersion = Math.toIntExact(pragma(connection, "user_version", request));
             Long historyRows = null;
             Long rollbackJobs = null;
@@ -228,7 +247,7 @@ final class DatabaseQuickDiagnostics implements AutoCloseable {
                     size(databaseFile.resolveSibling(databaseFile.getFileName() + "-shm")),
                     usable, pageCount, pageSize, freelistCount,
                     safeMultiply(pageSize, freelistCount),
-                    schemaVersion, historyRows, rollbackJobs, quickCheck,
+                    schemaVersion, autoVacuumMode, historyRows, rollbackJobs, quickCheck,
                     health, retentionDays, rollbackRetentionDays);
         }
     }

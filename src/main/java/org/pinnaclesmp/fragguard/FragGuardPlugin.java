@@ -31,6 +31,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private FragGuardGui gui;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
+    private boolean incrementalIncompatibleNotified;
     private long lastStorageWarningAt;
     private int guiLookupFetchSize = DEFAULT_GUI_LOOKUP_FETCH_SIZE;
 
@@ -472,6 +473,27 @@ public final class FragGuardPlugin extends JavaPlugin {
                     if (deleted.batchBudgetReached())
                         getLogger().info("Retention cleanup hit its per-run batch budget; "
                                 + "remaining expired rows, if any, will be handled by the next run.");
+                    // Optional incremental_vacuum is a separate bounded queue
+                    // operation after committed deletion work, never in a cleanup
+                    // transaction or during controlled maintenance.
+                    if ((deleted.blockRecordsDeleted() > 0 || deleted.rollbackJobsDeleted() > 0)
+                            && database.incrementalReclaimEnabled()
+                            && !maintenanceBlocksNewJobs()) {
+                        database.incrementalReclaimAfterCleanupAsync().whenComplete((result, failure) -> {
+                            if (failure != null) {
+                                getLogger().log(Level.WARNING,
+                                        "Optional bounded incremental SQLite reclamation skipped/failed; "
+                                        + "retention cleanup and live logging continue.", failure);
+                            } else if (!result.compatible()) {
+                                if (!incrementalIncompatibleNotified) {
+                                    incrementalIncompatibleNotified = true;
+                                    getLogger().info(result.summary());
+                                }
+                            } else if (result.requestedPages() > 0) {
+                                getLogger().info(result.summary());
+                            }
+                        });
+                    }
                 });
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, 20L * 30L, ticks);
     }

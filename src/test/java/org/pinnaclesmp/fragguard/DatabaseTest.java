@@ -76,6 +76,48 @@ class DatabaseTest {
     }
 
     @Test
+    void newDatabaseAutoVacuumCanBeEnabledWithoutChangingSchemaOrLogging() throws Exception {
+        database = startDatabase("world", 0L, 0L, true, true);
+        try (Connection connection = openDatabase()) {
+            assertEquals(IncrementalSqliteReclamation.INCREMENTAL,
+                    IncrementalSqliteReclamation.readMode(connection));
+        }
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        assertTrue(database.incrementalReclaimAfterCleanupAsync().join().compatible());
+        database.shutdown();
+        database = startDatabase("world", 0L, 0L, false, false);
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertEquals(IncrementalSqliteReclamation.INCREMENTAL,
+                    IncrementalSqliteReclamation.readMode(connection));
+            assertTrue(rows.next());
+            assertEquals(1, rows.getLong(1));
+        }
+        assertTrue(database.health().storageAvailable());
+    }
+
+    @Test
+    void existingDatabaseIsNeverConvertedWhenNewDatabaseOptionIsEnabled() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = startDatabase("world", 0L, 0L, true, true);
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertEquals(IncrementalSqliteReclamation.NONE,
+                    IncrementalSqliteReclamation.readMode(connection));
+            assertTrue(rows.next());
+            assertEquals(1L, rows.getLong(1));
+        }
+        var skipped = database.incrementalReclaimAfterCleanupAsync().join();
+        assertFalse(skipped.compatible());
+        assertEquals(0, skipped.requestedPages());
+        assertTrue(database.health().storageAvailable());
+    }
+
+    @Test
     void isolatedRetentionFailureKeepsPriorCommitsAndNewBlockLoggingHealthy() throws Exception {
         database = startDatabase();
         long expired = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
@@ -1481,6 +1523,13 @@ class DatabaseTest {
 
     private Database startDatabase(String worldName, long knownAccountFreeMiB,
                                    long knownSqliteTempFreeMiB) throws Exception {
+        return startDatabase(worldName, knownAccountFreeMiB, knownSqliteTempFreeMiB,
+                false, false);
+    }
+
+    private Database startDatabase(String worldName, long knownAccountFreeMiB,
+                                   long knownSqliteTempFreeMiB, boolean configureNewIncremental,
+                                   boolean enableIncrementalReclaim) throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);
         World world = mock(World.class);
@@ -1489,6 +1538,9 @@ class DatabaseTest {
         configuration.set("database-write-batch-size", 16);
         configuration.set("database-retention-cleanup-batch-size", 4);
         configuration.set("database-query-timeout-seconds", 5);
+        configuration.set("database-new-auto-vacuum-incremental", configureNewIncremental);
+        configuration.set("database-incremental-reclaim-enabled", enableIncrementalReclaim);
+        configuration.set("database-incremental-reclaim-pages-per-pass", 3);
         if (knownAccountFreeMiB > 0L) {
             configuration.set("database-migration-account-free-mib", knownAccountFreeMiB);
         }

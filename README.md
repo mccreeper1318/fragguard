@@ -59,6 +59,40 @@ starts maintenance, modifies the retention schedule, or replaces the original
 DB/WAL/SHM; compaction still requires explicit administrator action and
 preflight checks.
 
+### Optional incremental SQLite reclamation (#171)
+
+SQLite has three `PRAGMA auto_vacuum` modes: `NONE` (0), `FULL` (1),
+and `INCREMENTAL` (2). Only databases already formatted for `INCREMENTAL`
+can reclaim free-list pages with `PRAGMA incremental_vacuum`. Use
+`/fg diagnostics` to see your database's mode and eligibility.
+
+Both options are **disabled by default**:
+
+- `database-new-auto-vacuum-incremental: true` selects INCREMENTAL mode
+  **only when `fragguard.db` does not exist yet**, before any tables are
+  created. It does not switch modes or change an existing database, including
+  the large production history.
+- `database-incremental-reclaim-enabled: true` asks the serialized SQLite
+  worker to attempt a small reclamation pass **after successful retention
+  cleanup** if history or finished rollback jobs were actually deleted.
+  `database-incremental-reclaim-pages-per-pass` defaults to 16 and is
+  capped at 128 pages. Incompatible modes and empty free lists are skipped.
+
+Incremental reclamation does not alter retention periods or undo rules. It
+is serialized with database writes, off the Paper tick thread, and uses a
+short SQLite query deadline. SQLite may reclaim fewer pages than requested,
+and the active WAL can retain its size until checkpointing; page-count
+reduction is **not guaranteed bytes freed from the filesystem or hosting
+quota**. On failure the already committed cleanup and live block logging
+remain independent.
+
+**Existing databases must never be switched by startup.** Converting an
+existing `NONE`/`FULL` database to `INCREMENTAL` requires a full
+in-place VACUUM, which this feature intentionally does not attempt. For
+existing large histories, use the separately approved `VACUUM INTO`
+candidate/verification/replacement workflow instead. Back up the matching
+DB/WAL/SHM coherently before any deliberate maintenance.
+
 ### Deep history validation (#163)
 
 Use **/fg diagnostics deep** to run opt-in, full read-only SQLite validation on

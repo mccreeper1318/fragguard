@@ -39,6 +39,20 @@ database-retention-cleanup-batch-size: 500
 # If expired history remains, it is processed at the next scheduled interval.
 database-retention-cleanup-max-batches-per-run: 2000
 
+# Optional incremental SQLite page reclamation (#171). Both switches are OFF by default.
+# Applies auto_vacuum=INCREMENTAL ONLY when fragguard.db does not exist yet.
+# Existing databases are never converted, migrated or VACUUMed to change modes.
+# Enabling this alone does not reclaim anything until the second switch is enabled.
+database-new-auto-vacuum-incremental: false
+# After successful retention cleanup, attempt at most one small page-reclaim operation
+# on the ordered SQLite writer. Only compatible auto_vacuum=INCREMENTAL DBs qualify.
+# Unsupported modes (NONE/FULL) are skipped; no in-place full VACUUM is run.
+database-incremental-reclaim-enabled: false
+# Cap pages per operation to prevent long pauses; hard maximum 128, default 16.
+# SQLite may reclaim fewer or zero pages. WAL file size will not shrink immediately
+# or necessarily match page-count reductions; /fg diagnostics shows the actual mode.
+database-incremental-reclaim-pages-per-pass: 16
+
 # How long completed/undone rollback jobs remain available before their saved snapshots are deleted.
 # Recoverable failed jobs are kept so /fg undo can still finish them.
 rollback-job-retention-days: 30
