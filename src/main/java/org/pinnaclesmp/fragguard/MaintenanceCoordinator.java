@@ -126,8 +126,23 @@ final class MaintenanceCoordinator implements AutoCloseable {
     }
 
     CompletableFuture<MaintenanceSnapshot> markReady() {
-        return advance(MaintenancePhase.READY_TO_SWAP,
-                "Verified compacted candidate ready; stop Paper before manual file replacement");
+        return commit(existing -> {
+            if (existing.phase() != MaintenancePhase.VERIFYING
+                    || existing.manifestFile().isEmpty()) {
+                throw new IllegalStateException("Cannot approve an unverified candidate");
+            }
+            try {
+                // No administrative/rollback FORCE option may skip this
+                // separate durable replacement-policy approval (#167).
+                CompactionReplacementPolicy.requireApproved(store.directory(), existing);
+            } catch (IOException badPolicy) {
+                throw new IllegalStateException("Candidate replacement policy is missing or "
+                        + "untrusted; do not swap any SQLite file", badPolicy);
+            }
+            return existing.withPhase(MaintenancePhase.READY_TO_SWAP,
+                    "Verified snapshot and accepted replacement policy; "
+                            + "stop Paper before manual activation (#168)");
+        });
     }
 
     CompletableFuture<MaintenanceSnapshot> fail(String reason) {

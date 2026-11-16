@@ -51,6 +51,10 @@ final class MaintenanceStateStore {
         this(directory, MaintenanceStateStore::syncDirectory);
     }
 
+    Path directory() {
+        return directory;
+    }
+
     MaintenanceStateStore(Path directory, DirectorySync directorySync) {
         this.directory = directory.toAbsolutePath().normalize();
         this.stateFile = this.directory.resolve(FILE);

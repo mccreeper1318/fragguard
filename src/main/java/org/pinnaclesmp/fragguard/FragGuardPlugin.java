@@ -25,6 +25,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private CompactionStoragePreflight compactionPreflight;
     private OnlineDatabaseCompaction onlineCompaction;
     private CompactionCandidateVerifier candidateVerifier;
+    private CompactionReplacementPolicy replacementPolicy;
     private FragGuardCommand commandExecutor;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
@@ -78,6 +79,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         onlineCompaction = new OnlineDatabaseCompaction(
                 getDataFolder().toPath(), maintenance, compactionPreflight);
         candidateVerifier = new CompactionCandidateVerifier(getDataFolder().toPath(), maintenance);
+        replacementPolicy = new CompactionReplacementPolicy(getDataFolder().toPath(), maintenance);
         try {
             maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
                     System::currentTimeMillis,
@@ -139,6 +141,20 @@ public final class FragGuardPlugin extends JavaPlugin {
         if (commandExecutor != null) {
             commandExecutor.clearRollbackPreviews();
             commandExecutor = null;
+        }
+
+        // Policy approval is a separate database-independent worker. Stop it
+        // before closing state coordination or the live SQLite writer.
+        if (replacementPolicy != null) {
+            try {
+                replacementPolicy.close();
+            } catch (IllegalStateException exception) {
+                getLogger().log(Level.SEVERE, "Replacement policy did not stop safely; "
+                        + "preserve every database and policy manifest.", exception);
+                Bukkit.shutdown();
+            } finally {
+                replacementPolicy = null;
+            }
         }
 
         // Stop candidate read-only verification before releasing the maintenance
@@ -289,6 +305,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     CompactionCandidateVerifier getCandidateVerifier() {
         return candidateVerifier;
+    }
+
+    CompactionReplacementPolicy getReplacementPolicy() {
+        return replacementPolicy;
     }
 
     boolean maintenanceBlocksNewJobs() {

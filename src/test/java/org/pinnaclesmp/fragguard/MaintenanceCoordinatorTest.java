@@ -54,11 +54,9 @@ class MaintenanceCoordinatorTest {
             maintenance.beginVerification().join();
             assertThrows(CompletionException.class, () -> maintenance.markReady().join());
             maintenance.recordVerifiedManifest(MANIFEST).join();
-            var ready = maintenance.markReady().join();
-            assertEquals(MaintenancePhase.READY_TO_SWAP, ready.phase());
-            assertEquals(MANIFEST, ready.manifestFile());
-            assertEquals(CANDIDATE, ready.candidateFile());
-            assertEquals(NOW + 2000, ready.snapshotCutoffMillis());
+            assertThrows(CompletionException.class, () -> maintenance.markReady().join(),
+                    "a manifest without approved replacement policy cannot reach READY_TO_SWAP");
+            assertEquals(MaintenancePhase.VERIFYING, maintenance.snapshot().phase());
         }
     }
 
@@ -118,7 +116,7 @@ class MaintenanceCoordinatorTest {
     }
 
     @Test
-    void readyCandidateWaitsForExplicitActivationVerificationOnRestart() throws Exception {
+    void forgedManifestNeverPromotesCandidateAcrossRestart() throws Exception {
         try (var maintenance = MaintenanceCoordinator.open(directory)) {
             maintenance.schedule(ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT).join();
             maintenance.activate().join();
@@ -126,16 +124,15 @@ class MaintenanceCoordinatorTest {
             maintenance.recordSnapshotCutoff(NOW + 10).join();
             maintenance.beginVerification().join();
             maintenance.recordVerifiedManifest(MANIFEST).join();
-            maintenance.markReady().join();
+            assertThrows(CompletionException.class, () -> maintenance.markReady().join(),
+                    "merely recording a manifest is not replacement approval");
         }
         try (var reopened = MaintenanceCoordinator.open(directory)) {
-            assertEquals(MaintenancePhase.READY_TO_SWAP, reopened.snapshot().phase());
+            assertEquals(MaintenancePhase.FAILED, reopened.snapshot().phase(),
+                    "unapproved interrupted verification must fail closed");
             assertTrue(reopened.blocksNewJobs());
-            // This explicit hook is reserved for the future startup activation
-            // validator; simply reopening must not call it.
-            reopened.finishVerifiedActivation().join();
-            assertEquals(MaintenancePhase.IDLE, reopened.snapshot().phase());
-            assertFalse(reopened.blocksNewJobs());
+            assertThrows(CompletionException.class,
+                    () -> reopened.finishVerifiedActivation().join());
         }
     }
 
