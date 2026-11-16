@@ -214,7 +214,7 @@ class CompactionActivationTest {
                     CompactionActivation.manualInstructions(root, job.state.snapshot()));
             assertTrue(instructions.contains("fragguard.db-wal"));
             assertTrue(instructions.contains("fragguard-original-"));
-            assertTrue(instructions.contains("Paper completely"));
+            assertTrue(instructions.contains("Paper server completely"));
             assertTrue(instructions.contains("history"));
             assertTrue(instructions.contains("do not delete"));
             assertTrue(instructions.contains("is NOT rolled back"));
