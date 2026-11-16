@@ -203,6 +203,35 @@ class CompactionReplacementPolicyTest {
         }
     }
 
+    @Test
+    void missingCandidateAfterApprovalIsNotMistakenForVerifiedActivation() throws Exception {
+        Path moved;
+        try (Setup setup = new Setup(root, MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
+            setup.policy.prepare(setup.operator, CONSENT).get(30, TimeUnit.SECONDS);
+            moved = setup.copy.candidate().resolveSibling(
+                    setup.copy.candidate().getFileName().toString() + ".preserved");
+            Files.move(setup.copy.candidate(), moved);
+        }
+        assertTrue(Files.isRegularFile(moved), "Do not delete or overwrite candidate contents");
+        assertThrows(java.io.IOException.class, () -> MaintenanceCoordinator.open(root),
+                "Issue #168 must verify activation rather than assuming a missing candidate was installed");
+        assertTrue(Files.isRegularFile(root.resolve("fragguard.db")));
+    }
+
+    @Test
+    void tamperedApprovedPolicyPreventsCoordinatorFromOpeningAtStartup() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
+            var approved = setup.policy.prepare(setup.operator, CONSENT).get(30, TimeUnit.SECONDS);
+            Properties props = load(approved.policyFile());
+            props.setProperty("candidate_sha256", "f".repeat(64));
+            try (var output = Files.newOutputStream(approved.policyFile())) {
+                props.store(output, "Wrong candidate fingerprint");
+            }
+        }
+        assertThrows(java.io.IOException.class, () -> MaintenanceCoordinator.open(root),
+                "Do not open the live SQLite writer while persisted READY policy is untrusted");
+    }
+
     private static void assertStrictRefused(Setup setup) throws Exception {
         assertThrows(ExecutionException.class,
                 () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
