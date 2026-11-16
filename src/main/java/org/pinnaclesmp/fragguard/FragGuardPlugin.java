@@ -21,6 +21,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private MaintenanceAdmissionGate maintenanceAdmissionGate;
     private Database database;
     private DatabaseQuickDiagnostics quickDiagnostics;
+    private ReclaimableSpaceMonitor reclaimableSpaceMonitor;
     private DatabaseDeepDiagnostics deepDiagnostics;
     private CompactionStoragePreflight compactionPreflight;
     private OnlineDatabaseCompaction onlineCompaction;
@@ -132,6 +133,16 @@ public final class FragGuardPlugin extends JavaPlugin {
         }
         quickDiagnostics = new DatabaseQuickDiagnostics(
                 getDataFolder().toPath().resolve("fragguard.db"));
+        double minimumPercent = getConfig().getDouble("database-reclaimable-warning-percent", 10.0);
+        if (!Double.isFinite(minimumPercent)) minimumPercent = 10.0;
+        reclaimableSpaceMonitor = new ReclaimableSpaceMonitor(new ReclaimableSpaceMonitor.Settings(
+                getConfig().getBoolean("database-reclaimable-monitor-enabled", false),
+                Math.min(1440L, Math.max(1L, getConfig().getLong(
+                        "database-reclaimable-monitor-interval-minutes", 60L))),
+                Math.max(1L, getConfig().getLong("database-reclaimable-warning-mib", 1024L)),
+                Math.max(0.0, Math.min(100.0, minimumPercent)),
+                Math.min(10080L, Math.max(1L, getConfig().getLong(
+                        "database-reclaimable-warning-cooldown-minutes", 1440L)))));
         deepDiagnostics = new DatabaseDeepDiagnostics(getDataFolder().toPath());
         compactionPreflight = new CompactionStoragePreflight(getDataFolder().toPath());
         onlineCompaction = new OnlineDatabaseCompaction(
@@ -174,6 +185,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         commandExecutor.resumeInterruptedJobs();
         scheduleCleanup();
         scheduleStorageHealthMonitor();
+        scheduleReclaimableSpaceMonitor();
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");
     }
 
@@ -244,6 +256,7 @@ public final class FragGuardPlugin extends JavaPlugin {
             deepDiagnostics.close();
             deepDiagnostics = null;
         }
+        reclaimableSpaceMonitor = null;
         // Close any read-only diagnostics before the SQLite writer shuts down
         // and checkpoints its WAL. This does not alter the live database.
         if (quickDiagnostics != null) {
@@ -391,6 +404,10 @@ public final class FragGuardPlugin extends JavaPlugin {
         return quickDiagnostics;
     }
 
+    ReclaimableSpaceMonitor getReclaimableSpaceMonitor() {
+        return reclaimableSpaceMonitor;
+    }
+
     DatabaseDeepDiagnostics getDeepDiagnostics() {
         return deepDiagnostics;
     }
@@ -457,6 +474,42 @@ public final class FragGuardPlugin extends JavaPlugin {
                                 + "remaining expired rows, if any, will be handled by the next run.");
                 });
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, 20L * 30L, ticks);
+    }
+
+    private void scheduleReclaimableSpaceMonitor() {
+        ReclaimableSpaceMonitor monitor = reclaimableSpaceMonitor;
+        if (monitor == null || !monitor.settings().enabled()) return;
+        long ticks = TimeUnit.MINUTES.toSeconds(monitor.settings().intervalMinutes()) * 20L;
+        // The timer merely queues a bounded, read-only overview on the existing
+        // diagnostics worker. No SQLite or filesystem scan runs on the tick path.
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
+            if (!isEnabled() || quickDiagnostics == null || database == null) return;
+            quickDiagnostics.run(DatabaseQuickDiagnostics.Mode.OVERVIEW,
+                    database.health(), getRetentionDays(), getRollbackJobRetentionDays(),
+                    Math.max(1, getConfig().getInt("diagnostics-query-timeout-seconds", 15)))
+                    .whenComplete((report, failure) -> {
+                        // An admin may already be running diagnostics. Skip that
+                        // interval rather than competing for SQLite read capacity.
+                        if (failure != null || reclaimableSpaceMonitor != monitor || !isEnabled()) return;
+                        if (!monitor.accept(report, System.currentTimeMillis(), true)) return;
+                        String message = "FragGuard maintenance recommendation: "
+                                + monitor.latest().warning();
+                        try {
+                            Bukkit.getScheduler().runTask(this, () -> {
+                                if (!isEnabled() || reclaimableSpaceMonitor != monitor) return;
+                                getLogger().warning(message);
+                                for (Player player : Bukkit.getOnlinePlayers()) {
+                                    if (player.isOp() && player.hasPermission("fragguard.admin")) {
+                                        player.sendMessage(Component.text("[FragGuard] " + message,
+                                                NamedTextColor.YELLOW));
+                                    }
+                                }
+                            });
+                        } catch (IllegalStateException ignored) {
+                            // The plugin was disabled between scan completion and dispatch.
+                        }
+                    });
+        }, 20L * 60L, ticks);
     }
 
     private void scheduleStorageHealthMonitor() {
