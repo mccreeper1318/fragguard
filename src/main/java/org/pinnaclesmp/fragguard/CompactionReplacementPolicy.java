@@ -239,6 +239,13 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         }
         Properties policy = read(approvedFile(dir, state));
         validatePolicy(policy, state, verified, "APPROVED");
+        Path original = base.resolve("fragguard.db");
+        if (!Files.isRegularFile(original, LinkOption.NOFOLLOW_LINKS)
+                || !OnlineDatabaseCompaction.sourceIdentity(original).equals(
+                        verified.getProperty("source_identity_sha256"))) {
+            throw new IOException("Original database file identity has changed; #168 must "
+                    + "verify manual activation before running FragGuard");
+        }
         Path candidate = dir.resolve(state.candidateFile());
         // The full SHA-256 checks happen in the approval worker, not on
         // MaintenanceCoordinator's state thread: a 57-million-row SQLite file
@@ -254,8 +261,12 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             if (Files.size(candidate) != number(verified, "candidate_bytes")) {
                 throw new IOException("Compacted file size no longer matches verification");
             }
-        } else if (state.phase() != MaintenancePhase.READY_TO_SWAP) {
-            throw new IOException("Compaction candidate disappeared before approval");
+        } else {
+            // #168 has not yet implemented authenticated activation of a
+            // manually installed candidate. A missing candidate on startup
+            // cannot be silently accepted as a successful file swap.
+            throw new IOException("Compaction candidate is missing; do not start until "
+                    + "manual activation is verified (#168)");
         }
         if (state.policy() == MaintenancePolicy.STRICT) {
             String finalSha = policy.getProperty("strict_source_final_sha256", "");
