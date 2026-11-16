@@ -3,6 +3,7 @@
 ## 26.3-1.2.2
 
 ### Added
+- Added full compacted-database integrity, history/undo fingerprint verification and fail-closed candidate manifests (#166).
 - Added persistent database maintenance states with safe cancellation and restart recovery (#159).
 - Blocked new rollback and undo jobs during active maintenance (#159).
 - Added read-only database overview, record counts, and quick integrity checks (#162).

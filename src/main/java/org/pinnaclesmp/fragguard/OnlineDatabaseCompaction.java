@@ -226,7 +226,7 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
             if (operationId.isBlank()) {
                 throw new IOException("Cannot bind candidate evidence to maintenance operation");
             }
-            saveEvidence(evidence, operationId);
+            saveEvidence(evidence, operationId, fileSha256(candidate));
             job.check();
             // Persist only a lower-bound timestamp; exact copy identity is in
             // the candidate evidence file for downstream verification (#166).
@@ -316,7 +316,7 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
         return scalar(connection, "PRAGMA " + name);
     }
 
-    private static String sourceIdentity(Path source) throws IOException {
+    static String sourceIdentity(Path source) throws IOException {
         BasicFileAttributes attributes = Files.readAttributes(source,
                 BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         if (!attributes.isRegularFile()) throw new IOException("Compaction source is not a regular file");
@@ -333,7 +333,36 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
         }
     }
 
-    private static void saveEvidence(Result result, String operationId) throws IOException {
+    /**
+     * Fingerprint the exact SQLite copy after VACUUM and file flush. The
+     * verifier rehashes the candidate before and after its full scan, so an
+     * edited history BLOB, index or undo record cannot inherit this baseline.
+     * We never hash the changing production DB and call it the same snapshot.
+     */
+    static String fileSha256(Path file) throws IOException {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Compaction candidate is unsafe or missing");
+        }
+        try {
+            MessageDigest hash = MessageDigest.getInstance("SHA-256");
+            try (var input = Files.newInputStream(file, StandardOpenOption.READ)) {
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new IOException("Compaction fingerprint interrupted");
+                    }
+                    hash.update(buffer, 0, read);
+                }
+            }
+            return HexFormat.of().formatHex(hash.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is required", impossible);
+        }
+    }
+
+    private static void saveEvidence(Result result, String operationId,
+                                     String candidateSha256) throws IOException {
         Path evidence = result.snapshotEvidence();
         Properties values = new Properties();
         values.setProperty("format", "fragguard-vacuum-snapshot-1");
@@ -345,6 +374,7 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
         values.setProperty("invoked_at_millis", Long.toString(result.invocationMillis()));
         values.setProperty("completed_at_millis", Long.toString(result.completedMillis()));
         values.setProperty("candidate_bytes", Long.toString(result.candidateBytes()));
+        values.setProperty("candidate_sha256", candidateSha256);
         values.setProperty("sqlite_schema_version", Integer.toString(result.schemaVersion()));
         values.setProperty("included_max_history_id", Long.toString(result.lastIncludedHistoryId()));
         values.setProperty("included_max_rollback_job_id", Long.toString(result.lastIncludedJobId()));

@@ -268,6 +268,10 @@ class DatabaseDeepDiagnosticsTest {
     }
 
     private Path seededDatabase(int history) throws Exception {
+        return seededDatabase(directory, history);
+    }
+
+    static Path seededDatabase(Path directory, int history) throws Exception {
         Path db = directory.resolve("fragguard.db");
         Class.forName("org.sqlite.JDBC");
         try (Connection c = DriverManager.getConnection("jdbc:sqlite:" + db);
