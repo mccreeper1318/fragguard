@@ -38,6 +38,10 @@ class DatabaseQuickDiagnosticsTest {
             assertEquals(DatabaseQuickDiagnostics.Mode.OVERVIEW, r.mode());
             assertEquals(db.toAbsolutePath(), r.databasePath());
             assertEquals(9, r.schemaVersion());
+            assertEquals(IncrementalSqliteReclamation.NONE, r.autoVacuumMode());
+            assertTrue(r.lines().stream().anyMatch(
+                    line -> line.contains("SQLite auto_vacuum: NONE")
+                            && line.contains("no automatic mode conversion")));
             assertEquals(before, r.mainBytes());
             assertTrue(r.pageSize() >= 512L);
             assertTrue(r.pageCount() >= r.freelistCount());
