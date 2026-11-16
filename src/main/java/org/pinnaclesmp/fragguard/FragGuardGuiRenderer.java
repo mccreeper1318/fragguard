@@ -51,6 +51,12 @@ final class FragGuardGuiRenderer {
     }
 
     static Inventory maintenanceMenu(MaintenanceMenuView view) {
+        return maintenanceMenu(view, null, false);
+    }
+
+    static Inventory maintenanceMenu(MaintenanceMenuView view,
+                                     ReclaimableSpaceMonitor.Snapshot space,
+                                     boolean monitoringEnabled) {
         Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &6Database Maintenance"));
         fillRange(inv, 0, 8, Material.GRAY_STAINED_GLASS_PANE);
         fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
@@ -78,6 +84,16 @@ final class FragGuardGuiRenderer {
                         + (view.scanning() ? " (" + view.scannedRows() + " rows)" : ""),
                 "&7No invented VACUUM progress percentage.",
                 "&eClick to refresh."));
+        if (space == null) {
+            inv.setItem(18, item(Material.PAPER, "&bSpace Recommendation",
+                    monitoringEnabled ? "&7Background monitoring enabled."
+                            : "&7Background monitoring is disabled.",
+                    "&7No completed storage sample yet.",
+                    "&eClick for a read-only overview."));
+        } else {
+            inv.setItem(18, item(space.recommended() ? Material.GOLD_INGOT : Material.PAPER,
+                    "&bSpace Recommendation", space.guiLore()));
+        }
         inv.setItem(19, item(Material.OAK_SIGN, "&7File size comparison",
                 "&f" + truncate(view.sizeSummary()),
                 "&7Savings excludes active WAL/SHM.",
