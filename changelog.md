@@ -3,6 +3,7 @@
 ## 26.3-1.2.2
 
 ### Added
+- Added end-to-end maintenance release tests, isolated large-history validation guidance and owner sign-off checklist (#172).
 - Added opt-in bounded SQLite incremental page reclamation for compatible databases, with safe new-database configuration and no existing-database conversion (#171).
 - Added opt-in read-only SQLite free-list monitoring with admin-only compaction advice, WAL/growth context, configurable thresholds and cooldown (#170).
 - Added in-game Database Maintenance menu and administrator commands for scheduling, diagnostics, compaction, verification and policy approval (#169).
