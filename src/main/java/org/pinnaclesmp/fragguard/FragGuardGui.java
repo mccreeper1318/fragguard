@@ -74,9 +74,11 @@ final class FragGuardGui implements Listener {
             return;
         }
         event.setCancelled(true);
-        // Permissions can change while a menu is open. A previously opened
-        // inventory never grants a stale operator continued admin access.
-        if (!player.isOp() || !player.hasPermission("fragguard.admin")) {
+        // Recheck privileges for maintenance clicks. Existing lookup/
+        // rollback menus retain their established event behavior.
+        if ((session.screen == Screen.MAINTENANCE
+                || session.screen == Screen.MAINTENANCE_CONFIRM)
+                && (!player.isOp() || !player.hasPermission("fragguard.admin"))) {
             player.closeInventory();
             return;
         }
