@@ -113,6 +113,12 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // the actual SQLite writer successfully initialized, can
                 // the durable maintenance gate be cleared.
                 maintenance.finishVerifiedActivation().get(30, TimeUnit.SECONDS);
+                // The persisted ACTIVATING -> IDLE transition must complete
+                // BEFORE any world-name normalization can update retained
+                // rollback jobs or undo records. This preserves crash
+                // recovery's exact candidate digests through Database.init().
+                database.refreshWorldNamesAfterActivationAsync()
+                        .get(60, TimeUnit.SECONDS);
                 getLogger().info("Verified compacted database activation complete. "
                         + "The preserved original and its sidecars were not deleted.");
             } catch (Exception failure) {

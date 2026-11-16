@@ -152,6 +152,21 @@ final class Database {
         }
     }
 
+    /**
+     * After a VERIFIED activation has committed IDLE, safely catch up any
+     * world-name changes on the normal ordered SQLite worker. World rename
+     * updates must never run in the crash-recoverable ACTIVATING window.
+     */
+    CompletableFuture<Void> refreshWorldNamesAfterActivationAsync() {
+        List<WorldIdentity> loadedWorlds = plugin.getServer().getWorlds().stream()
+                .map(world -> new WorldIdentity(world.getUID().toString(), world.getName()))
+                .toList();
+        return submit(connection -> inTransaction(connection, () -> {
+            refreshRollbackWorldNames(connection, loadedWorlds);
+            return null;
+        }), false);
+    }
+
     DatabaseShutdownSnapshot shutdown() {
         DatabaseShutdownSnapshot snapshot;
         synchronized (coalescedChanges) {
@@ -1571,10 +1586,24 @@ final class Database {
                     + " to version " + schemaVersion + ".");
         }
 
-        inTransaction(databaseConnection, () -> {
-            refreshRollbackWorldNames(databaseConnection, loadedWorlds);
-            return null;
-        });
+        // #168: ACTIVATING is persisted BEFORE Database.init() can switch
+        // journal_mode to WAL. World rename refreshes are legitimate writes,
+        // but would change verified rollback-job/undo row hashes if startup
+        // crashes before the activation reset commits. Defer ONLY during this
+        // activation stage; queue the refresh after the state is durably IDLE.
+        boolean activating = plugin instanceof FragGuardPlugin fragGuard
+                && fragGuard.getMaintenanceCoordinator() != null
+                && fragGuard.getMaintenanceCoordinator().snapshot().phase()
+                        == MaintenancePhase.ACTIVATING;
+        if (!activating) {
+            inTransaction(databaseConnection, () -> {
+                refreshRollbackWorldNames(databaseConnection, loadedWorlds);
+                return null;
+            });
+        } else {
+            plugin.getLogger().info("Deferring rollback world-name refresh until "
+                    + "compacted database activation is durably complete.");
+        }
         if (startingVersion < SCHEMA_VERSION && migrationBackup != null) {
             pruneVerifiedMigrationBackups();
         }
