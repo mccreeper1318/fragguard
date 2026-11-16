@@ -277,9 +277,17 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             // When the server is still awaiting manual activation, the original
             // must be byte-identical to the final shutdown proof. During later
             // activation #168 checks the renamed backup's provenance instead.
-            // A strict SHA-256 source comparison is made in the approval
-            // worker after complete shutdown; #168 repeats it at activation.
-            // Never hash multi-gigabyte SQLite files on the state worker.
+            // A strict SHA-256 source comparison is done after clean shutdown.
+            // Recheck after restart, before allowing the live writer to open.
+            // This is intentionally NOT done by markReady() on the state
+            // worker (state is still VERIFYING at that point). Issue #168
+            // will move offline activation checks into its dedicated startup
+            // worker; no stale source may be silently accepted meanwhile.
+            if (state.phase() == MaintenancePhase.READY_TO_SWAP
+                    && !finalSha.equals(OnlineDatabaseCompaction.fileSha256(source))) {
+                throw new IOException("Final source changed after STRICT approval; "
+                        + "refuse activation and preserve original and candidate");
+            }
         } else if (!digestText(SNAPSHOT_ACKNOWLEDGEMENT).equals(
                 policy.getProperty("consent_statement_sha256", ""))
                 || !state.operatorUuid().equals(policy.getProperty("consent_operator_uuid"))
