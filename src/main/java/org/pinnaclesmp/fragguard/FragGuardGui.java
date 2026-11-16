@@ -74,6 +74,12 @@ final class FragGuardGui implements Listener {
             return;
         }
         event.setCancelled(true);
+        // Permissions can change while a menu is open. A previously opened
+        // inventory never grants a stale operator continued admin access.
+        if (!player.isOp() || !player.hasPermission("fragguard.admin")) {
+            player.closeInventory();
+            return;
+        }
         int slot = event.getRawSlot();
         if (slot < 0 || slot >= session.inventory.getSize()) {
             return;
@@ -115,6 +121,8 @@ final class FragGuardGui implements Listener {
             case UNDO_LIST -> clickUndoList(player, session, slot);
             case UNDO_CONFIRM -> clickUndoConfirm(player, session, slot);
             case RECOVERY -> clickRecovery(player, session, slot);
+            case MAINTENANCE -> clickMaintenance(player, session, slot);
+            case MAINTENANCE_CONFIRM -> clickMaintenanceConfirm(player, session, slot);
         }
     }
 
@@ -206,8 +214,130 @@ final class FragGuardGui implements Listener {
                 player.closeInventory();
                 player.performCommand("fg diagnostics");
             }
+            case 26 -> openMaintenance(player);
             default -> { }
         }
+    }
+
+    /** Shared entry point for /fg -> Maintenance and /fg maintenance. */
+    void openMaintenance(Player player) {
+        if (!player.isOp() || !player.hasPermission("fragguard.admin")) {
+            player.sendMessage(color("&cOnly server operators can access database maintenance."));
+            return;
+        }
+        Session session = sessions.computeIfAbsent(player.getUniqueId(), ignored -> new Session());
+        String ownedToken = session.playerPreviewToken;
+        if (ownedToken != null && ownedToken.equals(activeRollbackToken(player))) {
+            player.performCommand("fg rollback cancel");
+        }
+        session.reset(plugin.getRetentionDays(), maxRadius(), maxRollbackRadius());
+        renderMaintenance(player, session);
+    }
+
+    private void renderMaintenance(Player player, Session session) {
+        MaintenanceCoordinator coordinator = plugin.getMaintenanceCoordinator();
+        OnlineDatabaseCompaction copying = plugin.getOnlineCompaction();
+        CompactionCandidateVerifier verifying = plugin.getCandidateVerifier();
+        if (coordinator == null || copying == null || verifying == null) {
+            player.sendMessage(color("&cMaintenance services are unavailable."));
+            return;
+        }
+        MaintenanceSnapshot current = coordinator.snapshot();
+        long sourceBytes = -1;
+        long candidateBytes = -1;
+        try {
+            java.nio.file.Path root = plugin.getDataFolder().toPath();
+            java.nio.file.Path main = root.resolve("fragguard.db");
+            if (java.nio.file.Files.isRegularFile(main, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                sourceBytes = java.nio.file.Files.size(main);
+            }
+            if (!current.candidateFile().isBlank()) {
+                java.nio.file.Path candidate = root.resolve("compaction-candidates")
+                        .resolve(current.candidateFile());
+                if (java.nio.file.Files.isRegularFile(candidate,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    candidateBytes = java.nio.file.Files.size(candidate);
+                }
+            }
+        } catch (java.io.IOException exception) {
+            plugin.getLogger().log(Level.FINE, "Maintenance file size display unavailable", exception);
+        }
+        MaintenanceMenuView view = MaintenanceMenuView.from(current,
+                copying.progress(), verifying.progress(), sourceBytes, candidateBytes,
+                System.currentTimeMillis());
+        show(player, session, Screen.MAINTENANCE,
+                () -> FragGuardGuiRenderer.maintenanceMenu(view), "database maintenance");
+    }
+
+    private void clickMaintenance(Player player, Session session, int slot) {
+        switch (slot) {
+            case 10 -> maintenanceCommand(player, "fg diagnostics");
+            case 12 -> maintenanceCommand(player, "fg diagnostics deep");
+            case 14 -> maintenanceCommand(player, "fg diagnostics preflight");
+            case 16, 45 -> renderMaintenance(player, session);
+            case 20 -> openMaintenanceConfirmation(player, session, MaintenanceConfirmAction.START_STRICT);
+            case 22 -> openMaintenanceConfirmation(player, session, MaintenanceConfirmAction.START_SNAPSHOT);
+            case 24 -> openMaintenanceConfirmation(player, session, MaintenanceConfirmAction.COMPACT);
+            case 28 -> maintenanceCommand(player, "fg maintenance verify");
+            case 30 -> {
+                MaintenanceCoordinator coordinator = plugin.getMaintenanceCoordinator();
+                if (coordinator != null) {
+                    openMaintenanceConfirmation(player, session,
+                            coordinator.snapshot().policy() == MaintenancePolicy.STRICT
+                                    ? MaintenanceConfirmAction.APPROVE_STRICT
+                                    : MaintenanceConfirmAction.APPROVE_SNAPSHOT);
+                }
+            }
+            case 32 -> maintenanceCommand(player, "fg maintenance instructions");
+            case 34 -> openMaintenanceConfirmation(player, session, MaintenanceConfirmAction.CANCEL);
+            case 49 -> openMain(player);
+            case 8, 53 -> player.closeInventory();
+            default -> { }
+        }
+    }
+
+    private void maintenanceCommand(Player player, String command) {
+        player.closeInventory();
+        player.performCommand(command);
+    }
+
+    private void openMaintenanceConfirmation(Player player, Session session,
+                                              MaintenanceConfirmAction action) {
+        MaintenanceCoordinator coordinator = plugin.getMaintenanceCoordinator();
+        if (coordinator == null || !action.available(coordinator.snapshot())) {
+            player.sendMessage(color("&eThis action is not available for the current stage. Refresh status."));
+            renderMaintenance(player, session);
+            return;
+        }
+        if (show(player, session, Screen.MAINTENANCE_CONFIRM,
+                () -> FragGuardGuiRenderer.maintenanceConfirmation(action),
+                "maintenance confirmation " + action)) {
+            session.maintenanceConfirmation = action;
+        }
+    }
+
+    private void clickMaintenanceConfirm(Player player, Session session, int slot) {
+        if (slot == 11) {
+            renderMaintenance(player, session);
+            return;
+        }
+        if (slot == 26) {
+            player.closeInventory();
+            return;
+        }
+        if (slot != 15 || session.maintenanceConfirmation == null) return;
+        MaintenanceConfirmAction action = session.maintenanceConfirmation;
+        MaintenanceCoordinator coordinator = plugin.getMaintenanceCoordinator();
+        if (coordinator == null || !action.available(coordinator.snapshot())) {
+            player.sendMessage(color("&cMaintenance stage changed. That action was not performed."));
+            renderMaintenance(player, session);
+            return;
+        }
+        // A fixed enum command, not arbitrary item lore / GUI player input.
+        // Close first to prevent duplicate clicks. The command path always
+        // rechecks permissions, state and snapshot-loss acknowledgement.
+        session.maintenanceConfirmation = null;
+        maintenanceCommand(player, action.command());
     }
 
     private void openSetup(Player player, Session session) {
@@ -1583,7 +1713,9 @@ final class FragGuardGui implements Listener {
         PLAYER_ROLLBACK_PREVIEW,
         UNDO_LIST,
         UNDO_CONFIRM,
-        RECOVERY
+        RECOVERY,
+        MAINTENANCE,
+        MAINTENANCE_CONFIRM
     }
 
     private enum Scope { AREA, PLAYER }
@@ -1619,6 +1751,7 @@ final class FragGuardGui implements Listener {
         private final LookupRequestGeneration previewRequests = new LookupRequestGeneration();
         private final GuiPendingTransition pendingTransition = new GuiPendingTransition();
         private Screen screen;
+        private MaintenanceConfirmAction maintenanceConfirmation;
         private Screen exactReturnScreen = Screen.RESULTS;
         private Inventory inventory;
         private int radius;
@@ -1845,6 +1978,7 @@ final class FragGuardGui implements Listener {
 
         private void reset(int retentionDays, int maxRadius, int maxRollbackRadius) {
             pendingTransition.complete();
+            maintenanceConfirmation = null;
             lookupRequests.invalidate();
             detailRequests.invalidate();
             undoRequests.invalidate();
