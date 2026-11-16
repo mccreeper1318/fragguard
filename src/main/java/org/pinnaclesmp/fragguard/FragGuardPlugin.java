@@ -489,8 +489,8 @@ public final class FragGuardPlugin extends JavaPlugin {
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
             if (!isEnabled() || quickDiagnostics == null || database == null) return;
             quickDiagnostics.run(DatabaseQuickDiagnostics.Mode.OVERVIEW,
-                    database.health(), getRetentionDays(), getRollbackJobRetentionDays(),
-                    Math.max(1, getConfig().getInt("diagnostics-query-timeout-seconds", 15)))
+                    database.health(), historyRetentionDays, jobRetentionDays,
+                    queryTimeoutSeconds)
                     .whenComplete((report, failure) -> {
                         // An admin may already be running diagnostics. Skip that
                         // interval rather than competing for SQLite read capacity.
