@@ -250,12 +250,11 @@ final class CompactionActivation {
         }
 
         String before = OnlineDatabaseCompaction.fileSha256(installed);
-        java.util.Map<String, String> sidecarsBefore = new java.util.LinkedHashMap<>();
-        for (String suffix : SIDEcars) {
-            Path sidecar = base.resolve("fragguard.db" + suffix);
-            sidecarsBefore.put(suffix, Files.exists(sidecar, LinkOption.NOFOLLOW_LINKS)
-                    ? OnlineDatabaseCompaction.fileSha256(sidecar) : "absent");
-        }
+        Path wal = base.resolve("fragguard.db-wal");
+        boolean walPresentBefore = Files.exists(wal, LinkOption.NOFOLLOW_LINKS);
+        long walBytesBefore = walPresentBefore ? Files.size(wal) : 0L;
+        String walShaBefore = walPresentBefore
+                ? OnlineDatabaseCompaction.fileSha256(wal) : "";
 
         // A WAL-mode header changes the *file* SHA without changing any
         // retained rows. The logical schema+table hashes MUST still equal
@@ -289,14 +288,28 @@ final class CompactionActivation {
         if (!before.equals(OnlineDatabaseCompaction.fileSha256(installed))) {
             throw new IOException("Installed SQLite database changed during activation recovery");
         }
-        for (String suffix : SIDEcars) {
-            Path sidecar = base.resolve("fragguard.db" + suffix);
-            String after = Files.exists(sidecar, LinkOption.NOFOLLOW_LINKS)
-                    ? OnlineDatabaseCompaction.fileSha256(sidecar) : "absent";
-            if (!after.equals(sidecarsBefore.get(suffix))) {
-                throw new IOException("SQLite " + suffix + " changed during activation verification");
+        // sqlite-jdbc can create a NEW empty WAL/SHM and update SHM read
+        // marks even for mode=ro / query_only scans. SHM is transient
+        // reader bookkeeping, not a content fingerprint. Reject changes
+        // to committed WAL frames instead of demanding identical sidecar
+        // existence and mutable SHM bytes around a read-only inspection.
+        boolean walPresentAfter = Files.exists(wal, LinkOption.NOFOLLOW_LINKS);
+        long walBytesAfter = walPresentAfter ? Files.size(wal) : 0L;
+        if (walBytesBefore > 32L) {
+            // A nonempty WAL with frames is part of the *new* installed
+            // candidate's logical state. A read-only scan must not alter it.
+            if (!walPresentAfter || walBytesAfter != walBytesBefore
+                    || !walShaBefore.equals(OnlineDatabaseCompaction.fileSha256(wal))) {
+                throw new IOException("Committed WAL frames changed during activation verification");
             }
+        } else if (walBytesAfter > 32L) {
+            // No WAL frames existed before this scan; a new frame is an
+            // unexpected writer, not normal read-only sidecar creation.
+            throw new IOException("Unexpected SQLite WAL frames appeared during recovery scan");
         }
+        // Require safe file types after the scan, including reader-created
+        // shared-memory sidecars, but do not fingerprint mutable -shm data.
+        requireRecoverableActivation(base, state);
         if (!receipt.getProperty("original_sha256").equals(
                 OnlineDatabaseCompaction.fileSha256(backup))) {
             throw new IOException("Original recovery backup was modified during verification");
