@@ -228,6 +228,15 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         Path base = root.toAbsolutePath().normalize();
         Path dir = base.resolve("compaction-candidates");
         Properties verified = read(verifiedFile(dir, state));
+        if (!"fragguard-compaction-verified-1".equals(verified.getProperty("format"))
+                || !"true".equals(verified.getProperty("verified"))
+                || !"false".equals(verified.getProperty("replacement_approved"))
+                || !state.operationId().equals(verified.getProperty("maintenance_operation_id"))
+                || !state.candidateFile().equals(verified.getProperty("candidate"))
+                || number(verified, "invoked_at_millis") != state.snapshotCutoffMillis()
+                || number(verified, "sqlite_schema_version") != Database.SCHEMA_VERSION) {
+            throw new IOException("Recorded verified candidate no longer matches maintenance");
+        }
         Properties policy = read(approvedFile(dir, state));
         validatePolicy(policy, state, verified, "APPROVED");
         Path candidate = dir.resolve(state.candidateFile());
@@ -343,7 +352,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         props.setProperty("snapshot_completed_at_millis",
                 verified.getProperty("completed_at_millis"));
         props.setProperty("snapshot_time_kind", "BETWEEN_INVOCATION_AND_COMPLETION");
-        props.setProperty("source_replacement_approved", "true");
+        props.setProperty("candidate_verified", "true");
         return props;
     }
 
@@ -356,7 +365,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 || !state.candidateFile().equals(props.getProperty("candidate"))
                 || !state.manifestFile().equals(props.getProperty("manifest"))
                 || !state.policy().name().equals(props.getProperty("policy"))
-                || !"true".equals(props.getProperty("source_replacement_approved"))
+                || !"true".equals(props.getProperty("candidate_verified"))
                 || !"BETWEEN_INVOCATION_AND_COMPLETION".equals(
                         props.getProperty("snapshot_time_kind"))
                 || !verified.getProperty("candidate_sha256").equals(
