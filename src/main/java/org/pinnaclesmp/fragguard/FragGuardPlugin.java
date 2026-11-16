@@ -52,7 +52,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                     + " — " + maintenance.snapshot().detail()
                     + ". The database has not been automatically replaced or reset.");
         }
-        if (maintenance.snapshot().phase() == MaintenancePhase.READY_TO_SWAP) {
+        if (CompactionReplacementPolicy.blocksWriterStartup(maintenance.snapshot())) {
             // #167: a final STRICT attestation is not permission to reopen
             // the old source writer. Any new logging/retention update would
             // immediately stale it. #168 will verify a manual DB activation
