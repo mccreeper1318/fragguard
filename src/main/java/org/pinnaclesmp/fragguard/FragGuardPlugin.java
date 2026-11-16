@@ -25,6 +25,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private CompactionStoragePreflight compactionPreflight;
     private OnlineDatabaseCompaction onlineCompaction;
     private CompactionCandidateVerifier candidateVerifier;
+    private CompactionReplacementPolicy replacementPolicy;
     private FragGuardCommand commandExecutor;
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
@@ -50,6 +51,21 @@ public final class FragGuardPlugin extends JavaPlugin {
             getLogger().warning("FragGuard maintenance state: " + maintenance.snapshot().phase()
                     + " — " + maintenance.snapshot().detail()
                     + ". The database has not been automatically replaced or reset.");
+        }
+        if (CompactionReplacementPolicy.blocksWriterStartup(maintenance.snapshot())) {
+            // #167: a final STRICT attestation is not permission to reopen
+            // the old source writer. Any new logging/retention update would
+            // immediately stale it. #168 will verify a manual DB activation
+            // before permitting the SQLite writer to start. Until then, fail
+            // closed even if the READY policy manifest itself is valid.
+            getLogger().severe("Compacted database is awaiting verified manual activation. "
+                    + "Refusing to start the SQLite writer in READY_TO_SWAP: doing so "
+                    + "could invalidate the approved snapshot. Preserve the source, "
+                    + "matching WAL/SHM, candidate and policy files until #168 "
+                    + "implements the offline startup activation check.");
+            Bukkit.shutdown();
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
         }
         int configuredGuiLookupFetchSize = getConfig().getInt(
                 "gui-lookup-fetch-size", DEFAULT_GUI_LOOKUP_FETCH_SIZE);
@@ -78,6 +94,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         onlineCompaction = new OnlineDatabaseCompaction(
                 getDataFolder().toPath(), maintenance, compactionPreflight);
         candidateVerifier = new CompactionCandidateVerifier(getDataFolder().toPath(), maintenance);
+        replacementPolicy = new CompactionReplacementPolicy(getDataFolder().toPath(), maintenance);
         try {
             maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
                     System::currentTimeMillis,
@@ -139,6 +156,20 @@ public final class FragGuardPlugin extends JavaPlugin {
         if (commandExecutor != null) {
             commandExecutor.clearRollbackPreviews();
             commandExecutor = null;
+        }
+
+        // Policy approval is a separate database-independent worker. Stop it
+        // before closing state coordination or the live SQLite writer.
+        if (replacementPolicy != null) {
+            try {
+                replacementPolicy.close();
+            } catch (IllegalStateException exception) {
+                getLogger().log(Level.SEVERE, "Replacement policy did not stop safely; "
+                        + "preserve every database and policy manifest.", exception);
+                Bukkit.shutdown();
+            } finally {
+                replacementPolicy = null;
+            }
         }
 
         // Stop candidate read-only verification before releasing the maintenance
@@ -289,6 +320,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     CompactionCandidateVerifier getCandidateVerifier() {
         return candidateVerifier;
+    }
+
+    CompactionReplacementPolicy getReplacementPolicy() {
+        return replacementPolicy;
     }
 
     boolean maintenanceBlocksNewJobs() {
