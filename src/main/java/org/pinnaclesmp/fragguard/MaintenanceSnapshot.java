@@ -47,7 +47,7 @@ record MaintenanceSnapshot(
         if (!validFileName(candidateFile, ".db") || !validFileName(manifestFile, ".manifest")) {
             throw new IllegalArgumentException("Invalid maintenance candidate/manifest filename");
         }
-        if (phase == MaintenancePhase.READY_TO_SWAP
+        if ((phase == MaintenancePhase.READY_TO_SWAP || phase == MaintenancePhase.ACTIVATING)
                 && (snapshotCutoffMillis <= 0 || candidateFile.isEmpty() || manifestFile.isEmpty())) {
             throw new IllegalArgumentException("Ready state requires a verified snapshot and manifest");
         }
