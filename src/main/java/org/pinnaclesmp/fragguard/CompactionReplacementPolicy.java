@@ -231,8 +231,20 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         Properties policy = read(approvedFile(dir, state));
         validatePolicy(policy, state, verified, "APPROVED");
         Path candidate = dir.resolve(state.candidateFile());
+        // The full SHA-256 checks happen in the approval worker, not on
+        // MaintenanceCoordinator's state thread: a 57-million-row SQLite file
+        // must not stall all lifecycle transitions. #168 rehashes candidate and
+        // backup during offline activation.
         if (Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
-            checkCandidate(state, verified, base);
+            for (String suffix : List.of("-wal", "-shm")) {
+                if (Files.exists(candidate.resolveSibling(state.candidateFile() + suffix),
+                        LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IOException("Unmatched candidate WAL/SHM sidecar");
+                }
+            }
+            if (Files.size(candidate) != number(verified, "candidate_bytes")) {
+                throw new IOException("Compacted file size no longer matches verification");
+            }
         } else if (state.phase() != MaintenancePhase.READY_TO_SWAP) {
             throw new IOException("Compaction candidate disappeared before approval");
         }
@@ -245,11 +257,9 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             // When the server is still awaiting manual activation, the original
             // must be byte-identical to the final shutdown proof. During later
             // activation #168 checks the renamed backup's provenance instead.
-            if (Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
-                    && Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)
-                    && !finalSha.equals(OnlineDatabaseCompaction.fileSha256(source))) {
-                throw new IOException("Final original changed after strict proof");
-            }
+            // A strict SHA-256 source comparison is made in the approval
+            // worker after complete shutdown; #168 repeats it at activation.
+            // Never hash multi-gigabyte SQLite files on the state worker.
         } else if (!digestText(SNAPSHOT_ACKNOWLEDGEMENT).equals(
                 policy.getProperty("consent_statement_sha256", ""))
                 || !state.operatorUuid().equals(policy.getProperty("consent_operator_uuid"))
