@@ -221,6 +221,69 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     }
 
     /**
+     * Policy and manifest evidence are independent of which path contains
+     * the installed candidate. This is essential after an administrator
+     * manually renames the copy: the former source path now names the copy,
+     * and the original has moved to a separate backup.
+     *
+     * This does NOT itself approve a swap: #168 independently checks the
+     * stopped-writer receipt, original backup, candidate bytes and WAL/SHM.
+     */
+    record ApprovedEvidence(Properties verified, Properties policy,
+                            Path verifiedFile, Path policyFile) { }
+
+    static ApprovedEvidence approvedEvidence(Path root, MaintenanceSnapshot state)
+            throws IOException {
+        if (state.phase() != MaintenancePhase.VERIFYING
+                && state.phase() != MaintenancePhase.READY_TO_SWAP) {
+            throw new IOException("Replacement policy requires a verified maintenance phase");
+        }
+        Path base = root.toAbsolutePath().normalize();
+        Path dir = base.resolve("compaction-candidates");
+        if (Files.isSymbolicLink(base) || Files.isSymbolicLink(dir)
+                || !Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Unsafe or absent compaction manifest directory");
+        }
+        Path verifiedPath = verifiedFile(dir, state);
+        Path policyPath = approvedFile(dir, state);
+        Properties verified = read(verifiedPath);
+        if (!"fragguard-compaction-verified-1".equals(verified.getProperty("format"))
+                || !"true".equals(verified.getProperty("verified"))
+                || !"false".equals(verified.getProperty("replacement_approved"))
+                || !state.operationId().equals(verified.getProperty("maintenance_operation_id"))
+                || !state.candidateFile().equals(verified.getProperty("candidate"))
+                || number(verified, "invoked_at_millis") != state.snapshotCutoffMillis()
+                || number(verified, "completed_at_millis") < state.snapshotCutoffMillis()
+                || number(verified, "sqlite_schema_version") != Database.SCHEMA_VERSION
+                || !verified.getProperty("candidate_sha256", "").matches("[a-f0-9]{64}")) {
+            throw new IOException("Verified candidate evidence no longer matches maintenance");
+        }
+        Properties policy = read(policyPath);
+        validatePolicy(policy, state, verified, "APPROVED");
+        if (state.policy() == MaintenancePolicy.STRICT) {
+            if (!policy.getProperty("strict_source_final_sha256", "")
+                    .matches("[a-f0-9]{64}")) {
+                throw new IOException("Strict source shutdown fingerprint is missing");
+            }
+        } else if (!digestText(SNAPSHOT_ACKNOWLEDGEMENT).equals(
+                    policy.getProperty("consent_statement_sha256", ""))
+                || !state.operatorUuid().equals(policy.getProperty("consent_operator_uuid"))
+                || number(policy, "consent_at_millis")
+                    < number(verified, "completed_at_millis")) {
+            throw new IOException("Signed snapshot-loss acknowledgement is missing or invalid");
+        }
+        return new ApprovedEvidence(verified, policy, verifiedPath, policyPath);
+    }
+
+    boolean hasPendingStrict() {
+        MaintenanceSnapshot state = maintenance.snapshot();
+        return state.phase() == MaintenancePhase.VERIFYING
+                && state.policy() == MaintenancePolicy.STRICT
+                && !state.candidateFile().isBlank()
+                && Files.isRegularFile(pendingFile(directory, state), LinkOption.NOFOLLOW_LINKS);
+    }
+
+    /**
      * Shared fail-closed READY gate for the coordinator, including after a
      * restart. This does not itself prove manual activation: #168 must also
      * validate the backup, matched sidecars and installed DB after swapping.
