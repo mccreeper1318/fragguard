@@ -47,7 +47,7 @@ record MaintenanceSnapshot(
         if (!validFileName(candidateFile, ".db") || !validFileName(manifestFile, ".manifest")) {
             throw new IllegalArgumentException("Invalid maintenance candidate/manifest filename");
         }
-        if (phase == MaintenancePhase.READY_TO_SWAP
+        if ((phase == MaintenancePhase.READY_TO_SWAP || phase == MaintenancePhase.ACTIVATING)
                 && (snapshotCutoffMillis <= 0 || candidateFile.isEmpty() || manifestFile.isEmpty())) {
             throw new IllegalArgumentException("Ready state requires a verified snapshot and manifest");
         }
@@ -97,7 +97,7 @@ record MaintenanceSnapshot(
     }
 
     MaintenanceSnapshot reset() {
-        if (phase != MaintenancePhase.CANCELLED && phase != MaintenancePhase.READY_TO_SWAP) {
+        if (phase != MaintenancePhase.CANCELLED && phase != MaintenancePhase.ACTIVATING) {
             throw new IllegalStateException("Cannot reset maintenance before cancellation/verification");
         }
         return new MaintenanceSnapshot(MaintenancePhase.IDLE, "", "", 0, 0,
@@ -141,6 +141,7 @@ enum MaintenancePhase {
     COMPACTING,
     VERIFYING,
     READY_TO_SWAP,
+    ACTIVATING,
     FAILED,
     CANCELLED;
 
@@ -151,7 +152,8 @@ enum MaintenancePhase {
             case ACTIVE -> next == COMPACTING || next == CANCELLED || next == FAILED;
             case COMPACTING -> next == VERIFYING || next == CANCELLED || next == FAILED;
             case VERIFYING -> next == READY_TO_SWAP || next == CANCELLED || next == FAILED;
-            case READY_TO_SWAP -> next == IDLE || next == CANCELLED || next == FAILED;
+            case READY_TO_SWAP -> next == ACTIVATING || next == CANCELLED || next == FAILED;
+            case ACTIVATING -> next == IDLE || next == FAILED;
             case FAILED -> next == CANCELLED;
             case CANCELLED -> next == IDLE || next == COUNTDOWN;
         };

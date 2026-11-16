@@ -45,6 +45,12 @@ tasks {
         // sqlite-jdbc uses JNI. Explicit access allows tests to pass even when
         // future Java releases deny unapproved native access by default.
         jvmArgs("--enable-native-access=ALL-UNNAMED", "--illegal-native-access=deny")
+        // Print the full exception for failures in safety-critical SQLite
+        // activation tests; otherwise CI only reports the test source line.
+        testLogging {
+            events("failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
     }
 
     processResources {

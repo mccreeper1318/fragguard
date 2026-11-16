@@ -79,7 +79,7 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
 
         switch (snapshot.phase()) {
             case COUNTDOWN -> renderCountdown(snapshot);
-            case ACTIVE, COMPACTING, VERIFYING, READY_TO_SWAP, FAILED -> {
+            case ACTIVE, COMPACTING, VERIFYING, READY_TO_SWAP, ACTIVATING, FAILED -> {
                 if (lastPhase == MaintenancePhase.COUNTDOWN
                         && snapshot.phase() == MaintenancePhase.ACTIVE) {
                     broadcast(settings.startedMessage());
@@ -182,13 +182,13 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
     private void updateStaffBar(MaintenancePhase phase) {
         BarColor color = switch (phase) {
             case COMPACTING, VERIFYING -> settings.compactingColor();
-            case READY_TO_SWAP -> settings.readyColor();
+            case READY_TO_SWAP, ACTIVATING -> settings.readyColor();
             default -> settings.activeColor();
         };
         String title = switch (phase) {
             case COMPACTING -> settings.compactingTitle();
             case VERIFYING -> settings.verifyingTitle();
-            case READY_TO_SWAP -> settings.readyTitle();
+            case READY_TO_SWAP, ACTIVATING -> settings.readyTitle();
             case FAILED -> settings.failedTitle();
             default -> settings.activeTitle();
         };
@@ -214,7 +214,7 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
 
     private static boolean staffStage(MaintenancePhase phase) {
         return switch (phase) {
-            case ACTIVE, COMPACTING, VERIFYING, READY_TO_SWAP, FAILED -> true;
+            case ACTIVE, COMPACTING, VERIFYING, READY_TO_SWAP, ACTIVATING, FAILED -> true;
             default -> false;
         };
     }

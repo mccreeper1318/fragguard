@@ -54,11 +54,20 @@ final class MaintenanceCoordinator implements AutoCloseable {
         Objects.requireNonNull(store, "store");
         MaintenanceSnapshot loaded = store.load();
         if (loaded.phase() == MaintenancePhase.READY_TO_SWAP) {
-            // Ready is a persistent privilege: validate the external policy
-            // again before opening the SQLite writer or allowing admissions.
-            // Until #168 implements authenticated file activation, a missing
-            // candidate/changed original is a hard startup refusal.
-            CompactionReplacementPolicy.requireApproved(store.directory(), loaded);
+            // First startup, before any writable SQLite initialization.
+            Path candidate = store.directory().resolve("compaction-candidates")
+                    .resolve(loaded.candidateFile());
+            if (java.nio.file.Files.isRegularFile(candidate,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                CompactionReplacementPolicy.requireApproved(store.directory(), loaded);
+            } else {
+                CompactionActivation.requirePreparedActivation(store.directory(), loaded);
+            }
+        } else if (loaded.phase() == MaintenancePhase.ACTIVATING) {
+            // A previous startup may have created NEW WAL/SHM or changed the
+            // candidate's journal header before the IDLE state was committed.
+            // Do not mistake those fresh sidecars for the old DB's WAL.
+            CompactionActivation.requireRecoverableActivation(store.directory(), loaded);
         }
         MaintenanceSnapshot recovered = switch (loaded.phase()) {
             case COUNTDOWN -> loaded.withPhase(MaintenancePhase.CANCELLED,
@@ -161,13 +170,37 @@ final class MaintenanceCoordinator implements AutoCloseable {
     }
 
     /**
-     * Only the later startup-activation verifier (#168) may call this after
-     * proving the intended candidate was installed. Never auto-clear on boot.
+     * Durable checkpoint BEFORE Database.init() can flip journal_mode to WAL
+     * or create fresh sidecars. A crash after this stage must be recoverable
+     * without falsely requiring the pre-initialization file byte hash again.
+     */
+    CompletableFuture<MaintenanceSnapshot> beginActivation() {
+        return commit(existing -> {
+            if (existing.phase() != MaintenancePhase.READY_TO_SWAP) {
+                throw new IllegalStateException("Manual activation is not ready");
+            }
+            try {
+                CompactionActivation.requirePreparedActivation(store.directory(), existing);
+            } catch (IOException evidenceFailure) {
+                throw new IllegalStateException("Cannot persist activation without "
+                        + "complete manual swap evidence", evidenceFailure);
+            }
+            return existing.withPhase(MaintenancePhase.ACTIVATING,
+                    "Candidate verified before writer startup; crash recovery requires "
+                    + "full logical SQLite validation and the intact original backup");
+        });
+    }
+
+    /**
+     * Only after the installed candidate was validated and the SQLite writer
+     * successfully initialized may this durable state clear the join gate.
+     * The ACTIVATING stage survives crashes without losing activation proof.
      */
     CompletableFuture<MaintenanceSnapshot> finishVerifiedActivation() {
         return commit(existing -> {
-            if (existing.phase() != MaintenancePhase.READY_TO_SWAP) {
-                throw new IllegalStateException("Cannot finish an unverified maintenance operation");
+            if (existing.phase() != MaintenancePhase.ACTIVATING) {
+                throw new IllegalStateException("Cannot finish activation without "
+                        + "a persisted pre-initialization verification stage");
             }
             return existing.reset();
         });

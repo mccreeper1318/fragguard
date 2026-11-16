@@ -3,6 +3,7 @@
 ## 26.3-1.2.2
 
 ### Added
+- Added host-file-manager database activation with clean-shutdown receipts, original/WAL backup checks and verified startup recovery (#168).
 - Added strict final-source comparison and explicit, persisted snapshot-loss consent before compacted database replacement (#167).
 - Added full compacted-database integrity, history/undo fingerprint verification and fail-closed candidate manifests (#166).
 - Added persistent database maintenance states with safe cancellation and restart recovery (#159).

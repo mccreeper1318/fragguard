@@ -254,7 +254,7 @@ class CompactionReplacementPolicyTest {
         return props;
     }
 
-    private static final class Setup implements AutoCloseable {
+    static final class Setup implements AutoCloseable {
         final Path source;
         final MaintenanceCoordinator state;
         final CompactionStoragePreflight capacity;
