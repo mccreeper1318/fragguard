@@ -53,6 +53,13 @@ final class MaintenanceCoordinator implements AutoCloseable {
         Objects.requireNonNull(audit, "audit");
         Objects.requireNonNull(store, "store");
         MaintenanceSnapshot loaded = store.load();
+        if (loaded.phase() == MaintenancePhase.READY_TO_SWAP) {
+            // Ready is a persistent privilege: validate the external policy
+            // again before opening the SQLite writer or allowing admissions.
+            // Until #168 implements authenticated file activation, a missing
+            // candidate/changed original is a hard startup refusal.
+            CompactionReplacementPolicy.requireApproved(store.directory(), loaded);
+        }
         MaintenanceSnapshot recovered = switch (loaded.phase()) {
             case COUNTDOWN -> loaded.withPhase(MaintenancePhase.CANCELLED,
                     "Server restarted during countdown; maintenance was not activated. Schedule again.");
