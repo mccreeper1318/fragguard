@@ -76,6 +76,20 @@ class MaintenanceGuiInventoryLayoutTest {
                     x -> x.contains("PERMANENTLY LOSE")));
             assertTrue(details.get(slots.get(16)).lore.stream().anyMatch(
                     x -> x.contains("No invented VACUUM")));
+            assertTrue(details.get(slots.get(18)).lore.stream().anyMatch(
+                    x -> x.contains("monitoring is disabled")));
+
+            slots.clear();
+            var advice = new ReclaimableSpaceMonitor.Snapshot(
+                    java.time.Instant.parse("2026-11-16T12:00:00Z"),
+                    2L << 20, 25.0, 1L << 20, 1000L, true);
+            FragGuardGuiRenderer.maintenanceMenu(state, advice, true);
+            assertTrue(details.get(slots.get(18)).lore.stream().anyMatch(
+                    x -> x.contains("WAL size")));
+            assertTrue(details.get(slots.get(18)).lore.stream().anyMatch(
+                    x -> x.contains("NOT guaranteed")));
+            assertTrue(details.get(slots.get(18)).lore.stream().anyMatch(
+                    x -> x.contains("manual compaction")));
 
             slots.clear();
             FragGuardGuiRenderer.maintenanceConfirmation(
