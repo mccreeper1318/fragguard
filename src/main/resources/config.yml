@@ -55,6 +55,18 @@ diagnostics-quick-check-timeout-seconds: 45
 # Opt-in full-history/BLOB scan: 1-21600 seconds, default one hour.
 # Incomplete/interrupted scans are never trusted as verification.
 diagnostics-deep-timeout-seconds: 3600
+# Optional, read-only page/free-list monitoring (#170). OFF by default.
+# Runs a bounded overview in the background; never starts VACUUM INTO.
+# Alerts appear only to online OPs with fragguard.admin and in the console.
+database-reclaimable-monitor-enabled: false
+database-reclaimable-monitor-interval-minutes: 60
+# Both estimated reusable free-list space AND percentage must reach threshold.
+# WAL file size and file-growth trends are displayed separately: neither
+# represents guaranteed compacted savings.
+database-reclaimable-warning-mib: 1024
+database-reclaimable-warning-percent: 10.0
+# Minimum time between repeat admin warnings while the threshold is met.
+database-reclaimable-warning-cooldown-minutes: 1440
 # Slow startup work (including migration backups/schema maintenance) reports progress instead of failing at 30s.
 database-startup-warning-seconds: 30
 # 0 disables the hard startup cutoff so large databases can finish initializing safely.
