@@ -70,6 +70,9 @@ final class Database {
     private final int batchSize;
     private final int pressureFlushThreshold;
     private final int queryTimeoutSeconds;
+    private final boolean configureNewIncrementalVacuum;
+    private final boolean incrementalReclaimEnabled;
+    private final int incrementalReclaimPageLimit;
 
     private volatile Thread worker;
     private volatile boolean running;
@@ -97,6 +100,15 @@ final class Database {
                 Math.max(1, plugin.getConfig().getInt("database-write-batch-size", 500)));
         this.pressureFlushThreshold = Math.min(batchSize, Math.max(1, (writeCapacity * 3) / 4));
         this.queryTimeoutSeconds = Math.max(1, plugin.getConfig().getInt("database-query-timeout-seconds", 15));
+        // Only brand-new SQLite files may have their format selected automatically.
+        // Existing databases, regardless of schema version, are never converted.
+        this.configureNewIncrementalVacuum = plugin.getConfig().getBoolean(
+                "database-new-auto-vacuum-incremental", false);
+        this.incrementalReclaimEnabled = plugin.getConfig().getBoolean(
+                "database-incremental-reclaim-enabled", false);
+        this.incrementalReclaimPageLimit = Math.max(1, Math.min(
+                IncrementalSqliteReclamation.MAX_PAGES_PER_PASS,
+                plugin.getConfig().getInt("database-incremental-reclaim-pages-per-pass", 16)));
         this.writeQueue = new ArrayBlockingQueue<>(writeCapacity);
         this.operationQueue = new ArrayBlockingQueue<>(operationCapacity);
     }
@@ -486,6 +498,30 @@ final class Database {
             scheduleCleanupBatch(run);
             return run.finished;
         }
+    }
+
+    /**
+     * Runs only after a committed retention cleanup and only if explicitly
+     * enabled. Reclamation is serialized behind normal accepted block writes;
+     * maintenance errors cannot mark the history write worker unavailable.
+     */
+    CompletableFuture<IncrementalSqliteReclamation.Result> incrementalReclaimAfterCleanupAsync() {
+        if (!incrementalReclaimEnabled) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("Incremental reclamation is disabled"));
+        }
+        // Retention cleanup must not start a second overlapping maintenance
+        // task, and a shutdown must not enqueue more reclamation work.
+        if (!running) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("Database is shutting down"));
+        }
+        return submit(databaseConnection -> IncrementalSqliteReclamation.reclaim(
+                databaseConnection, incrementalReclaimPageLimit), true, true);
+    }
+
+    boolean incrementalReclaimEnabled() {
+        return incrementalReclaimEnabled;
     }
 
     private void scheduleCleanupBatch(CleanupRun run) {
@@ -1389,13 +1425,17 @@ final class Database {
 
     private void runWorker(CompletableFuture<Void> started, List<WorldIdentity> loadedWorlds) {
         startupStage = "opening SQLite database";
+        // SQLite auto_vacuum format must be configured before any table exists.
+        // The existence check precedes the connection opening (which creates
+        // a file if absent); never treat an existing DB as eligible for conversion.
+        boolean brandNewDatabase = !databaseFile.exists();
         try (Connection databaseConnection = DriverManager.getConnection(jdbcUrl)) {
             connection = databaseConnection;
             startupStage = "verifying active SQLite JDBC runtime";
             SqliteDriverProvenance.log(databaseConnection, plugin.getLogger()::info,
                     plugin.getLogger()::warning);
             startupStage = "initializing SQLite schema";
-            initializeSchema(databaseConnection, loadedWorlds);
+            initializeSchema(databaseConnection, loadedWorlds, brandNewDatabase);
             startupStage = "ready";
             started.complete(null);
 
@@ -1483,7 +1523,8 @@ final class Database {
         }
     }
 
-    private void initializeSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds) throws SQLException {
+    private void initializeSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds,
+                                  boolean brandNewDatabase) throws SQLException {
         try (Statement statement = databaseConnection.createStatement()) {
             statement.execute("PRAGMA busy_timeout=5000");
         }
@@ -1497,6 +1538,18 @@ final class Database {
                 + "or overwrite history. Use a compatible newer FG build for forward "
                 + "recovery, or restore an independently verified matching-schema "
                 + "backup only if one actually exists.");
+        }
+
+        if (brandNewDatabase && configureNewIncrementalVacuum) {
+            // New DB only: no tables exist yet, so mode selection needs no
+            // VACUUM rewrite. This remains opt-in and is independent of the
+            // periodic incremental-reclamation switch.
+            IncrementalSqliteReclamation.configureNewDatabase(databaseConnection);
+            plugin.getLogger().info("New FragGuard database configured with SQLite "
+                    + "auto_vacuum=INCREMENTAL; reclamation still requires opt-in.");
+        } else if (configureNewIncrementalVacuum && !brandNewDatabase) {
+            plugin.getLogger().info("Existing SQLite database was not converted to incremental "
+                    + "auto-vacuum. No startup VACUUM or format rewrite was attempted.");
         }
 
         boolean existingSchema = schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection);
