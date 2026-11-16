@@ -516,8 +516,17 @@ final class Database {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("Database is shutting down"));
         }
-        return submit(databaseConnection -> IncrementalSqliteReclamation.reclaim(
-                databaseConnection, incrementalReclaimPageLimit), true, true);
+        return submit(databaseConnection -> {
+            // A manual maintenance transition may occur AFTER queueing. Check
+            // again on the worker to avoid touching a source under verification.
+            if (plugin instanceof FragGuardPlugin fragGuard
+                    && fragGuard.maintenanceBlocksNewJobs()) {
+                throw new IllegalStateException("Manual maintenance started; "
+                        + "skipping optional incremental reclamation");
+            }
+            return IncrementalSqliteReclamation.reclaim(
+                    databaseConnection, incrementalReclaimPageLimit);
+        }, true, true);
     }
 
     boolean incrementalReclaimEnabled() {
