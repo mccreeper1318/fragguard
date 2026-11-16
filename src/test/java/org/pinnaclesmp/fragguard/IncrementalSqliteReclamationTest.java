@@ -76,6 +76,10 @@ class IncrementalSqliteReclamationTest {
     void compatibleDatabaseReclaimsOnlyLimitedPagesAndPreservesLiveRows() throws Exception {
         try (Connection connection = open("incremental.db")) {
             IncrementalSqliteReclamation.configureNewDatabase(connection);
+            // Exercise the same WAL journal mode as FragGuard's live writer.
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("PRAGMA journal_mode=WAL");
+            }
             createAndPruneHistory(connection);
             long before = pragma(connection, "page_count");
             long free = pragma(connection, "freelist_count");
@@ -83,11 +87,14 @@ class IncrementalSqliteReclamationTest {
             var first = IncrementalSqliteReclamation.reclaim(connection, 3);
             assertTrue(first.compatible());
             assertEquals(3, first.requestedPages());
-            assertTrue(first.reclaimedPages() >= 0 && first.reclaimedPages() <= 3,
-                    "a pass should never reclaim more pages than requested");
+            assertEquals(3, first.reclaimedPages(),
+                    "sqlite-jdbc must execute all three vacuum steps, not just one");
+            assertEquals(3, first.freelistBefore() - first.freelistAfter(),
+                    "each requested page should be removed from the free list");
             assertEquals(before, first.pagesBefore());
-            assertEquals(before - first.reclaimedPages(), first.pagesAfter());
-            assertTrue(first.freelistAfter() <= first.freelistBefore());
+            assertEquals(before - 3, first.pagesAfter());
+            assertEquals(1, countRows(connection),
+                    "reclaiming free pages must not remove retained history");
             assertEquals(1, countRows(connection));
             var bounded = IncrementalSqliteReclamation.reclaim(connection, Integer.MAX_VALUE);
             assertTrue(bounded.requestedPages() <= IncrementalSqliteReclamation.MAX_PAGES_PER_PASS);
