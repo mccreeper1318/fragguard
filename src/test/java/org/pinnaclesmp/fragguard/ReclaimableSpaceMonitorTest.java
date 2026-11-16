@@ -25,7 +25,7 @@ class ReclaimableSpaceMonitorTest {
     void recommendsOnlyWhenBothFreelistAmountAndRatioReachThreshold() {
         var monitor = new ReclaimableSpaceMonitor(
                 new ReclaimableSpaceMonitor.Settings(true, 60, 2, 25.0, 60));
-        assertFalse(monitor.accept(sample(4096, 511, 16L << 20, 1L << 20), 1_000L, true),
+        assertFalse(monitor.accept(sample(1024, 511, 4L << 20, 1L << 20), 1_000L, true),
                 "under 2 MiB must not warn even if the percentage is high enough");
         assertFalse(monitor.accept(sample(4096, 512, 16L << 20, 1L << 20), 2_000L, true),
                 "2 MiB is only 12.5% of the database");
