@@ -42,6 +42,13 @@ tasks {
 
     test {
         useJUnitPlatform()
+        // #172: The isolated compaction scale fixture reads this setting from
+        // the test JVM. Declare it as an input so changing the fixture size
+        // invalidates Gradle's UP-TO-DATE and build-cache test results.
+        val compactionValidationRows = providers.environmentVariable("FG_COMPACTION_VALIDATION_ROWS")
+            .orElse("3000")
+        inputs.property("fgCompactionValidationRows", compactionValidationRows)
+        environment("FG_COMPACTION_VALIDATION_ROWS", compactionValidationRows.get())
         // sqlite-jdbc uses JNI. Explicit access allows tests to pass even when
         // future Java releases deny unapproved native access by default.
         jvmArgs("--enable-native-access=ALL-UNNAMED", "--illegal-native-access=deny")

@@ -4,7 +4,7 @@ FragGuard is a Paper plugin that records world-changing block history in SQLite,
 
 History is retained for 30 days by default. The `26.3-1.2.0` inventory GUI condenses related events for easier browsing without deleting, rewriting, or hiding the underlying raw history. Large investigations are database-backed and paged, so the operator can browse far more than 5,000 matching events without loading the complete result set into one GUI session.
 
-## Upcoming 26.3-1.2.2 maintenance foundation
+## 26.3-1.2.2 database maintenance (pending release validation)
 
 Development of built-in database maintenance begins with #159. FragGuard now
 stores a separate, checksummed `maintenance-state.properties` lifecycle file.
@@ -115,7 +115,7 @@ OP plus `fragguard.admin`.
 
 This is a current read snapshot, **not a guarantee that a future compacted
 candidate includes later writes**. Candidate verification and post-snapshot
-policies are tracked in #166/#167. Long read transactions can delay WAL
+policies are enforced by full copy verification and approval. Long read transactions can delay WAL
 checkpoint recycling, so use full scans deliberately rather than on a timer.
 
 ### Online VACUUM INTO candidate creation (#165)
@@ -133,8 +133,7 @@ source schema or substitute files.
 2. During **ACTIVE** maintenance only, run `/fg maintenance compact` within
    25 seconds of an accepted preflight. Use `/fg maintenance status` to
    monitor progress or `/fg maintenance cancel` to request interruption.
-   Maintenance countdown/start controls are scheduled for #169; this command
-   cannot bypass the active maintenance admission gate.
+   This command cannot bypass the active maintenance admission gate.
 3. FragGuard reserves a uniquely named `compaction-candidates/fragguard-compact-*.db`
    and runs SQLite `VACUUM INTO`. A separate `.snapshot.properties`
    file records **unverified** candidate metadata (source identity digest,
@@ -144,16 +143,17 @@ source schema or substitute files.
    The wall-clock start is recorded only as a conservative lower bound;
    SQLite does not expose the exact snapshot acquisition timestamp via JDBC.
 4. A completed copy enters **VERIFYING** and is **not READY_TO_SWAP**.
-   Full source/candidate integrity verification (#166), the strict versus
-   acknowledged snapshot replacement policy (#167), and safe activation
-   (#168) are required before the copy can replace anything.
+   Full source/candidate integrity verification, the strict versus
+   acknowledged snapshot replacement policy, and safe activation are required
+   before the copy can replace anything.
 
 The source database, WAL/SHM files and existing backups remain unchanged by
 the compaction worker. Operators and permitted background processes may
 continue generating history after SQLite starts its snapshot: **later changes
-may not appear in the candidate**. If this copy were substituted without the
-future #167 checks, history and rollback/undo jobs newer than the copied
-snapshot could be lost; the Minecraft world would NOT automatically revert.
+may not appear in the candidate**. The required replacement-policy checks
+prevent accidental substitution; explicitly approved snapshot replacement
+may lose history and rollback/undo changes newer than the copied snapshot.
+The Minecraft world would NOT automatically revert.
 
 Cancellation, shutdown, `SQLITE_FULL`, or interrupted output never promotes
 a partial copy. Any candidate and reservation are preserved for staff review.
@@ -283,7 +283,7 @@ candidates/reservation markers are always **REFUSED**. Unknown capacity causes
 `ACKNOWLEDGEMENT_REQUIRED`. After reading the warning, an OP can type
 **/fg diagnostics preflight acknowledge** within two minutes to explicitly
 accept *unknown* headroom and rerun the estimate; this never bypasses a known
-shortage. It **does not start a compaction**. Future #165 compaction must obtain
+shortage. It **does not start a compaction**. The compaction worker must obtain
 a fresh approved preflight and reserve a unique internally named output under
 `plugins/FragGuard/compaction-candidates/` before starting any write.
 An atomic single-operation marker prevents two compactions on one data folder.
@@ -296,7 +296,7 @@ quotas, and SQLite temporary files make **all** preflight estimates imperfect.
 
 ### Maintenance countdown and status display (#160)
 
-When a future maintenance control schedules an operation, FragGuard now has a
+When an operator schedules maintenance, FragGuard shows a
 **configurable 10-minute countdown** with a shared yellow Minecraft Boss Bar.
 Its text displays the actual remaining `mm:ss` and the bar shrinks from full
 to empty against the persistent server-side deadline. Players joining partway
@@ -328,9 +328,11 @@ server stops instead of silently admitting everyone. This is a **player access
 gate**, not a world freeze: environment ticks, redstone, other plugins and
 bypass staff can still change blocks, and logging continues.
 
-**Remaining work:** Scheduling controls and the completed maintenance GUI are
-planned in #169; there is **no command to start a countdown yet**. Database
-compaction and verified activation are also future work.
+**Release gate:** all maintenance features are implemented but the 26.3-1.2.2
+release still requires final live Paper/server-owner sign-off. See the
+[release validation matrix, safe host-file-manager checklist and evidence log](docs/26.3-1.2.2-release-validation.md).
+The [Modrinth release text](docs/26.3-1.2.2-modrinth-draft.md) is a draft and
+must not be published before approval.
 
 ## What it tracks
 
