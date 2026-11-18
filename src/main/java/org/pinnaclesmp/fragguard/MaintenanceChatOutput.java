@@ -182,6 +182,7 @@ final class MaintenanceChatOutput {
                 : "Manual Activation · Summary");
         if (strictPending) {
             danger(send, "STRICT approval pending: this is PREVIEW ONLY, never permission to move files.");
+            notice(send, "A clean shutdown receipt is mandatory after the final source comparison.");
         } else {
             notice(send, "Approval still requires a clean shutdown receipt from FragGuard.");
         }
