@@ -88,6 +88,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     // Transient, process-bound proof only: never recover it after a crash or reload.
     // The read-only watcher sees commits made by the separate live SQLite writer.
     private StrictProbe pendingStrictProof;
+    private volatile boolean strictValidatedBeforeStop;
     private volatile StrictFinalProof finalizedStrictProof;
     private volatile boolean closed;
 
@@ -167,6 +168,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 Path target = pendingFile(directory, state);
                 persist(target, pending);
                 pendingStrictProof = probe;
+                strictValidatedBeforeStop = false;
                 return new Decision(state.policy(), "PENDING_FINAL_SHUTDOWN", target,
                         state.operationId(), lower, upper, 0, "", STRICT_WARNING);
             } catch (Throwable error) {
@@ -177,11 +179,39 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     }
 
     /**
-     * #198. The online STRICT precheck is intentionally expensive. This final
-     * step MUST be bounded and only reads the already-stopped/checkpointed
-     * source's SQLite write-version and metadata; no large scan or file hash
-     * is allowed during Paper onDisable. Failure means NO approval or receipt.
-     * The full SHA fingerprints are rechecked before offline activation.
+     * #198: check the in-memory watcher BEFORE Database.shutdown() invokes
+     * wal_checkpoint(TRUNCATE). SQLite can increment PRAGMA data_version on a
+     * checkpoint with ZERO row changes, so treating a checkpoint-only change
+     * as an application write would reject even a perfect clean stop.
+     *
+     * A later external/queued write must also modify source file identity;
+     * the caller requires zero drained writes and confirms a clean checkpoint
+     * before finalize. We still rehash the source in offline activation.
+     */
+    CompletableFuture<Boolean> validateBeforeStoppingWriter() {
+        return run(() -> {
+            strictValidatedBeforeStop = false;
+            MaintenanceSnapshot state = verifiedState();
+            StrictProbe probe = pendingStrictProof;
+            if (probe == null || !state.operationId().equals(probe.operationId())) {
+                throw new IOException("STRICT online precheck not complete in this process");
+            }
+            if (readDataVersion(probe.watcher()) != probe.dataVersion()
+                    || !stamp(source).equals(probe.sourceStamp())
+                    || !stamp(candidatePath(state)).equals(probe.candidateStamp())
+                    || walHasFrames()) {
+                throw new IOException("SQLite source or compacted copy changed since the "
+                        + "online STRICT comparison. Stop without replacing files.");
+            }
+            strictValidatedBeforeStop = true;
+            return true;
+        });
+    }
+
+    /**
+     * Called only after a clean writer stop and WAL checkpoint, with zero
+     * accepted writes drained DURING shutdown. No expensive SQLite scan or
+     * multi-gigabyte SHA-256 may run inside Paper's stop-grace interval.
      */
     CompletableFuture<Decision> finalizeStrictAfterShutdown(boolean writerStopped,
             boolean walCheckpointCompleted, boolean allWritesDrained) {
@@ -190,9 +220,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             if (state.policy() != MaintenancePolicy.STRICT) {
                 throw new IllegalStateException("Strict finalization requires STRICT policy");
             }
-            if (!writerStopped || !walCheckpointCompleted || !allWritesDrained) {
-                throw new IllegalStateException("Strict mode requires a fully stopped writer, "
-                        + "clean checkpoint and drained database writes");
+            if (!writerStopped || !walCheckpointCompleted || !allWritesDrained
+                    || !strictValidatedBeforeStop) {
+                throw new IllegalStateException("Strict mode requires a validated online "
+                        + "pre-stop source, fully stopped writer, clean checkpoint "
+                        + "and zero untracked writes during shutdown");
             }
             StrictProbe probe = pendingStrictProof;
             if (probe == null || !state.operationId().equals(probe.operationId())) {
@@ -203,8 +235,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             if (walHasFrames()) {
                 throw new IOException("Nonempty source WAL after shutdown; STRICT refused");
             }
-            if (readDataVersion(probe.watcher()) != probe.dataVersion()
-                    || !stamp(source).equals(probe.sourceStamp())
+            // Empty checkpoints can advance SQLite data_version while leaving
+            // the main database bytes unchanged. Physical identity + zero
+            // drained writes are authoritative here; the version was checked
+            // immediately before stopping the writer.
+            if (!stamp(source).equals(probe.sourceStamp())
                     || !stamp(candidatePath(state)).equals(probe.candidateStamp())) {
                 throw new IOException("Source changed since online STRICT precheck, or "
                         + "candidate was altered; original and candidate preserved.");
@@ -217,8 +252,6 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                         verified.getProperty("source_identity_sha256"))) {
                 throw new IOException("STRICT precheck lost its candidate or source provenance");
             }
-            // The watcher has no active read transaction. Close it before
-            // collecting sidecar provenance in the clean-shutdown receipt.
             probe.watcher().close();
             pendingStrictProof = null;
             Properties approved = policyProperties(state, verified, "APPROVED");
