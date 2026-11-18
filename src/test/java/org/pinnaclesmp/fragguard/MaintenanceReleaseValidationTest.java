@@ -119,6 +119,7 @@ class MaintenanceReleaseValidationTest {
 
             var pending = policy.prepare(operator, "").get(timeout, TimeUnit.SECONDS);
             assertFalse(pending.approved(), "STRICT must wait for final source check");
+            assertTrue(policy.validateBeforeStoppingWriter().get(15, TimeUnit.SECONDS));
             // All synthetic SQLite handles are closed: finalize the source as a
             // stopped writer with WAL fully checkpointed, matching the real gate.
             try (Connection writer = open(source); Statement sql = writer.createStatement();
@@ -132,7 +133,8 @@ class MaintenanceReleaseValidationTest {
             assertEquals(MaintenancePhase.READY_TO_SWAP, coordinator.snapshot().phase());
             assertTrue(CompactionReplacementPolicy.blocksWriterStartup(coordinator.snapshot()));
 
-            var receipt = CompactionActivation.recordCleanShutdown(root, coordinator.snapshot(), true);
+            var receipt = CompactionActivation.recordCleanShutdown(root, coordinator.snapshot(),
+                    true, policy.finalizedStrictProof());
             assertTrue(Files.isRegularFile(receipt.path()));
             backup = receipt.backup();
             // Simulate the hosting file manager on a test directory only.
@@ -210,6 +212,8 @@ class MaintenanceReleaseValidationTest {
                         """);
                 assertEquals(61, scalar(sql, "SELECT COUNT(*) FROM block_changes"));
             }
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> policy.validateBeforeStoppingWriter().get(30, TimeUnit.SECONDS));
             assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> policy.finalizeStrictAfterShutdown(true, true, true)
                             .get(120, TimeUnit.SECONDS));

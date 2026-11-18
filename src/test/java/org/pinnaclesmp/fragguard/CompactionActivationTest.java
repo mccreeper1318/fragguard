@@ -22,7 +22,8 @@ class CompactionActivationTest {
     void manualStrictSwapValidatesOriginalBackupAndInstalledHistoryBeforeClearingState()
             throws Exception {
         try (var job = prepared(MaintenancePolicy.STRICT)) {
-            var receipt = CompactionActivation.recordCleanShutdown(root, job.state.snapshot(), true);
+            var receipt = CompactionActivation.recordCleanShutdown(
+                    root, job.state.snapshot(), true, job.policy.finalizedStrictProof());
             assertTrue(Files.isRegularFile(receipt.path()));
             assertTrue(Files.isRegularFile(job.source));
             assertTrue(Files.isRegularFile(job.copy.candidate()));
@@ -52,6 +53,36 @@ class CompactionActivationTest {
         }
         try (var restarted = MaintenanceCoordinator.open(root)) {
             assertEquals(MaintenancePhase.IDLE, restarted.snapshot().phase());
+        }
+    }
+
+    @Test
+    void strictFastReceiptRefusesCandidateChangesAfterOnlineFullComparison()
+            throws Exception {
+        try (var job = prepared(MaintenancePolicy.STRICT)) {
+            Path candidate = job.copy.candidate();
+            var before = Files.getLastModifiedTime(candidate);
+            Files.setLastModifiedTime(candidate,
+                    java.nio.file.attribute.FileTime.fromMillis(before.toMillis() + 10_000));
+            assertThrows(IOException.class,
+                    () -> CompactionActivation.recordCleanShutdown(root, job.state.snapshot(),
+                            true, job.policy.finalizedStrictProof()));
+            assertFalse(Files.exists(
+                    CompactionActivation.receiptPath(root, job.state.snapshot())));
+            assertTrue(Files.isRegularFile(job.source));
+            assertTrue(Files.isRegularFile(candidate));
+        }
+    }
+
+    @Test
+    void strictFastReceiptRejectsReportedFailedShutdownWithoutAnyFileMove()
+            throws Exception {
+        try (var job = prepared(MaintenancePolicy.STRICT)) {
+            assertThrows(IOException.class,
+                    () -> CompactionActivation.recordCleanShutdown(root, job.state.snapshot(),
+                            false, job.policy.finalizedStrictProof()));
+            assertFalse(Files.exists(
+                    CompactionActivation.receiptPath(root, job.state.snapshot())));
         }
     }
 
@@ -300,6 +331,7 @@ class CompactionActivationTest {
         var setup = new CompactionReplacementPolicyTest.Setup(root, policy);
         if (policy == MaintenancePolicy.STRICT) {
             setup.policy.prepare(setup.operator, "").get(30, TimeUnit.SECONDS);
+            assertTrue(setup.policy.validateBeforeStoppingWriter().get(10, TimeUnit.SECONDS));
             assertTrue(setup.policy.finalizeStrictAfterShutdown(true, true, true)
                     .get(90, TimeUnit.SECONDS).approved());
         } else {

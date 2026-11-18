@@ -3,13 +3,13 @@ package org.pinnaclesmp.fragguard;
 /** Fixed trusted GUI actions: no user-supplied command fragments or bypass tokens. */
 enum MaintenanceConfirmAction {
     START_STRICT("start strict", "Schedule STRICT maintenance",
-            "STRICT is the default. Full source equality is checked after a clean shutdown."),
+            "STRICT checks full source equality online before shutdown, then verifies no later writes and a clean SQLite checkpoint during shutdown. Wait for precheck PASS before stopping Paper."),
     START_SNAPSHOT("start snapshot acknowledge", "Opt in to Snapshot maintenance",
             "DATA LOSS: History, undo/rollback and retention updates after the real SQLite snapshot may be lost. Worlds are NOT rolled back. Approval later requires a second confirmation."),
     COMPACT("compact", "Start SQLite compaction",
             "Run an approved storage preflight first. The original database and WAL/SHM stay intact."),
     APPROVE_STRICT("approve", "Prepare STRICT replacement",
-            "Final source-to-copy comparison is required AFTER database shutdown. A stale copy cannot be activated."),
+            "A full asynchronous source-to-copy comparison runs BEFORE shutdown. Do not stop Paper until the scan passes. Final approval still needs an unchanged source, clean stop and checkpoint receipt."),
     APPROVE_SNAPSHOT("approve snapshot-acknowledge", "Accept irreversible history loss",
             "FINAL LOSS CONSENT: All database history, rollback/undo records and retention updates after the actual copy may be lost. The Minecraft world NEVER rolls back. STOP Paper before any file rename."),
     CANCEL("cancel", "Cancel maintenance stage",

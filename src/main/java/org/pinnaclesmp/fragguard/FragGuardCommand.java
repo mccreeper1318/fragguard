@@ -2195,6 +2195,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 + "Restrictions remain until resolved."));
                         plugin.getLogger().log(Level.SEVERE, "Maintenance cancellation failed", error);
                     } else {
+                        CompactionReplacementPolicy policy = plugin.getReplacementPolicy();
+                        if (policy != null) {
+                            policy.releaseStrictProofAfterCancel().whenComplete((released, releaseError) -> {
+                                if (releaseError != null) {
+                                    plugin.getLogger().log(Level.FINE,
+                                            "Stale STRICT watcher cleanup deferred until worker "
+                                            + "finishes or the next approval", unwrap(releaseError));
+                                }
+                            });
+                        }
                         MaintenanceChatOutput.title(player::sendMessage, "Maintenance Cancelled");
                         MaintenanceChatOutput.action(player::sendMessage,
                                 "Original DB and all candidates preserved for staff review.");
@@ -2234,6 +2244,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
         String acknowledgement = state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
                 ? CompactionReplacementPolicy.SNAPSHOT_ACKNOWLEDGEMENT : "";
+        if (state.policy() == MaintenancePolicy.STRICT) {
+            MaintenanceChatOutput.title(player::sendMessage, "STRICT Full Precheck Started");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "Comparing ALL source history, undo and indexes to the verified copy.");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "This runs while Paper stays ONLINE; it may take several minutes.");
+            MaintenanceChatOutput.danger(player::sendMessage,
+                    "DO NOT STOP Paper until STRICT says the precheck passed.");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "Any history change during or after this scan rejects STRICT approval.");
+        }
         policy.prepare(player.getUniqueId(), acknowledgement)
                 .whenComplete((decision, error) -> onServerThread(() -> {
                     maintenanceTransitionPending.set(false);
@@ -2256,12 +2277,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 "Stop Paper cleanly and require the shutdown receipt before file changes.");
                     } else {
                         MaintenanceChatOutput.value(player::sendMessage,
-                                "STRICT policy", "PENDING final shutdown comparison",
+                                "STRICT precheck", "PASSED (all retained records match)",
+                                NamedTextColor.GREEN);
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "STRICT policy", "PENDING clean shutdown attestation",
                                 NamedTextColor.YELLOW);
                         MaintenanceChatOutput.notice(player::sendMessage,
-                                "Stop Paper cleanly. FragGuard must drain writes and checkpoint WAL.");
+                                "You may now stop Paper cleanly. SQLite must drain writes and checkpoint WAL.");
                         MaintenanceChatOutput.notice(player::sendMessage,
-                                "Every retained record must match before approval and receipt.");
+                                "Any database change after the full precheck invalidates approval.");
                         MaintenanceChatOutput.danger(player::sendMessage,
                                 "NO file moves unless a valid clean-shutdown receipt is created.");
                     }

@@ -62,6 +62,22 @@ final class CompactionActivation {
                                                MaintenanceSnapshot state,
                                                boolean cleanShutdown)
             throws IOException {
+        return recordCleanShutdown(rootDirectory, state, cleanShutdown, null);
+    }
+
+    /**
+     * #198: STRICT may carry a process-bound, fully verified checksum proof
+     * from its online comparison. It is only produced after the writer stopped
+     * cleanly, the checkpoint succeeded, and PRAGMA data_version + file stamps
+     * remained identical. Do NOT rehash 30GiB during the host's stop grace.
+     * Offline activation independently rechecks every SHA-256 before opening
+     * FragGuard's next writer.
+     */
+    static ShutdownReceipt recordCleanShutdown(Path rootDirectory,
+                                               MaintenanceSnapshot state,
+                                               boolean cleanShutdown,
+                                               CompactionReplacementPolicy.StrictFinalProof strictProof)
+            throws IOException {
         Path root = rootDirectory.toAbsolutePath().normalize();
         if (!cleanShutdown || state.phase() != MaintenancePhase.READY_TO_SWAP) {
             throw new IOException("No shutdown receipt: complete a successful SQLite "
@@ -71,7 +87,11 @@ final class CompactionActivation {
         // This gate still sees the original at its expected pathname and the
         // verified candidate in the candidates folder. It must pass BEFORE any
         // manually moved file can be considered legitimate.
-        CompactionReplacementPolicy.requireApproved(root, state);
+        if (strictProof == null) {
+            CompactionReplacementPolicy.requireApproved(root, state);
+        } else {
+            CompactionReplacementPolicy.requireApprovedForShutdownReceipt(root, state);
+        }
         var approval = CompactionReplacementPolicy.approvedEvidence(root, state);
         Path candidate = root.resolve("compaction-candidates").resolve(state.candidateFile());
         Path original = root.resolve("fragguard.db");
@@ -92,6 +112,14 @@ final class CompactionActivation {
                 throw new IOException("Conflicting backup/candidate SQLite sidecar; preserve files");
             }
         }
+        if (strictProof != null
+                && (!strictProof.sourceStamp().equals(
+                        CompactionReplacementPolicy.stamp(original))
+                    || !strictProof.candidateStamp().equals(
+                        CompactionReplacementPolicy.stamp(candidate)))) {
+            throw new IOException("STRICT source or compacted candidate changed since "
+                    + "its full online comparison; no shutdown receipt created");
+        }
         Path wal = root.resolve("fragguard.db-wal");
         if (Files.exists(wal, LinkOption.NOFOLLOW_LINKS)
                 && (!Files.isRegularFile(wal, LinkOption.NOFOLLOW_LINKS)
@@ -100,8 +128,16 @@ final class CompactionActivation {
                     + "Do not rename or separate DB/WAL/SHM; investigate checkpoint first");
         }
 
-        String sourceHash = OnlineDatabaseCompaction.fileSha256(original);
-        String candidateHash = OnlineDatabaseCompaction.fileSha256(candidate);
+        String sourceHash = strictProof == null
+                ? OnlineDatabaseCompaction.fileSha256(original) : strictProof.originalSha256();
+        String candidateHash = strictProof == null
+                ? OnlineDatabaseCompaction.fileSha256(candidate) : strictProof.candidateSha256();
+        if (strictProof != null
+                && (!sourceHash.matches("[a-f0-9]{64}")
+                    || !candidateHash.matches("[a-f0-9]{64}")
+                    || state.policy() != MaintenancePolicy.STRICT)) {
+            throw new IOException("Missing authenticated online STRICT fingerprints");
+        }
         if (!candidateHash.equals(approval.verified().getProperty("candidate_sha256"))) {
             throw new IOException("Compaction candidate changed after full verification");
         }

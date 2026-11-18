@@ -116,6 +116,7 @@ class CompactionReplacementPolicyTest {
     void strictModeApprovesOnlyAfterFullCheckpointedSourceEqualsCandidate() throws Exception {
         try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
             setup.policy.prepare(setup.operator, "").get(30, TimeUnit.SECONDS);
+            assertTrue(setup.policy.validateBeforeStoppingWriter().get(10, TimeUnit.SECONDS));
             var approved = setup.policy.finalizeStrictAfterShutdown(true, true, true)
                     .get(90, TimeUnit.SECONDS);
             assertTrue(approved.approved());
@@ -132,6 +133,60 @@ class CompactionReplacementPolicyTest {
         try (MaintenanceCoordinator restart = MaintenanceCoordinator.open(root)) {
             assertEquals(MaintenancePhase.READY_TO_SWAP, restart.snapshot().phase());
             CompactionReplacementPolicy.requireApproved(root, restart.snapshot());
+        }
+    }
+
+    @Test
+    void cancellingMaintenanceImmediatelyClosesOldStrictWatcher() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
+            setup.policy.prepare(setup.operator, "").get(90, TimeUnit.SECONDS);
+            assertTrue(setup.policy.hasLiveStrictProof());
+            setup.state.cancel("operator cancelled").get(10, TimeUnit.SECONDS);
+            assertTrue(setup.policy.releaseStrictProofAfterCancel().get(10, TimeUnit.SECONDS));
+            assertFalse(setup.policy.hasLiveStrictProof(),
+                    "A cancelled operation must not retain a stale SQLite watcher");
+            assertThrows(ExecutionException.class,
+                    () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
+                            .get(10, TimeUnit.SECONDS));
+            assertFalse(Files.exists(CompactionActivation.receiptPath(
+                    root, setup.state.snapshot())));
+        }
+    }
+
+    @Test
+    void strictShutdownCannotReuseProofFromAnotherProcessOrWorker() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
+            setup.policy.prepare(setup.operator, "").get(90, TimeUnit.SECONDS);
+            // New policy instance models a host force-kill and restart: only
+            // persisted PENDING metadata survives, never the watcher/proof.
+            try (var replacementAfterRestart =
+                         new CompactionReplacementPolicy(root, setup.state)) {
+                assertThrows(ExecutionException.class,
+                        () -> replacementAfterRestart.finalizeStrictAfterShutdown(true, true, true)
+                                .get(15, TimeUnit.SECONDS));
+            }
+            assertEquals(MaintenancePhase.VERIFYING, setup.state.snapshot().phase());
+            assertThrows(IllegalStateException.class,
+                    setup.policy::finalizedStrictProof);
+            assertFalse(Files.exists(CompactionActivation.receiptPath(
+                    root, setup.state.snapshot())));
+        }
+    }
+
+    @Test
+    void strictShutdownRejectsSourceFileChangedWithoutSqliteCommit() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
+            setup.policy.prepare(setup.operator, "").get(90, TimeUnit.SECONDS);
+            var old = Files.getLastModifiedTime(setup.source);
+            Files.setLastModifiedTime(setup.source,
+                    java.nio.file.attribute.FileTime.fromMillis(old.toMillis() + 10_000));
+            assertThrows(ExecutionException.class,
+                    () -> setup.policy.validateBeforeStoppingWriter().get(15, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class,
+                    () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
+                            .get(15, TimeUnit.SECONDS));
+            assertFalse(Files.exists(CompactionActivation.receiptPath(
+                    root, setup.state.snapshot())));
         }
     }
 
@@ -237,6 +292,8 @@ class CompactionReplacementPolicyTest {
     }
 
     private static void assertStrictRefused(Setup setup) throws Exception {
+        assertThrows(ExecutionException.class,
+                () -> setup.policy.validateBeforeStoppingWriter().get(15, TimeUnit.SECONDS));
         assertThrows(ExecutionException.class,
                 () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
                         .get(90, TimeUnit.SECONDS));

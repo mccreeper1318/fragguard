@@ -185,9 +185,13 @@ It never bypasses storage preflight, snapshot policy, or saved database safety.
   produce one compacted snapshot without changing the original.
 - `/fg maintenance verify`: run a full asynchronous candidate scan using the
   original copy-time evidence from the **same running process**.
-- `/fg maintenance approve`: after verified STRICT mode, queue a full
-  comparison at clean shutdown. Any later history, rollback or retention
-  mismatch refuses activation.
+- `/fg maintenance approve`: after verified STRICT mode, start a full
+  **asynchronous source-versus-candidate comparison while Paper is running**.
+  Do **not** stop Paper until chat explicitly reports `STRICT precheck: PASSED`.
+  Approval remains PENDING until a clean final shutdown confirms **no SQLite
+  commits since the precheck**, unchanged source/candidate file identity and
+  a complete WAL checkpoint. Any later history/undo/retention mutation refuses
+  activation; a refused result must never be replaced with Snapshot Mode.
 - `/fg maintenance approve snapshot-acknowledge`: after verification,
   explicitly accept that **all FragGuard history, rollback/undo and retention
   changes after the actual SQLite snapshot may be lost**. Minecraft worlds
@@ -235,8 +239,14 @@ the quick maintenance menu. Live-server validation is scheduled for the final
 
 **No shell, external utility or custom launch command is required.** A verified
 candidate **must** first have an approved replacement policy (#167). STRICT
-(default) requires final full-history comparison **after the FragGuard writer
-has stopped** and SQLite's shutdown checkpoint completed. Snapshot mode must
+(default) runs its complete source/candidate scan **before Paper is stopped**
+and requires an unchanged SQLite write-version watcher at the **pre-stop
+gate**. The writer must then stop without draining late writes, and a clean
+WAL checkpoint must leave the source/candidate identities unchanged. SQLite
+may itself increment `data_version` on a checkpoint even without history
+changes, so that version is checked *before* checkpointing. The host's short
+stop grace is not used for expensive scans or large file hashes. The next startup still rechecks
+the original/candidate fingerprints and complete activation evidence. Snapshot mode must
 have the exact administrator consent acknowledging that **all FragGuard history,
 undo/rollback jobs and retention updates after the SQLite snapshot may be
 lost**. Minecraft worlds are **never** rolled back along with a database.

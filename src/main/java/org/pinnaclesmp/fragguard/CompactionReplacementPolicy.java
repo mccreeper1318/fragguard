@@ -9,6 +9,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -28,10 +29,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Issue #167: approve replacement policy separately from candidate verification.
  *
- * STRICT needs a complete, clean source-database shutdown and a full logical
- * comparison to the immutable VACUUM INTO candidate. Online comparison is not
- * proof of final parity: a later normal INSERT, rollback or retention DELETE
- * invalidates it. This service exposes the offline finalization hook for #168.
+ * STRICT first performs its expensive full source/candidate comparison while
+ * Paper is still running, guarded by a dedicated SQLite data_version watcher.
+ * A later INSERT, UPDATE, DELETE or changed source/candidate file invalidates
+ * that proof. Only a clean, checkpointed stopped writer can complete the short
+ * final approval (#198). Offline activation still rehashes the actual files.
  *
  * MAINTENANCE_SNAPSHOT requires an operator's affirmative acknowledgement
  * that *all* FragGuard DB changes after the actual SQLite snapshot (which
@@ -57,11 +59,12 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             + "state and substituted history can disagree. Acknowledgement does NOT "
             + "authorize mixing mismatched WAL/SHM files or bypassing startup checks.";
     static final String STRICT_WARNING =
-            "STRICT replacement refuses approval while writes can still occur. "
-            + "After the database writer stops and a clean SQLite checkpoint finishes, "
-            + "a full scan of the final original and verified snapshot must match. "
-            + "A stale candidate is rejected. The file swap itself still requires "
-            + "the independent offline activation checks from #168.";
+            "STRICT performs a full background source/candidate comparison before shutdown. "
+            + "A SQLite write-version watcher must remain unchanged up to the pre-stop gate. "
+            + "After the checkpoint, source/candidate file identity and zero drained writes "
+            + "must still match. If any evidence changes, approval is refused. Never stop "
+            + "Paper until the full precheck completes. A valid shutdown receipt and offline "
+            + "activation checks remain mandatory.";
 
     /** A READY snapshot cannot reopen the source writer until #168 validates activation. */
     static boolean blocksWriterStartup(MaintenanceSnapshot state) {
@@ -83,7 +86,20 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     private final MaintenanceCoordinator maintenance;
     private final ExecutorService worker;
     private final AtomicBoolean busy = new AtomicBoolean();
+    // Transient, process-bound proof only: never recover it after a crash or reload.
+    // The read-only watcher sees commits made by the separate live SQLite writer.
+    private StrictProbe pendingStrictProof;
+    private volatile boolean strictValidatedBeforeStop;
+    private volatile StrictFinalProof finalizedStrictProof;
     private volatile boolean closed;
+
+    record StrictFinalProof(String originalSha256, String candidateSha256,
+                            FileStamp sourceStamp, FileStamp candidateStamp) { }
+    record FileStamp(long bytes, java.nio.file.attribute.FileTime modified,
+                     Object fileKey) { }
+    private record StrictProbe(String operationId, Connection watcher, long dataVersion,
+                               FileStamp sourceStamp, FileStamp candidateStamp,
+                               String sourceSha256, String candidateSha256) { }
 
     CompactionReplacementPolicy(Path root, MaintenanceCoordinator maintenance) {
         this.root = Objects.requireNonNull(root).toAbsolutePath().normalize();
@@ -104,6 +120,9 @@ final class CompactionReplacementPolicy implements AutoCloseable {
      */
     CompletableFuture<Decision> prepare(UUID operator, String acknowledgement) {
         return run(() -> {
+            // A cancelled operation may have left a process-local watcher.
+            // Never let an old operation block the next one until a restart.
+            releaseStrictProofIfSuperseded();
             MaintenanceSnapshot state = verifiedState();
             if (!state.operatorUuid().equals(Objects.requireNonNull(operator).toString())) {
                 throw new IllegalStateException("Only the operator who scheduled this maintenance "
@@ -139,21 +158,101 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             if (acknowledgement != null && !acknowledgement.isBlank()) {
                 throw new IllegalArgumentException("STRICT does not accept snapshot-loss consent");
             }
-            Properties pending = policyProperties(state, verified, "PENDING_FINAL_SHUTDOWN");
-            pending.setProperty("consent_at_millis", "0");
-            pending.setProperty("consent_operator_uuid", "");
-            Path target = pendingFile(directory, state);
-            persist(target, pending);
-            return new Decision(state.policy(), "PENDING_FINAL_SHUTDOWN", target,
-                    state.operationId(), lower, upper, 0, "", STRICT_WARNING);
+            // This can take many minutes on a 40M+ row history. It must happen
+            // BEFORE a host with a short stop grace starts terminating Paper.
+            if (pendingStrictProof != null) {
+                throw new IOException("A STRICT precheck is already pending; do not "
+                        + "prepare a second source comparison");
+            }
+            StrictProbe probe = runOnlineStrictPrecheck(state, verified);
+            try {
+                MaintenanceSnapshot current = maintenance.snapshot();
+                if (current.phase() != MaintenancePhase.VERIFYING
+                        || !current.operationId().equals(state.operationId())) {
+                    throw new IOException("STRICT maintenance was cancelled or superseded "
+                            + "during online precheck; approval refused, original preserved.");
+                }
+                Properties pending = policyProperties(state, verified, "PENDING_FINAL_SHUTDOWN");
+                pending.setProperty("consent_at_millis", "0");
+                pending.setProperty("consent_operator_uuid", "");
+                Path target = pendingFile(directory, state);
+                persist(target, pending);
+                pendingStrictProof = probe;
+                strictValidatedBeforeStop = false;
+                return new Decision(state.policy(), "PENDING_FINAL_SHUTDOWN", target,
+                        state.operationId(), lower, upper, 0, "", STRICT_WARNING);
+            } catch (Throwable error) {
+                probe.watcher().close();
+                throw error;
+            }
         });
     }
 
     /**
-     * Called ONLY after a clean final database shutdown, not during live
-     * maintenance. #168 will wire this into its guarded shutdown/activation
-     * flow. No boolean alone certifies a shutdown: the source is scanned in
-     * its final, checkpointed, read-only state, then re-fingerprinted.
+     * Cancelled/superseded maintenance must release its process-local SQLite
+     * watcher and never carry a proof into another candidate or operator run.
+     * This is only in-memory cleanup; persisted evidence files remain intact.
+     */
+    CompletableFuture<Boolean> releaseStrictProofAfterCancel() {
+        return run(() -> {
+            releaseStrictProofIfSuperseded();
+            return true;
+        });
+    }
+
+    /** Package-visible state for cancellation regression tests and diagnostics. */
+    boolean hasLiveStrictProof() {
+        return pendingStrictProof != null;
+    }
+
+    private void releaseStrictProofIfSuperseded() throws java.sql.SQLException {
+        StrictProbe probe = pendingStrictProof;
+        if (probe == null) return;
+        MaintenanceSnapshot current = maintenance.snapshot();
+        if (current.phase() == MaintenancePhase.VERIFYING
+                && current.operationId().equals(probe.operationId())) {
+            return;
+        }
+        pendingStrictProof = null;
+        strictValidatedBeforeStop = false;
+        finalizedStrictProof = null;
+        probe.watcher().close();
+    }
+
+    /**
+     * #198: check the in-memory watcher BEFORE Database.shutdown() invokes
+     * wal_checkpoint(TRUNCATE). SQLite can increment PRAGMA data_version on a
+     * checkpoint with ZERO row changes, so treating a checkpoint-only change
+     * as an application write would reject even a perfect clean stop.
+     *
+     * A later external/queued write must also modify source file identity;
+     * the caller requires zero drained writes and confirms a clean checkpoint
+     * before finalize. We still rehash the source in offline activation.
+     */
+    CompletableFuture<Boolean> validateBeforeStoppingWriter() {
+        return run(() -> {
+            strictValidatedBeforeStop = false;
+            MaintenanceSnapshot state = verifiedState();
+            StrictProbe probe = pendingStrictProof;
+            if (probe == null || !state.operationId().equals(probe.operationId())) {
+                throw new IOException("STRICT online precheck not complete in this process");
+            }
+            if (readDataVersion(probe.watcher()) != probe.dataVersion()
+                    || !stamp(source).equals(probe.sourceStamp())
+                    || !stamp(candidatePath(state)).equals(probe.candidateStamp())
+                    || walHasFrames()) {
+                throw new IOException("SQLite source or compacted copy changed since the "
+                        + "online STRICT comparison. Stop without replacing files.");
+            }
+            strictValidatedBeforeStop = true;
+            return true;
+        });
+    }
+
+    /**
+     * Called only after a clean writer stop and WAL checkpoint, with zero
+     * accepted writes drained DURING shutdown. No expensive SQLite scan or
+     * multi-gigabyte SHA-256 may run inside Paper's stop-grace interval.
      */
     CompletableFuture<Decision> finalizeStrictAfterShutdown(boolean writerStopped,
             boolean walCheckpointCompleted, boolean allWritesDrained) {
@@ -162,21 +261,87 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             if (state.policy() != MaintenancePolicy.STRICT) {
                 throw new IllegalStateException("Strict finalization requires STRICT policy");
             }
-            if (!writerStopped || !walCheckpointCompleted || !allWritesDrained) {
-                throw new IllegalStateException("Strict mode requires a fully stopped writer, "
-                        + "clean checkpoint and drained database writes");
+            if (!writerStopped || !walCheckpointCompleted || !allWritesDrained
+                    || !strictValidatedBeforeStop) {
+                throw new IllegalStateException("Strict mode requires a validated online "
+                        + "pre-stop source, fully stopped writer, clean checkpoint "
+                        + "and zero untracked writes during shutdown");
             }
-            if (Files.exists(source.resolveSibling("fragguard.db-wal"), LinkOption.NOFOLLOW_LINKS)
-                    && Files.size(source.resolveSibling("fragguard.db-wal")) != 0) {
-                throw new IOException("Nonempty source WAL after shutdown; strict proof refused");
+            StrictProbe probe = pendingStrictProof;
+            if (probe == null || !state.operationId().equals(probe.operationId())) {
+                throw new IOException("Missing successful online STRICT precheck. "
+                        + "Do not perform file replacement; a force-killed server "
+                        + "must never reuse a prior process's uncommitted proof.");
             }
-            Properties verified = readVerified(state);
+            if (walHasFrames()) {
+                throw new IOException("Nonempty source WAL after shutdown; STRICT refused");
+            }
+            // Empty checkpoints can advance SQLite data_version while leaving
+            // the main database bytes unchanged. Physical identity + zero
+            // drained writes are authoritative here; the version was checked
+            // immediately before stopping the writer.
+            if (!stamp(source).equals(probe.sourceStamp())
+                    || !stamp(candidatePath(state)).equals(probe.candidateStamp())) {
+                throw new IOException("Source changed since online STRICT precheck, or "
+                        + "candidate was altered; original and candidate preserved.");
+            }
+            Properties verified = read(verifiedFile(directory, state));
             Properties pending = read(pendingFile(directory, state));
             validatePolicy(pending, state, verified, "PENDING_FINAL_SHUTDOWN");
-            // #168 must ensure no external writer is allowed between this scan,
-            // shutdown and actual swap; a later startup must recheck the source
-            // provenance and candidate hashes before activating.
-            String before = OnlineDatabaseCompaction.fileSha256(source);
+            if (!probe.candidateSha256().equals(verified.getProperty("candidate_sha256"))
+                    || !OnlineDatabaseCompaction.sourceIdentity(source).equals(
+                        verified.getProperty("source_identity_sha256"))) {
+                throw new IOException("STRICT precheck lost its candidate or source provenance");
+            }
+            probe.watcher().close();
+            pendingStrictProof = null;
+            Properties approved = policyProperties(state, verified, "APPROVED");
+            approved.setProperty("consent_at_millis", "0");
+            approved.setProperty("consent_operator_uuid", "");
+            approved.setProperty("strict_source_final_sha256", probe.sourceSha256());
+            approved.setProperty("strict_source_checked_at_millis",
+                    Long.toString(System.currentTimeMillis()));
+            approved.setProperty("strict_source_schema_sha256",
+                    verified.getProperty("schema_sha256"));
+            Path target = approvedFile(directory, state);
+            persist(target, approved);
+            await(maintenance.markReady());
+            finalizedStrictProof = new StrictFinalProof(
+                    probe.sourceSha256(), probe.candidateSha256(),
+                    probe.sourceStamp(), probe.candidateStamp());
+            return new Decision(state.policy(), "APPROVED", target,
+                    state.operationId(), number(verified, "invoked_at_millis"),
+                    number(verified, "completed_at_millis"), 0, "", STRICT_WARNING);
+        });
+    }
+
+    StrictFinalProof finalizedStrictProof() {
+        StrictFinalProof proof = finalizedStrictProof;
+        if (proof == null || maintenance.snapshot().phase() != MaintenancePhase.READY_TO_SWAP) {
+            throw new IllegalStateException("No confirmed STRICT shutdown proof");
+        }
+        return proof;
+    }
+
+    /**
+     * Online read-only comparison is safe to perform at length while the host
+     * is running. Any committed write on a DIFFERENT SQLite connection after
+     * the monitor baseline changes PRAGMA data_version and invalidates the
+     * precheck. A complete logical scan catches preexisting divergence.
+     *
+     * A TRUNCATE checkpoint is required before file hashing: otherwise the
+     * main DB hash could exclude uncheckpointed WAL frames, and shutdown could
+     * change the main DB even with no later commits.
+     */
+    private StrictProbe runOnlineStrictPrecheck(MaintenanceSnapshot state,
+                                                 Properties verified) throws Exception {
+        checkpointForPrecheck();
+        Connection watcher = DriverManager.getConnection("jdbc:sqlite:"
+                + source.toUri() + "?mode=ro");
+        try {
+            long baseline = readDataVersion(watcher);
+            FileStamp initial = stamp(source);
+            String originalSha = OnlineDatabaseCompaction.fileSha256(source);
             DatabaseDeepDiagnostics.Report report;
             try (DatabaseDeepDiagnostics scan = new DatabaseDeepDiagnostics(root)) {
                 report = scan.run(21_600).get(21_630, TimeUnit.SECONDS);
@@ -185,7 +350,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                     || report.schemaVersion() != Database.SCHEMA_VERSION
                     || !report.schemaSha256().equals(verified.getProperty("schema_sha256"))
                     || report.tables().size() != 4) {
-                throw new IOException("Original database failed final strict source validation");
+                throw new IOException("Original database did not pass online STRICT comparison");
             }
             for (Map.Entry<String, DatabaseDeepDiagnostics.TableDigest> entry :
                     report.tables().entrySet()) {
@@ -193,32 +358,74 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 DatabaseDeepDiagnostics.TableDigest digest = entry.getValue();
                 if (!Long.toString(digest.rows()).equals(verified.getProperty(prefix + "rows"))
                         || !Long.toString(digest.blobBytes()).equals(
-                                verified.getProperty(prefix + "blob_bytes"))
+                            verified.getProperty(prefix + "blob_bytes"))
                         || !digest.sha256().equals(verified.getProperty(prefix + "sha256"))) {
-                    throw new IOException("Final source differs from compacted snapshot: "
-                            + entry.getKey() + "; STRICT replacement refused");
+                    throw new IOException("Source differs from copied snapshot: "
+                            + entry.getKey() + "; STRICT refused, no data was replaced.");
                 }
             }
-            String after = OnlineDatabaseCompaction.fileSha256(source);
-            if (!before.equals(after)) {
-                throw new IOException("Source database changed during strict shutdown validation");
+            String secondSha = OnlineDatabaseCompaction.fileSha256(source);
+            if (!originalSha.equals(secondSha) || !initial.equals(stamp(source))
+                    || baseline != readDataVersion(watcher) || walHasFrames()) {
+                throw new IOException("Source was modified during online STRICT comparison. "
+                        + "No shutdown approval granted; preserve all files.");
             }
-            // Recheck the copy: source and copy both have to remain intact.
+            // Includes a fresh candidate SHA-256 and sidecar check, while
+            // Paper remains running and is not subject to its stop timeout.
             checkCandidate(state, verified);
-            Properties approved = policyProperties(state, verified, "APPROVED");
-            approved.setProperty("consent_at_millis", "0");
-            approved.setProperty("consent_operator_uuid", "");
-            approved.setProperty("strict_source_final_sha256", after);
-            approved.setProperty("strict_source_checked_at_millis",
-                    Long.toString(System.currentTimeMillis()));
-            approved.setProperty("strict_source_schema_sha256", report.schemaSha256());
-            Path target = approvedFile(directory, state);
-            persist(target, approved);
-            await(maintenance.markReady());
-            return new Decision(state.policy(), "APPROVED", target,
-                    state.operationId(), number(verified, "invoked_at_millis"),
-                    number(verified, "completed_at_millis"), 0, "", STRICT_WARNING);
-        });
+            FileStamp candidateStamp = stamp(candidatePath(state));
+            if (baseline != readDataVersion(watcher) || walHasFrames()
+                    || !initial.equals(stamp(source))) {
+                throw new IOException("SQLite history changed before STRICT precheck completed.");
+            }
+            return new StrictProbe(state.operationId(), watcher, baseline, initial,
+                    candidateStamp, originalSha, verified.getProperty("candidate_sha256"));
+        } catch (Throwable failure) {
+            watcher.close();
+            throw failure;
+        }
+    }
+
+    private void checkpointForPrecheck() throws Exception {
+        try (Connection writer = DriverManager.getConnection("jdbc:sqlite:" + source);
+             Statement statement = writer.createStatement()) {
+            statement.execute("PRAGMA busy_timeout = 3000");
+            try (ResultSet rows = statement.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+                if (!rows.next() || rows.getInt(1) != 0) {
+                    throw new IOException("STRICT online source checkpoint is busy; "
+                            + "retry after other readers close, never force approval");
+                }
+            }
+        }
+        if (walHasFrames()) {
+            throw new IOException("STRICT source WAL still contains frames before precheck");
+        }
+    }
+
+    private Path candidatePath(MaintenanceSnapshot state) {
+        return directory.resolve(state.candidateFile());
+    }
+
+    private boolean walHasFrames() throws IOException {
+        Path wal = source.resolveSibling("fragguard.db-wal");
+        return Files.exists(wal, LinkOption.NOFOLLOW_LINKS)
+                && (!Files.isRegularFile(wal, LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(wal) != 0);
+    }
+
+    static FileStamp stamp(Path file) throws IOException {
+        BasicFileAttributes data = Files.readAttributes(file,
+                BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!data.isRegularFile()) throw new IOException("Unsafe STRICT source/candidate path");
+        return new FileStamp(data.size(), data.lastModifiedTime(), data.fileKey());
+    }
+
+    private static long readDataVersion(Connection watcher) throws java.sql.SQLException {
+        try (Statement statement = watcher.createStatement();
+             ResultSet rows = statement.executeQuery("PRAGMA data_version")) {
+            if (!rows.next()) throw new java.sql.SQLException("No SQLite data_version reading");
+            return rows.getLong(1);
+        }
     }
 
     /**
@@ -291,6 +498,25 @@ final class CompactionReplacementPolicy implements AutoCloseable {
      * validate the backup, matched sidecars and installed DB after swapping.
      */
     static void requireApproved(Path root, MaintenanceSnapshot state) throws IOException {
+        requireApproved(root, state, true);
+    }
+
+    /**
+     * A STRICT clean shutdown may use the in-process write-version watcher +
+     * cached, fully scanned fingerprints. Only the authenticated receipt path
+     * may defer another full source hash to offline activation/startup.
+     */
+    static void requireApprovedForShutdownReceipt(Path root, MaintenanceSnapshot state)
+            throws IOException {
+        if (state.policy() != MaintenancePolicy.STRICT
+                || state.phase() != MaintenancePhase.READY_TO_SWAP) {
+            throw new IOException("Fast receipt proof only allowed for sealed STRICT shutdown");
+        }
+        requireApproved(root, state, false);
+    }
+
+    private static void requireApproved(Path root, MaintenanceSnapshot state,
+                                        boolean verifySourceFingerprint) throws IOException {
         if (state.phase() != MaintenancePhase.VERIFYING
                 && state.phase() != MaintenancePhase.READY_TO_SWAP) {
             throw new IOException("Cannot promote maintenance outside verification");
@@ -353,7 +579,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             // worker (state is still VERIFYING at that point). Issue #168
             // will move offline activation checks into its dedicated startup
             // worker; no stale source may be silently accepted meanwhile.
-            if (state.phase() == MaintenancePhase.READY_TO_SWAP
+            if (verifySourceFingerprint && state.phase() == MaintenancePhase.READY_TO_SWAP
                     && !finalSha.equals(OnlineDatabaseCompaction.fileSha256(source))) {
                 throw new IOException("Final source changed after STRICT approval; "
                         + "refuse activation and preserve original and candidate");
@@ -598,6 +824,17 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             worker.shutdownNow();
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted during policy shutdown", ex);
+        } finally {
+            if (pendingStrictProof != null) {
+                try {
+                    pendingStrictProof.watcher().close();
+                } catch (java.sql.SQLException failure) {
+                    throw new IllegalStateException("Could not close STRICT data-version watcher",
+                            failure);
+                } finally {
+                    pendingStrictProof = null;
+                }
+            }
         }
     }
 }

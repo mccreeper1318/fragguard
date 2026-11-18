@@ -124,7 +124,7 @@ final class FragGuardGuiRenderer {
                 "&aApprove Replacement Policy",
                 "&7Full verification is mandatory.",
                 view.policy() == MaintenancePolicy.STRICT
-                        ? "&7Strict approval finishes after clean shutdown."
+                        ? "&7Full scan online; final unchanged proof at shutdown."
                         : "&cSnapshot Mode: explicit irreversible loss consent.",
                 view.canApprove() ? "&eClick for confirmation"
                         : "&8Candidate has no verified manifest"));
