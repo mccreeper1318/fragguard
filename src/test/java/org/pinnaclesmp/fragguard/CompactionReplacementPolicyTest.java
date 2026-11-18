@@ -137,6 +137,23 @@ class CompactionReplacementPolicyTest {
     }
 
     @Test
+    void cancellingMaintenanceImmediatelyClosesOldStrictWatcher() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
+            setup.policy.prepare(setup.operator, "").get(90, TimeUnit.SECONDS);
+            assertTrue(setup.policy.hasLiveStrictProof());
+            setup.state.cancel("operator cancelled").get(10, TimeUnit.SECONDS);
+            assertTrue(setup.policy.releaseStrictProofAfterCancel().get(10, TimeUnit.SECONDS));
+            assertFalse(setup.policy.hasLiveStrictProof(),
+                    "A cancelled operation must not retain a stale SQLite watcher");
+            assertThrows(ExecutionException.class,
+                    () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
+                            .get(10, TimeUnit.SECONDS));
+            assertFalse(Files.exists(CompactionActivation.receiptPath(
+                    root, setup.state.snapshot())));
+        }
+    }
+
+    @Test
     void strictShutdownCannotReuseProofFromAnotherProcessOrWorker() throws Exception {
         try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
             setup.policy.prepare(setup.operator, "").get(90, TimeUnit.SECONDS);
