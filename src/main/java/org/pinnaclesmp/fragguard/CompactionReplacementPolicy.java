@@ -120,6 +120,9 @@ final class CompactionReplacementPolicy implements AutoCloseable {
      */
     CompletableFuture<Decision> prepare(UUID operator, String acknowledgement) {
         return run(() -> {
+            // A cancelled operation may have left a process-local watcher.
+            // Never let an old operation block the next one until a restart.
+            releaseStrictProofIfSuperseded();
             MaintenanceSnapshot state = verifiedState();
             if (!state.operatorUuid().equals(Objects.requireNonNull(operator).toString())) {
                 throw new IllegalStateException("Only the operator who scheduled this maintenance "
@@ -163,6 +166,12 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             }
             StrictProbe probe = runOnlineStrictPrecheck(state, verified);
             try {
+                MaintenanceSnapshot current = maintenance.snapshot();
+                if (current.phase() != MaintenancePhase.VERIFYING
+                        || !current.operationId().equals(state.operationId())) {
+                    throw new IOException("STRICT maintenance was cancelled or superseded "
+                            + "during online precheck; approval refused, original preserved.");
+                }
                 Properties pending = policyProperties(state, verified, "PENDING_FINAL_SHUTDOWN");
                 pending.setProperty("consent_at_millis", "0");
                 pending.setProperty("consent_operator_uuid", "");
@@ -177,6 +186,32 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 throw error;
             }
         });
+    }
+
+    /**
+     * Cancelled/superseded maintenance must release its process-local SQLite
+     * watcher and never carry a proof into another candidate or operator run.
+     * This is only in-memory cleanup; persisted evidence files remain intact.
+     */
+    CompletableFuture<Boolean> releaseStrictProofAfterCancel() {
+        return run(() -> {
+            releaseStrictProofIfSuperseded();
+            return true;
+        });
+    }
+
+    private void releaseStrictProofIfSuperseded() throws java.sql.SQLException {
+        StrictProbe probe = pendingStrictProof;
+        if (probe == null) return;
+        MaintenanceSnapshot current = maintenance.snapshot();
+        if (current.phase() == MaintenancePhase.VERIFYING
+                && current.operationId().equals(probe.operationId())) {
+            return;
+        }
+        pendingStrictProof = null;
+        strictValidatedBeforeStop = false;
+        finalizedStrictProof = null;
+        probe.watcher().close();
     }
 
     /**
