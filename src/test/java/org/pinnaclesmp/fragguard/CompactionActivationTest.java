@@ -331,6 +331,7 @@ class CompactionActivationTest {
         var setup = new CompactionReplacementPolicyTest.Setup(root, policy);
         if (policy == MaintenancePolicy.STRICT) {
             setup.policy.prepare(setup.operator, "").get(30, TimeUnit.SECONDS);
+            assertTrue(setup.policy.validateBeforeStoppingWriter().get(10, TimeUnit.SECONDS));
             assertTrue(setup.policy.finalizeStrictAfterShutdown(true, true, true)
                     .get(90, TimeUnit.SECONDS).approved());
         } else {
