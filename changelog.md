@@ -19,6 +19,7 @@
 - Added maintenance countdown Boss Bar, chat reminders, and staff status indicators (#160).
 - Restricted logins and kicked non-bypass players during maintenance, with configurable messages and OP/staff bypass (#161).
 
+- Improved maintenance and diagnostics chat readability with clear warnings, concise summaries and full-detail commands (#197).
 ### Changed
 - Updated Java setup action to 6.2.0 (#174).
 - Updated Gradle wrapper to 9.9.1 (#175, #193).
