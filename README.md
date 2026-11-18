@@ -185,9 +185,13 @@ It never bypasses storage preflight, snapshot policy, or saved database safety.
   produce one compacted snapshot without changing the original.
 - `/fg maintenance verify`: run a full asynchronous candidate scan using the
   original copy-time evidence from the **same running process**.
-- `/fg maintenance approve`: after verified STRICT mode, queue a full
-  comparison at clean shutdown. Any later history, rollback or retention
-  mismatch refuses activation.
+- `/fg maintenance approve`: after verified STRICT mode, start a full
+  **asynchronous source-versus-candidate comparison while Paper is running**.
+  Do **not** stop Paper until chat explicitly reports `STRICT precheck: PASSED`.
+  Approval remains PENDING until a clean final shutdown confirms **no SQLite
+  commits since the precheck**, unchanged source/candidate file identity and
+  a complete WAL checkpoint. Any later history/undo/retention mutation refuses
+  activation; a refused result must never be replaced with Snapshot Mode.
 - `/fg maintenance approve snapshot-acknowledge`: after verification,
   explicitly accept that **all FragGuard history, rollback/undo and retention
   changes after the actual SQLite snapshot may be lost**. Minecraft worlds
