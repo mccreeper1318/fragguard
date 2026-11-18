@@ -109,6 +109,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         capacityRequests.values().forEach(pending -> pending.cancel(true));
         capacityRequests.clear();
         capacityLastReports.clear();
+        capacityDisplayReports.clear();
         pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
