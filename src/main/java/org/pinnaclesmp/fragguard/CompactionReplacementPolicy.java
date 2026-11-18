@@ -422,6 +422,25 @@ final class CompactionReplacementPolicy implements AutoCloseable {
      * validate the backup, matched sidecars and installed DB after swapping.
      */
     static void requireApproved(Path root, MaintenanceSnapshot state) throws IOException {
+        requireApproved(root, state, true);
+    }
+
+    /**
+     * A STRICT clean shutdown may use the in-process write-version watcher +
+     * cached, fully scanned fingerprints. Only the authenticated receipt path
+     * may defer another full source hash to offline activation/startup.
+     */
+    static void requireApprovedForShutdownReceipt(Path root, MaintenanceSnapshot state)
+            throws IOException {
+        if (state.policy() != MaintenancePolicy.STRICT
+                || state.phase() != MaintenancePhase.READY_TO_SWAP) {
+            throw new IOException("Fast receipt proof only allowed for sealed STRICT shutdown");
+        }
+        requireApproved(root, state, false);
+    }
+
+    private static void requireApproved(Path root, MaintenanceSnapshot state,
+                                        boolean verifySourceFingerprint) throws IOException {
         if (state.phase() != MaintenancePhase.VERIFYING
                 && state.phase() != MaintenancePhase.READY_TO_SWAP) {
             throw new IOException("Cannot promote maintenance outside verification");
@@ -484,7 +503,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             // worker (state is still VERIFYING at that point). Issue #168
             // will move offline activation checks into its dedicated startup
             // worker; no stale source may be silently accepted meanwhile.
-            if (state.phase() == MaintenancePhase.READY_TO_SWAP
+            if (verifySourceFingerprint && state.phase() == MaintenancePhase.READY_TO_SWAP
                     && !finalSha.equals(OnlineDatabaseCompaction.fileSha256(source))) {
                 throw new IOException("Final source changed after STRICT approval; "
                         + "refuse activation and preserve original and candidate");
