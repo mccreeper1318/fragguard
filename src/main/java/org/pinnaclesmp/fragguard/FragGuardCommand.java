@@ -2234,6 +2234,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
         String acknowledgement = state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
                 ? CompactionReplacementPolicy.SNAPSHOT_ACKNOWLEDGEMENT : "";
+        if (state.policy() == MaintenancePolicy.STRICT) {
+            MaintenanceChatOutput.title(player::sendMessage, "STRICT Full Precheck Started");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "Comparing ALL source history, undo and indexes to the verified copy.");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "This runs while Paper stays ONLINE; it may take several minutes.");
+            MaintenanceChatOutput.danger(player::sendMessage,
+                    "DO NOT STOP Paper until STRICT says the precheck passed.");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "Any history change during or after this scan rejects STRICT approval.");
+        }
         policy.prepare(player.getUniqueId(), acknowledgement)
                 .whenComplete((decision, error) -> onServerThread(() -> {
                     maintenanceTransitionPending.set(false);
