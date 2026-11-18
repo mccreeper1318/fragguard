@@ -91,9 +91,10 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     private volatile StrictFinalProof finalizedStrictProof;
     private volatile boolean closed;
 
-    record StrictFinalProof(String originalSha256, String candidateSha256) { }
-    private record FileStamp(long bytes, java.nio.file.attribute.FileTime modified,
-                             Object fileKey) { }
+    record StrictFinalProof(String originalSha256, String candidateSha256,
+                            FileStamp sourceStamp, FileStamp candidateStamp) { }
+    record FileStamp(long bytes, java.nio.file.attribute.FileTime modified,
+                     Object fileKey) { }
     private record StrictProbe(String operationId, Connection watcher, long dataVersion,
                                FileStamp sourceStamp, FileStamp candidateStamp,
                                String sourceSha256, String candidateSha256) { }
@@ -232,7 +233,8 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             persist(target, approved);
             await(maintenance.markReady());
             finalizedStrictProof = new StrictFinalProof(
-                    probe.sourceSha256(), probe.candidateSha256());
+                    probe.sourceSha256(), probe.candidateSha256(),
+                    probe.sourceStamp(), probe.candidateStamp());
             return new Decision(state.policy(), "APPROVED", target,
                     state.operationId(), number(verified, "invoked_at_millis"),
                     number(verified, "completed_at_millis"), 0, "", STRICT_WARNING);
@@ -337,7 +339,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                     || Files.size(wal) != 0);
     }
 
-    private static FileStamp stamp(Path file) throws IOException {
+    static FileStamp stamp(Path file) throws IOException {
         BasicFileAttributes data = Files.readAttributes(file,
                 BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         if (!data.isRegularFile()) throw new IOException("Unsafe STRICT source/candidate path");
