@@ -198,6 +198,33 @@ It never bypasses storage preflight, snapshot policy, or saved database safety.
   operations without deleting the original, or view the exact stopped-server
   file-manager steps.
 
+### Clearer operator chat output (#197)
+
+Database diagnostics and maintenance status now use labeled sections, visually
+distinct values and colored PASS/warning/failure states without changing how
+SQLite is inspected or how approval is enforced. Long commands have a short
+safety-first summary with an explicit, admin-only full-detail view:
+
+- `/fg diagnostics preflight`: compact capacity decision, free-space needs,
+  unknown hosting/temp evidence and **all refusal reasons**. Run
+  `/fg diagnostics preflight details` to view every measured estimate and the
+  original safety notes for the **most recently viewed** report. Details are
+  display-only and never refresh or approve the preflight. The existing
+  `/fg diagnostics preflight acknowledge` requirement and two-minute window
+  are unchanged.
+- `/fg maintenance status`: stage, policy, candidate and what to do next.
+  `/fg maintenance status full` includes the exact operation ID, progress,
+  filenames, sizes and all recovery warnings.
+- `/fg maintenance instructions`: first-page stop/receipt/backup warnings.
+  `/fg maintenance instructions full` shows **all original numbered
+  file-manager steps and exact filenames**. When STRICT approval is pending,
+  both views are PREVIEW ONLY; neither authorizes a file swap.
+
+An unknown quota is never presented as verified free space. A red FAILED state
+never means it is safe to swap files, and Snapshot Mode continues to display
+its explicit post-copy history/undo-loss warning. Only OPs with
+`fragguard.admin` can access these paths and reports.
+
 **Do not rename SQLite files while Paper is running.** An approved replacement
 still requires a clean shutdown receipt and full restart verification (#168).
 Recovery-sensitive READY_TO_SWAP/ACTIVATING stages cannot be cancelled through

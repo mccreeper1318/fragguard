@@ -64,6 +64,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     private final Map<UUID, CompletableFuture<CompactionStoragePreflight.Report>>
             capacityRequests = new HashMap<>();
     private final Map<UUID, CompactionStoragePreflight.Report> capacityLastReports = new HashMap<>();
+    // Display cache only. Never used for acceptance or reservation; full details
+    // must remain available even when preflight was refused.
+    private final Map<UUID, CompactionStoragePreflight.Report> capacityDisplayReports = new HashMap<>();
     private final RollbackAreaPreview areaPreview;
     private final Set<Long> executingJobs = new HashSet<>();
     private final Set<Long> pausedJobs = new HashSet<>();
@@ -93,6 +96,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         CompletableFuture<CompactionStoragePreflight.Report> capacity = capacityRequests.remove(actor);
         if (capacity != null) capacity.cancel(true);
         capacityLastReports.remove(actor);
+        capacityDisplayReports.remove(actor);
         removePreviewsFor(actor);
     }
 
@@ -105,6 +109,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         capacityRequests.values().forEach(pending -> pending.cancel(true));
         capacityRequests.clear();
         capacityLastReports.clear();
+        capacityDisplayReports.clear();
         pendingRollbackQueries.clear();
         areaPreview.clear();
         previews.clear();
@@ -1718,8 +1723,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 handleCapacityPreflight(player, false);
             } else if (args.length == 2 && args[1].equalsIgnoreCase("acknowledge")) {
                 handleCapacityPreflight(player, true);
+            } else if (args.length == 2 && args[1].equalsIgnoreCase("details")) {
+                CompactionStoragePreflight.Report viewed =
+                        capacityDisplayReports.get(player.getUniqueId());
+                if (viewed == null) {
+                    player.sendMessage(color("&eNo preflight report to expand. "
+                            + "Run &f/fg diagnostics preflight&e first."));
+                } else {
+                    MaintenanceChatOutput.preflightDetails(player::sendMessage, viewed);
+                }
             } else {
-                player.sendMessage(color("&cUsage: &f/fg diagnostics preflight [acknowledge]"));
+                player.sendMessage(color("&cUsage: &f/fg diagnostics preflight [acknowledge|details]"));
             }
             return;
         }
@@ -1773,12 +1787,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             }
             ReclaimableSpaceMonitor monitor = plugin.getReclaimableSpaceMonitor();
             if (monitor != null) monitor.accept(report, System.currentTimeMillis(), false);
-            player.sendMessage(color("&8&m------&r &bFragGuard Database Diagnostics &8&m------"));
-            // Report contents (including the admin-only absolute path and any
-            // host error) are plain text, not legacy color markup.
-            for (String line : report.lines()) {
-                player.sendMessage(Component.text(line, NamedTextColor.GRAY));
-            }
+            // Keep admin-only paths and warnings, but distinguish sections,
+            // values and verified results from explanatory text.
+            MaintenanceChatOutput.diagnostics(player::sendMessage, report);
         }));
     }
 
@@ -1805,6 +1816,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         } else {
             // Each new inspection invalidates older acknowledgement context.
             capacityLastReports.remove(operator);
+            capacityDisplayReports.remove(operator);
         }
         long accountMiB = plugin.getConfig().getLong("maintenance-compaction-account-free-mib", -1L);
         long nativeTempMiB = plugin.getConfig().getLong("maintenance-compaction-sqlite-temp-free-mib", -1L);
@@ -1848,8 +1860,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             } else {
                 capacityLastReports.remove(operator);
             }
-            player.sendMessage(color("&8&m------&r &bFragGuard Compaction Storage Preflight &8&m------"));
-            for (String line : report.lines()) player.sendMessage(Component.text(line, NamedTextColor.GRAY));
+            capacityDisplayReports.put(operator, report);
+            MaintenanceChatOutput.preflightSummary(player::sendMessage, report);
             if (report.decision() == CompactionStoragePreflight.Decision.ACKNOWLEDGEMENT_REQUIRED) {
                 player.sendMessage(color("&eKnown capacity checks passed, but quota/temp evidence "
                         + "is unknown. To explicitly accept those unknowns, use "
@@ -1885,11 +1897,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         MaintenanceSnapshot state = coordinator.snapshot();
         switch (action) {
             case "status" -> {
-                if (args.length != 1) {
+                if (args.length > 2 || (args.length == 2 && !args[1].equalsIgnoreCase("full"))) {
                     maintenanceUsage(player);
                     return;
                 }
-                showMaintenanceStatus(player, state, compaction.progress());
+                if (args.length == 2) {
+                    showMaintenanceStatus(player, state, compaction.progress());
+                } else {
+                    MaintenanceChatOutput.statusSummary(player::sendMessage, state);
+                }
             }
             case "help" -> maintenanceUsage(player);
             case "preview" -> {
@@ -1944,16 +1960,19 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                         "Unable to persist maintenance countdown", error);
                                 return;
                             }
-                            player.sendMessage(color("&eMaintenance scheduled: &f" + policy
-                                    + "&e; countdown &f" + seconds + " seconds&e."));
+                            MaintenanceChatOutput.title(player::sendMessage, "Maintenance Scheduled");
+                            MaintenanceChatOutput.value(player::sendMessage, "Policy", policy.name(),
+                                    policy == MaintenancePolicy.STRICT
+                                            ? NamedTextColor.GREEN : NamedTextColor.RED);
+                            MaintenanceChatOutput.value(player::sendMessage,
+                                    "Countdown", seconds + " seconds");
+                            MaintenanceChatOutput.notice(player::sendMessage,
+                                    "Yellow Boss Bar and warnings shown to players; login closes at expiry.");
                             if (policy == MaintenancePolicy.MAINTENANCE_SNAPSHOT) {
-                                player.sendMessage(color("&cSnapshot mode is NOT yet approved. "
-                                        + "An additional explicit history-loss acknowledgement "
-                                        + "is required after verification."));
+                                MaintenanceChatOutput.danger(player::sendMessage,
+                                        "Snapshot mode is NOT approved. Independent explicit data-loss"
+                                        + " consent is needed after verification.");
                             }
-                            player.sendMessage(color("&7Regular players see the configured yellow "
-                                    + "countdown Boss Bar and warnings. The server admission gate "
-                                    + "becomes restricted when the deadline arrives."));
                         }));
             }
             case "cancel" -> cancelMaintenance(player, state, coordinator, compaction);
@@ -1986,25 +2005,37 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     player.sendMessage(color("&cVerification is already running or unavailable."));
                     return;
                 }
-                player.sendMessage(color("&eVerifying full SQLite integrity, history and undo "
-                        + "records in the background. No source files will be replaced."));
+                MaintenanceChatOutput.title(player::sendMessage, "Candidate Verification");
+                MaintenanceChatOutput.notice(player::sendMessage,
+                        "Checking SQLite integrity, history and undo in background.");
+                MaintenanceChatOutput.notice(player::sendMessage,
+                        "Read-only: source files will NOT be replaced.");
                 task.whenComplete((verified, error) -> onServerThread(() -> {
                     if (error != null) {
                         plugin.getLogger().log(Level.WARNING,
                                 "FragGuard candidate verification failed", unwrap(error));
-                        if (player.isOnline()) player.sendMessage(color("&cCandidate verification failed; "
-                                + "original preserved and replacement remains blocked. "
-                                + "Review console and maintenance status."));
+                        if (player.isOnline()) {
+                            MaintenanceChatOutput.danger(player::sendMessage,
+                                    "Verification FAILED: replacement blocked; original preserved.");
+                            MaintenanceChatOutput.notice(player::sendMessage,
+                                    "Review console and /fg maintenance status full.");
+                        }
                     } else if (player.isOnline()) {
-                        player.sendMessage(color("&aCandidate verified: &f"
-                                + verified.candidate().getFileName()
-                                + "&a. A replacement policy must still be approved."));
+                        MaintenanceChatOutput.title(player::sendMessage, "Candidate Verified");
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "Candidate", verified.candidate().getFileName().toString(),
+                                NamedTextColor.GREEN);
+                        MaintenanceChatOutput.action(player::sendMessage,
+                                "Next: /fg maintenance approve (policy approval still required)");
                     }
                 }));
             }
             case "approve" -> approveMaintenancePolicy(player, args, state);
             case "instructions" -> {
-                if (args.length != 1) { maintenanceUsage(player); return; }
+                if (args.length > 2 || (args.length == 2 && !args[1].equalsIgnoreCase("full"))) {
+                    maintenanceUsage(player);
+                    return;
+                }
                 boolean strictPending = state.phase() == MaintenancePhase.VERIFYING
                         && state.policy() == MaintenancePolicy.STRICT
                         && !state.manifestFile().isBlank();
@@ -2013,17 +2044,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                             + "Do not rename any SQLite files."));
                     return;
                 }
-                player.sendMessage(color(strictPending
-                        ? "&eSTRICT approval is pending final clean-shutdown comparison. "
-                            + "These are PREVIEW instructions only; STOP Paper first and "
-                            + "DO NOT rename any files unless a clean shutdown receipt is written."
-                        : "&eStop Paper completely. Only after the clean "
-                            + "shutdown receipt is written may you follow these steps:"));
                 try {
-                    for (String line : CompactionActivation.manualInstructions(
-                            plugin.getDataFolder().toPath(), state)) {
-                        player.sendMessage(Component.text(line, NamedTextColor.GRAY));
-                    }
+                    MaintenanceChatOutput.instructions(player::sendMessage, state,
+                            CompactionActivation.manualInstructions(
+                                    plugin.getDataFolder().toPath(), state),
+                            args.length == 2, strictPending);
                 } catch (RuntimeException problem) {
                     player.sendMessage(color("&cCould not resolve safe candidate filenames."));
                 }
@@ -2037,23 +2062,27 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg maintenance &7- Open in-game database maintenance menu."));
         player.sendMessage(color("&f/fg maintenance start [strict] &7- Start configured countdown (default STRICT)."));
         player.sendMessage(color("&f/fg maintenance start snapshot acknowledge &7- Opt in to snapshot scheduling."));
-        player.sendMessage(color("&f/fg maintenance status &7- Stage, progress, sizes, policy."));
+        player.sendMessage(color("&f/fg maintenance status [full] &7- Summary or complete evidence."));
         player.sendMessage(color("&f/fg maintenance preview &7- Read-only storage preflight."));
         player.sendMessage(color("&f/fg maintenance compact &7- Make one SQLite candidate while ACTIVE."));
         player.sendMessage(color("&f/fg maintenance verify &7- Full read-only candidate validation."));
         player.sendMessage(color("&f/fg maintenance approve &7- Prepare STRICT approval at clean shutdown."));
         player.sendMessage(color("&f/fg maintenance approve snapshot-acknowledge &7- Explicitly accept snapshot loss."));
-        player.sendMessage(color("&f/fg maintenance instructions &7- Manual stopped-server file steps."));
+        player.sendMessage(color("&f/fg maintenance instructions [full] &7- Safety summary or complete file steps."));
         player.sendMessage(color("&f/fg maintenance cancel &7- Cancel only safe pre-swap stages."));
     }
 
     private void showMaintenanceStatus(Player player, MaintenanceSnapshot state,
                                        OnlineDatabaseCompaction.Progress copying) {
-        player.sendMessage(color("&8&m-----&r &bFragGuard Database Maintenance &8&m-----"));
-        player.sendMessage(Component.text("Stage: " + state.phase()
-                + " | Policy: " + state.policy()
-                + " | Operation: " + (state.operationId().isBlank()
-                        ? "none" : state.operationId()), NamedTextColor.GRAY));
+        MaintenanceChatOutput.title(player::sendMessage, "Maintenance · Full Status");
+        MaintenanceChatOutput.section(player::sendMessage, "Stage and policy");
+        MaintenanceChatOutput.value(player::sendMessage, "Stage", state.phase().name(),
+                state.phase() == MaintenancePhase.FAILED ? NamedTextColor.RED : NamedTextColor.AQUA);
+        MaintenanceChatOutput.value(player::sendMessage, "Policy", state.policy().name(),
+                state.policy() == MaintenancePolicy.STRICT
+                        ? NamedTextColor.GREEN : NamedTextColor.RED);
+        MaintenanceChatOutput.value(player::sendMessage, "Operation",
+                state.operationId().isBlank() ? "none" : state.operationId());
         if (state.phase() == MaintenancePhase.COUNTDOWN) {
             long seconds = Math.max(0L,
                     (state.countdownEndsAtMillis() - System.currentTimeMillis() + 999L) / 1000L);
@@ -2166,8 +2195,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 + "Restrictions remain until resolved."));
                         plugin.getLogger().log(Level.SEVERE, "Maintenance cancellation failed", error);
                     } else {
-                        player.sendMessage(color("&aMaintenance cancelled; original database "
-                                + "and any candidate are preserved for staff review."));
+                        MaintenanceChatOutput.title(player::sendMessage, "Maintenance Cancelled");
+                        MaintenanceChatOutput.action(player::sendMessage,
+                                "Original DB and all candidates preserved for staff review.");
                     }
                 }));
     }
@@ -2214,17 +2244,29 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 "Failed to prepare maintenance replacement policy", error);
                         return;
                     }
+                    MaintenanceChatOutput.title(player::sendMessage, "Replacement Policy");
                     if (decision.approved()) {
-                        player.sendMessage(color("&aSnapshot replacement policy approved. "
-                                + "WARNING: post-snapshot FragGuard history, rollback/undo and "
-                                + "retention changes can be lost. Minecraft worlds are unchanged. "
-                                + "Stop Paper completely; wait for a clean shutdown receipt."));
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "Snapshot policy", "APPROVED", NamedTextColor.YELLOW);
+                        MaintenanceChatOutput.danger(player::sendMessage,
+                                "Post-copy history, rollback/undo and retention CAN BE LOST.");
+                        MaintenanceChatOutput.danger(player::sendMessage,
+                                "Minecraft worlds are NOT rolled back.");
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Stop Paper cleanly and require the shutdown receipt before file changes.");
                     } else {
-                        player.sendMessage(color("&eSTRICT policy pending: stop Paper cleanly. "
-                                + "After all writes drain and SQLite checkpoints, FragGuard will "
-                                + "compare the original against the candidate and issue the "
-                                + "activation receipt only if every retained record matches."));
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "STRICT policy", "PENDING final shutdown comparison",
+                                NamedTextColor.YELLOW);
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Stop Paper cleanly. FragGuard must drain writes and checkpoint WAL.");
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Every retained record must match before approval and receipt.");
+                        MaintenanceChatOutput.danger(player::sendMessage,
+                                "NO file moves unless a valid clean-shutdown receipt is created.");
                     }
+                    MaintenanceChatOutput.action(player::sendMessage,
+                            "Instructions: /fg maintenance instructions");
                 }));
     }
 
@@ -2254,9 +2296,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             return;
         }
         latestCompaction = null;
-        player.sendMessage(color("&eCreating an asynchronous SQLite compacted candidate. "
-                + "The original and its WAL/SHM remain untouched. No guessed progress % "
-                + "or automatic DB replacement."));
+        MaintenanceChatOutput.title(player::sendMessage, "SQLite Compaction Started");
+        MaintenanceChatOutput.notice(player::sendMessage,
+                "Creating a separate compacted candidate; original and WAL/SHM preserved.");
+        MaintenanceChatOutput.notice(player::sendMessage,
+                "No automatic replacement or guessed completion percentage.");
         future.whenComplete((result, failure) -> onServerThread(() -> {
             if (failure != null) {
                 plugin.getLogger().log(Level.WARNING,
@@ -2267,11 +2311,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             }
             latestCompaction = result; // Only the current process' actual snapshot evidence.
             if (player.isOnline()) {
-                player.sendMessage(color("&aCompaction candidate created: &f"
-                        + result.candidate().getFileName()
-                        + " &7(" + MigrationStoragePolicy.formatBytes(result.candidateBytes()) + ")"));
-                player.sendMessage(color("&eRun &f/fg maintenance verify&e to check full "
-                        + "SQLite integrity, every history record and saved rollback/undo data."));
+                MaintenanceChatOutput.title(player::sendMessage, "Compaction Copy Complete");
+                MaintenanceChatOutput.value(player::sendMessage, "Candidate",
+                        result.candidate().getFileName().toString(), NamedTextColor.GREEN);
+                MaintenanceChatOutput.value(player::sendMessage, "Size",
+                        MigrationStoragePolicy.formatBytes(result.candidateBytes()));
+                MaintenanceChatOutput.action(player::sendMessage,
+                        "Next: /fg maintenance verify (full integrity/history/undo validation)");
             }
         }));
     }
@@ -2342,10 +2388,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         + "for an available PARTIAL report; it must not be treated as verified."));
                 return;
             }
-            player.sendMessage(color("&8&m------&r &bFragGuard Deep Diagnostics &8&m------"));
-            for (String line : report.lines()) {
-                player.sendMessage(Component.text(line, NamedTextColor.GRAY));
-            }
+            MaintenanceChatOutput.deepDiagnostics(player::sendMessage, report);
         }));
     }
 
@@ -2453,10 +2496,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg diagnostics cancel &7- Cancel deep scan (partial report)."));
         player.sendMessage(color("&f/fg diagnostics preflight &7- Estimate compaction disk/quota/temp needs."));
         player.sendMessage(color("&f/fg diagnostics preflight acknowledge &7- Accept unknown headroom, not shortages."));
+        player.sendMessage(color("&f/fg diagnostics preflight details &7- View full previous capacity report."));
         player.sendMessage(color("&f/fg maintenance &7- Open Database Maintenance GUI."));
         player.sendMessage(color("&f/fg maintenance start [strict] &7- Begin maintenance countdown."));
         player.sendMessage(color("&f/fg maintenance start snapshot acknowledge &7- Opt in to snapshot mode."));
-        player.sendMessage(color("&f/fg maintenance status &7- Show current database maintenance and copy status."));
+        player.sendMessage(color("&f/fg maintenance status [full] &7- Summary or complete status."));
         player.sendMessage(color("&f/fg maintenance compact &7- During ACTIVE maintenance, start an unverified SQLite copy."));
         player.sendMessage(color("&f/fg maintenance verify &7- Check candidate history/undo integrity."));
         player.sendMessage(color("&f/fg maintenance approve &7- Prepare STRICT post-shutdown approval."));
@@ -2492,6 +2536,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             if (args.length == 3 && args[1].equalsIgnoreCase("approve")) {
                 return partial(args[2], List.of("snapshot-acknowledge"));
             }
+            if (args.length == 3 && (args[1].equalsIgnoreCase("status")
+                    || args[1].equalsIgnoreCase("instructions"))) {
+                return partial(args[2], List.of("full"));
+            }
             return Collections.emptyList();
         }
         if (subCommand.equals("diagnostics") || subCommand.equals("diag")) {
@@ -2500,7 +2548,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         "progress", "cancel", "preflight"));
             }
             if (args.length == 3 && args[1].equalsIgnoreCase("preflight")) {
-                return partial(args[2], List.of("acknowledge"));
+                return partial(args[2], List.of("acknowledge", "details"));
             }
             return Collections.emptyList();
         }
