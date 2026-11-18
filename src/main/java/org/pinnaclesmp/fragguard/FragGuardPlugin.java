@@ -190,6 +190,11 @@ public final class FragGuardPlugin extends JavaPlugin {
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");
     }
 
+    /** #198: a requested Paper shutdown must never be mistaken for plugin-only reload. */
+    static boolean mustStopPaperOnRestrictedDisable(boolean restricted, boolean paperStopping) {
+        return restricted && !paperStopping;
+    }
+
     @Override
     public void onDisable() {
         if (maintenanceAdmissionGate != null) {
@@ -200,7 +205,7 @@ public final class FragGuardPlugin extends JavaPlugin {
             // shutdown from a dangerous plugin-only disable/reload. Do not
             // recursively call shutdown (or report a false severe error) in
             // the former. Still fail closed if FragGuard is disabled alone.
-            if (wasRestricted && !Bukkit.isStopping()) {
+            if (mustStopPaperOnRestrictedDisable(wasRestricted, Bukkit.isStopping())) {
                 getLogger().severe("FragGuard disabled independently while maintenance access "
                         + "is restricted. Stopping Paper rather than exposing an unguarded server.");
                 Bukkit.shutdown();
