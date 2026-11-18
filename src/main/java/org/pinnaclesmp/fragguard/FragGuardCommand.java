@@ -1960,16 +1960,19 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                         "Unable to persist maintenance countdown", error);
                                 return;
                             }
-                            player.sendMessage(color("&eMaintenance scheduled: &f" + policy
-                                    + "&e; countdown &f" + seconds + " seconds&e."));
+                            MaintenanceChatOutput.title(player::sendMessage, "Maintenance Scheduled");
+                            MaintenanceChatOutput.value(player::sendMessage, "Policy", policy.name(),
+                                    policy == MaintenancePolicy.STRICT
+                                            ? NamedTextColor.GREEN : NamedTextColor.RED);
+                            MaintenanceChatOutput.value(player::sendMessage,
+                                    "Countdown", seconds + " seconds");
+                            MaintenanceChatOutput.notice(player::sendMessage,
+                                    "Yellow Boss Bar and warnings shown to players; login closes at expiry.");
                             if (policy == MaintenancePolicy.MAINTENANCE_SNAPSHOT) {
-                                player.sendMessage(color("&cSnapshot mode is NOT yet approved. "
-                                        + "An additional explicit history-loss acknowledgement "
-                                        + "is required after verification."));
+                                MaintenanceChatOutput.danger(player::sendMessage,
+                                        "Snapshot mode is NOT approved. Independent explicit data-loss"
+                                        + " consent is needed after verification.");
                             }
-                            player.sendMessage(color("&7Regular players see the configured yellow "
-                                    + "countdown Boss Bar and warnings. The server admission gate "
-                                    + "becomes restricted when the deadline arrives."));
                         }));
             }
             case "cancel" -> cancelMaintenance(player, state, coordinator, compaction);
@@ -2002,19 +2005,28 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     player.sendMessage(color("&cVerification is already running or unavailable."));
                     return;
                 }
-                player.sendMessage(color("&eVerifying full SQLite integrity, history and undo "
-                        + "records in the background. No source files will be replaced."));
+                MaintenanceChatOutput.title(player::sendMessage, "Candidate Verification");
+                MaintenanceChatOutput.notice(player::sendMessage,
+                        "Checking SQLite integrity, history and undo in background.");
+                MaintenanceChatOutput.notice(player::sendMessage,
+                        "Read-only: source files will NOT be replaced.");
                 task.whenComplete((verified, error) -> onServerThread(() -> {
                     if (error != null) {
                         plugin.getLogger().log(Level.WARNING,
                                 "FragGuard candidate verification failed", unwrap(error));
-                        if (player.isOnline()) player.sendMessage(color("&cCandidate verification failed; "
-                                + "original preserved and replacement remains blocked. "
-                                + "Review console and maintenance status."));
+                        if (player.isOnline()) {
+                            MaintenanceChatOutput.danger(player::sendMessage,
+                                    "Verification FAILED: replacement blocked; original preserved.");
+                            MaintenanceChatOutput.notice(player::sendMessage,
+                                    "Review console and /fg maintenance status full.");
+                        }
                     } else if (player.isOnline()) {
-                        player.sendMessage(color("&aCandidate verified: &f"
-                                + verified.candidate().getFileName()
-                                + "&a. A replacement policy must still be approved."));
+                        MaintenanceChatOutput.title(player::sendMessage, "Candidate Verified");
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "Candidate", verified.candidate().getFileName().toString(),
+                                NamedTextColor.GREEN);
+                        MaintenanceChatOutput.action(player::sendMessage,
+                                "Next: /fg maintenance approve (policy approval still required)");
                     }
                 }));
             }
@@ -2183,8 +2195,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 + "Restrictions remain until resolved."));
                         plugin.getLogger().log(Level.SEVERE, "Maintenance cancellation failed", error);
                     } else {
-                        player.sendMessage(color("&aMaintenance cancelled; original database "
-                                + "and any candidate are preserved for staff review."));
+                        MaintenanceChatOutput.title(player::sendMessage, "Maintenance Cancelled");
+                        MaintenanceChatOutput.action(player::sendMessage,
+                                "Original DB and all candidates preserved for staff review.");
                     }
                 }));
     }
@@ -2231,17 +2244,29 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 "Failed to prepare maintenance replacement policy", error);
                         return;
                     }
+                    MaintenanceChatOutput.title(player::sendMessage, "Replacement Policy");
                     if (decision.approved()) {
-                        player.sendMessage(color("&aSnapshot replacement policy approved. "
-                                + "WARNING: post-snapshot FragGuard history, rollback/undo and "
-                                + "retention changes can be lost. Minecraft worlds are unchanged. "
-                                + "Stop Paper completely; wait for a clean shutdown receipt."));
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "Snapshot policy", "APPROVED", NamedTextColor.YELLOW);
+                        MaintenanceChatOutput.danger(player::sendMessage,
+                                "Post-copy history, rollback/undo and retention CAN BE LOST.");
+                        MaintenanceChatOutput.danger(player::sendMessage,
+                                "Minecraft worlds are NOT rolled back.");
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Stop Paper cleanly and require the shutdown receipt before file changes.");
                     } else {
-                        player.sendMessage(color("&eSTRICT policy pending: stop Paper cleanly. "
-                                + "After all writes drain and SQLite checkpoints, FragGuard will "
-                                + "compare the original against the candidate and issue the "
-                                + "activation receipt only if every retained record matches."));
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "STRICT policy", "PENDING final shutdown comparison",
+                                NamedTextColor.YELLOW);
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Stop Paper cleanly. FragGuard must drain writes and checkpoint WAL.");
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Every retained record must match before approval and receipt.");
+                        MaintenanceChatOutput.danger(player::sendMessage,
+                                "NO file moves unless a valid clean-shutdown receipt is created.");
                     }
+                    MaintenanceChatOutput.action(player::sendMessage,
+                            "Instructions: /fg maintenance instructions");
                 }));
     }
 
@@ -2271,9 +2296,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             return;
         }
         latestCompaction = null;
-        player.sendMessage(color("&eCreating an asynchronous SQLite compacted candidate. "
-                + "The original and its WAL/SHM remain untouched. No guessed progress % "
-                + "or automatic DB replacement."));
+        MaintenanceChatOutput.title(player::sendMessage, "SQLite Compaction Started");
+        MaintenanceChatOutput.notice(player::sendMessage,
+                "Creating a separate compacted candidate; original and WAL/SHM preserved.");
+        MaintenanceChatOutput.notice(player::sendMessage,
+                "No automatic replacement or guessed completion percentage.");
         future.whenComplete((result, failure) -> onServerThread(() -> {
             if (failure != null) {
                 plugin.getLogger().log(Level.WARNING,
@@ -2284,11 +2311,13 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
             }
             latestCompaction = result; // Only the current process' actual snapshot evidence.
             if (player.isOnline()) {
-                player.sendMessage(color("&aCompaction candidate created: &f"
-                        + result.candidate().getFileName()
-                        + " &7(" + MigrationStoragePolicy.formatBytes(result.candidateBytes()) + ")"));
-                player.sendMessage(color("&eRun &f/fg maintenance verify&e to check full "
-                        + "SQLite integrity, every history record and saved rollback/undo data."));
+                MaintenanceChatOutput.title(player::sendMessage, "Compaction Copy Complete");
+                MaintenanceChatOutput.value(player::sendMessage, "Candidate",
+                        result.candidate().getFileName().toString(), NamedTextColor.GREEN);
+                MaintenanceChatOutput.value(player::sendMessage, "Size",
+                        MigrationStoragePolicy.formatBytes(result.candidateBytes()));
+                MaintenanceChatOutput.action(player::sendMessage,
+                        "Next: /fg maintenance verify (full integrity/history/undo validation)");
             }
         }));
     }
