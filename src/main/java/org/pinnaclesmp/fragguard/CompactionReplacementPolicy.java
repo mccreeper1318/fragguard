@@ -60,10 +60,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             + "authorize mixing mismatched WAL/SHM files or bypassing startup checks.";
     static final String STRICT_WARNING =
             "STRICT performs a full background source/candidate comparison before shutdown. "
-            + "A SQLite write-version watcher must remain unchanged until the final clean "
-            + "writer stop and checkpoint. If history changes or the proof is interrupted, "
-            + "approval is refused. Never stop Paper until the full precheck completes. "
-            + "A valid shutdown receipt and offline activation checks remain mandatory.";
+            + "A SQLite write-version watcher must remain unchanged up to the pre-stop gate. "
+            + "After the checkpoint, source/candidate file identity and zero drained writes "
+            + "must still match. If any evidence changes, approval is refused. Never stop "
+            + "Paper until the full precheck completes. A valid shutdown receipt and offline "
+            + "activation checks remain mandatory.";
 
     /** A READY snapshot cannot reopen the source writer until #168 validates activation. */
     static boolean blocksWriterStartup(MaintenanceSnapshot state) {
