@@ -239,8 +239,11 @@ the quick maintenance menu. Live-server validation is scheduled for the final
 
 **No shell, external utility or custom launch command is required.** A verified
 candidate **must** first have an approved replacement policy (#167). STRICT
-(default) requires final full-history comparison **after the FragGuard writer
-has stopped** and SQLite's shutdown checkpoint completed. Snapshot mode must
+(default) runs its complete source/candidate scan **before Paper is stopped**
+and requires a stable SQLite write-version watcher through the final clean
+writer shutdown and WAL checkpoint. The host's short stop grace is not used
+for expensive scans or large file hashes. The next startup still rechecks
+the original/candidate fingerprints and complete activation evidence. Snapshot mode must
 have the exact administrator consent acknowledging that **all FragGuard history,
 undo/rollback jobs and retention updates after the SQLite snapshot may be
 lost**. Minecraft worlds are **never** rolled back along with a database.
