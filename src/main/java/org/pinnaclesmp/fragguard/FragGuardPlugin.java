@@ -278,6 +278,22 @@ public final class FragGuardPlugin extends JavaPlugin {
             quickDiagnostics = null;
         }
 
+        // The live SQLite data_version watcher must be checked BEFORE the
+        // worker's WAL checkpoint, which can increment data_version without
+        // any SQLite row changes. Do not start stopping the writer until this
+        // small pre-stop gate is resolved. If it fails, finish ordinary safe
+        // shutdown but never issue a compaction activation receipt.
+        boolean strictSourceUnchangedBeforeStop = false;
+        if (replacementPolicy != null && replacementPolicy.hasPendingStrict()) {
+            try {
+                strictSourceUnchangedBeforeStop = replacementPolicy
+                        .validateBeforeStoppingWriter().get(3L, TimeUnit.SECONDS);
+            } catch (Exception changed) {
+                getLogger().log(Level.SEVERE, "STRICT source changed since online precheck, "
+                        + "or a safe pre-stop attestation failed. No file swap is permitted.", changed);
+            }
+        }
+
         // Keep maintenance and its blocking state available while Database
         // drains queued operations. They recheck maintenanceBlocksNewJobs()
         // even during shutdown. Clearing it before shutdown could turn a
@@ -319,6 +335,16 @@ public final class FragGuardPlugin extends JavaPlugin {
                         try {
                             CompactionReplacementPolicy.StrictFinalProof strictProof = null;
                             if (replacementPolicy.hasPendingStrict()) {
+                                // A write accepted/finished after the pre-stop
+                                // gate invalidates the online proof even if the
+                                // final SQLite checkpoint itself is clean.
+                                if (!strictSourceUnchangedBeforeStop
+                                        || report.queuedWritesAtStart() != 0
+                                        || report.drainedWrites() != 0) {
+                                    throw new IllegalStateException("STRICT pre-stop proof "
+                                            + "failed or pending writes drained during shutdown. "
+                                            + "Original and candidate preserved, no receipt.");
+                                }
                                 // Never wait for a full scan here: BisectHosting and
                                 // other hosts may hard-kill Paper after ~40 seconds.
                                 var approved = replacementPolicy.finalizeStrictAfterShutdown(
