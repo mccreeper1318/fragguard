@@ -196,10 +196,17 @@ public final class FragGuardPlugin extends JavaPlugin {
             boolean wasRestricted = maintenanceAdmissionGate.restricted();
             maintenanceAdmissionGate.close();
             maintenanceAdmissionGate = null;
-            if (wasRestricted) {
-                getLogger().severe("FragGuard disabled while maintenance access is restricted. "
-                        + "Stopping Paper rather than exposing an unguarded server.");
+            // Bukkit.isStopping() distinguishes an ordinary, requested Paper
+            // shutdown from a dangerous plugin-only disable/reload. Do not
+            // recursively call shutdown (or report a false severe error) in
+            // the former. Still fail closed if FragGuard is disabled alone.
+            if (wasRestricted && !Bukkit.isStopping()) {
+                getLogger().severe("FragGuard disabled independently while maintenance access "
+                        + "is restricted. Stopping Paper rather than exposing an unguarded server.");
                 Bukkit.shutdown();
+            } else if (wasRestricted) {
+                getLogger().info("Paper is stopping normally during restricted maintenance; "
+                        + "keeping the database and activation safeguards in place.");
             }
         }
         if (maintenanceNoticeDisplay != null) {
@@ -216,9 +223,10 @@ public final class FragGuardPlugin extends JavaPlugin {
         }
         gui = null;
 
-        // Keep the policy worker alive through the final database shutdown.
-        // STRICT needs the *finished*, checkpointed source for its final scan.
-        // The policy worker closes after the clean-shutdown receipt is stored.
+        // Keep the policy watcher alive through the clean database shutdown.
+        // STRICT already performed the expensive comparison while Paper was
+        // running; the stopped-writer gate must finish within host stop grace.
+        // The worker closes after the short approval/receipt sequence.
 
         // Stop candidate read-only verification before releasing the maintenance
         // state coordinator; verification must not outlive its state gate.
@@ -304,16 +312,26 @@ public final class FragGuardPlugin extends JavaPlugin {
                                 + "FragGuard shutdown was not clean. Do not swap SQLite files.");
                     } else {
                         try {
+                            CompactionReplacementPolicy.StrictFinalProof strictProof = null;
                             if (replacementPolicy.hasPendingStrict()) {
+                                // Never wait for a full scan here: BisectHosting and
+                                // other hosts may hard-kill Paper after ~40 seconds.
                                 var approved = replacementPolicy.finalizeStrictAfterShutdown(
                                         report.workerStopped(), report.walCheckpointCompleted(),
-                                        report.clean()).get(21_660L, TimeUnit.SECONDS);
-                                getLogger().info("STRICT maintenance source matched the verified "
-                                        + "snapshot at clean shutdown; policy " + approved.status());
+                                        report.clean()).get(8L, TimeUnit.SECONDS);
+                                strictProof = replacementPolicy.finalizedStrictProof();
+                                getLogger().info("STRICT maintenance source still matches its "
+                                        + "complete online comparison; policy " + approved.status());
                             }
                             if (maintenance.snapshot().phase() == MaintenancePhase.READY_TO_SWAP) {
+                                if (maintenance.snapshot().policy() == MaintenancePolicy.STRICT
+                                        && strictProof == null) {
+                                    throw new IllegalStateException("No in-process STRICT proof "
+                                            + "available; refusing slow/unauthenticated shutdown receipt");
+                                }
                                 var receipt = CompactionActivation.recordCleanShutdown(
-                                        getDataFolder().toPath(), maintenance.snapshot(), true);
+                                        getDataFolder().toPath(), maintenance.snapshot(), true,
+                                        strictProof);
                                 getLogger().info("Clean SQLite shutdown receipt: "
                                         + receipt.path().getFileName()
                                         + "; original backup name: "
