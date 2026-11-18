@@ -116,7 +116,7 @@ class MaintenanceCommandIntegrationTest {
                 .withManifest("fragguard-compact-test.manifest", "verified");
         when(test.coordinator.snapshot()).thenReturn(verifiedStrict);
         execute(test,"instructions");
-        verify(test.player, atLeastOnce()).sendMessage(anyString());
+        verify(test.player, atLeastOnce()).sendMessage(any(net.kyori.adventure.text.Component.class));
     }
 
     private static void execute(Fixture f, String... args) {
