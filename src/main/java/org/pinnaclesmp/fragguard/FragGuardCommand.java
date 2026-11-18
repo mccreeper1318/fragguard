@@ -2195,6 +2195,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 + "Restrictions remain until resolved."));
                         plugin.getLogger().log(Level.SEVERE, "Maintenance cancellation failed", error);
                     } else {
+                        CompactionReplacementPolicy policy = plugin.getReplacementPolicy();
+                        if (policy != null) {
+                            policy.releaseStrictProofAfterCancel().whenComplete((released, releaseError) -> {
+                                if (releaseError != null) {
+                                    plugin.getLogger().log(Level.FINE,
+                                            "Stale STRICT watcher cleanup deferred until worker "
+                                            + "finishes or the next approval", unwrap(releaseError));
+                                }
+                            });
+                        }
                         MaintenanceChatOutput.title(player::sendMessage, "Maintenance Cancelled");
                         MaintenanceChatOutput.action(player::sendMessage,
                                 "Original DB and all candidates preserved for staff review.");
