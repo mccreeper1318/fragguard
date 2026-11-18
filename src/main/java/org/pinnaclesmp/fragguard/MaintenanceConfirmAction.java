@@ -9,7 +9,7 @@ enum MaintenanceConfirmAction {
     COMPACT("compact", "Start SQLite compaction",
             "Run an approved storage preflight first. The original database and WAL/SHM stay intact."),
     APPROVE_STRICT("approve", "Prepare STRICT replacement",
-            "Final source-to-copy comparison is required AFTER database shutdown. A stale copy cannot be activated."),
+            "A full asynchronous source-to-copy comparison runs BEFORE shutdown. Do not stop Paper until the scan passes. Final approval still needs an unchanged source, clean stop and checkpoint receipt."),
     APPROVE_SNAPSHOT("approve snapshot-acknowledge", "Accept irreversible history loss",
             "FINAL LOSS CONSENT: All database history, rollback/undo records and retention updates after the actual copy may be lost. The Minecraft world NEVER rolls back. STOP Paper before any file rename."),
     CANCEL("cancel", "Cancel maintenance stage",
