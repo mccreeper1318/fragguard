@@ -200,6 +200,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         });
     }
 
+    /** Package-visible state for cancellation regression tests and diagnostics. */
+    boolean hasLiveStrictProof() {
+        return pendingStrictProof != null;
+    }
+
     private void releaseStrictProofIfSuperseded() throws java.sql.SQLException {
         StrictProbe probe = pendingStrictProof;
         if (probe == null) return;
