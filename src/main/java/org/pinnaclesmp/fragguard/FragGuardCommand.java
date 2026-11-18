@@ -2467,10 +2467,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg diagnostics cancel &7- Cancel deep scan (partial report)."));
         player.sendMessage(color("&f/fg diagnostics preflight &7- Estimate compaction disk/quota/temp needs."));
         player.sendMessage(color("&f/fg diagnostics preflight acknowledge &7- Accept unknown headroom, not shortages."));
+        player.sendMessage(color("&f/fg diagnostics preflight details &7- View full previous capacity report."));
         player.sendMessage(color("&f/fg maintenance &7- Open Database Maintenance GUI."));
         player.sendMessage(color("&f/fg maintenance start [strict] &7- Begin maintenance countdown."));
         player.sendMessage(color("&f/fg maintenance start snapshot acknowledge &7- Opt in to snapshot mode."));
-        player.sendMessage(color("&f/fg maintenance status &7- Show current database maintenance and copy status."));
+        player.sendMessage(color("&f/fg maintenance status [full] &7- Summary or complete status."));
         player.sendMessage(color("&f/fg maintenance compact &7- During ACTIVE maintenance, start an unverified SQLite copy."));
         player.sendMessage(color("&f/fg maintenance verify &7- Check candidate history/undo integrity."));
         player.sendMessage(color("&f/fg maintenance approve &7- Prepare STRICT post-shutdown approval."));
