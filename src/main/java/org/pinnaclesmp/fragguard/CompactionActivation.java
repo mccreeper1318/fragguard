@@ -112,6 +112,14 @@ final class CompactionActivation {
                 throw new IOException("Conflicting backup/candidate SQLite sidecar; preserve files");
             }
         }
+        if (strictProof != null
+                && (!strictProof.sourceStamp().equals(
+                        CompactionReplacementPolicy.stamp(original))
+                    || !strictProof.candidateStamp().equals(
+                        CompactionReplacementPolicy.stamp(candidate)))) {
+            throw new IOException("STRICT source or compacted candidate changed since "
+                    + "its full online comparison; no shutdown receipt created");
+        }
         Path wal = root.resolve("fragguard.db-wal");
         if (Files.exists(wal, LinkOption.NOFOLLOW_LINKS)
                 && (!Files.isRegularFile(wal, LinkOption.NOFOLLOW_LINKS)
