@@ -136,6 +136,41 @@ class CompactionReplacementPolicyTest {
     }
 
     @Test
+    void strictShutdownCannotReuseProofFromAnotherProcessOrWorker() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
+            setup.policy.prepare(setup.operator, "").get(90, TimeUnit.SECONDS);
+            // New policy instance models a host force-kill and restart: only
+            // persisted PENDING metadata survives, never the watcher/proof.
+            try (var replacementAfterRestart =
+                         new CompactionReplacementPolicy(root, setup.state)) {
+                assertThrows(ExecutionException.class,
+                        () -> replacementAfterRestart.finalizeStrictAfterShutdown(true, true, true)
+                                .get(15, TimeUnit.SECONDS));
+            }
+            assertEquals(MaintenancePhase.VERIFYING, setup.state.snapshot().phase());
+            assertThrows(IllegalStateException.class,
+                    setup.policy::finalizedStrictProof);
+            assertFalse(Files.exists(CompactionActivation.receiptPath(
+                    root, setup.state.snapshot())));
+        }
+    }
+
+    @Test
+    void strictShutdownRejectsSourceFileChangedWithoutSqliteCommit() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
+            setup.policy.prepare(setup.operator, "").get(90, TimeUnit.SECONDS);
+            var old = Files.getLastModifiedTime(setup.source);
+            Files.setLastModifiedTime(setup.source,
+                    java.nio.file.attribute.FileTime.fromMillis(old.toMillis() + 10_000));
+            assertThrows(ExecutionException.class,
+                    () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
+                            .get(15, TimeUnit.SECONDS));
+            assertFalse(Files.exists(CompactionActivation.receiptPath(
+                    root, setup.state.snapshot())));
+        }
+    }
+
+    @Test
     void strictModeRejectsHistoryInsertedAfterSnapshot() throws Exception {
         try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
             setup.policy.prepare(setup.operator, "").get(30, TimeUnit.SECONDS);
