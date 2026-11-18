@@ -116,6 +116,7 @@ class CompactionReplacementPolicyTest {
     void strictModeApprovesOnlyAfterFullCheckpointedSourceEqualsCandidate() throws Exception {
         try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
             setup.policy.prepare(setup.operator, "").get(30, TimeUnit.SECONDS);
+            assertTrue(setup.policy.validateBeforeStoppingWriter().get(10, TimeUnit.SECONDS));
             var approved = setup.policy.finalizeStrictAfterShutdown(true, true, true)
                     .get(90, TimeUnit.SECONDS);
             assertTrue(approved.approved());
@@ -162,6 +163,8 @@ class CompactionReplacementPolicyTest {
             var old = Files.getLastModifiedTime(setup.source);
             Files.setLastModifiedTime(setup.source,
                     java.nio.file.attribute.FileTime.fromMillis(old.toMillis() + 10_000));
+            assertThrows(ExecutionException.class,
+                    () -> setup.policy.validateBeforeStoppingWriter().get(15, TimeUnit.SECONDS));
             assertThrows(ExecutionException.class,
                     () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
                             .get(15, TimeUnit.SECONDS));
@@ -272,6 +275,8 @@ class CompactionReplacementPolicyTest {
     }
 
     private static void assertStrictRefused(Setup setup) throws Exception {
+        assertThrows(ExecutionException.class,
+                () -> setup.policy.validateBeforeStoppingWriter().get(15, TimeUnit.SECONDS));
         assertThrows(ExecutionException.class,
                 () -> setup.policy.finalizeStrictAfterShutdown(true, true, true)
                         .get(90, TimeUnit.SECONDS));
