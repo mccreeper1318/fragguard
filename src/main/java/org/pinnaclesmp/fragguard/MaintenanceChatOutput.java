@@ -85,6 +85,10 @@ final class MaintenanceChatOutput {
         value(send, "SQLite temp", capacity(report.evidence().sqliteNativeTempFreeBytes()),
                 report.evidence().sqliteNativeTempFreeBytes() == null
                         ? NamedTextColor.YELLOW : NamedTextColor.WHITE);
+        value(send, "Existing candidates / reservations",
+                Integer.toString(report.snapshot().existingCandidateFiles()),
+                report.snapshot().existingCandidateFiles() > 0
+                        ? NamedTextColor.RED : NamedTextColor.WHITE);
         if (!report.reasons().isEmpty()) {
             section(send, "Warnings / reasons");
             for (String reason : report.reasons()) {
@@ -217,6 +221,8 @@ final class MaintenanceChatOutput {
         String low = body.toLowerCase(Locale.ROOT);
         NamedTextColor color = NamedTextColor.WHITE;
         if (label.equals("Finding") || label.equals("Storage error")
+                || (label.equals("Preflight") && (low.contains("insufficient")
+                    || low.contains("unsafe") || low.contains("existing candidate")))
                 || low.startsWith("failed checks") || low.startsWith("partial / untrusted")
                 || low.startsWith("refused")) {
             color = NamedTextColor.RED;
