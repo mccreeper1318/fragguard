@@ -2267,12 +2267,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 "Stop Paper cleanly and require the shutdown receipt before file changes.");
                     } else {
                         MaintenanceChatOutput.value(player::sendMessage,
-                                "STRICT policy", "PENDING final shutdown comparison",
+                                "STRICT precheck", "PASSED (all retained records match)",
+                                NamedTextColor.GREEN);
+                        MaintenanceChatOutput.value(player::sendMessage,
+                                "STRICT policy", "PENDING clean shutdown attestation",
                                 NamedTextColor.YELLOW);
                         MaintenanceChatOutput.notice(player::sendMessage,
-                                "Stop Paper cleanly. FragGuard must drain writes and checkpoint WAL.");
+                                "You may now stop Paper cleanly. SQLite must drain writes and checkpoint WAL.");
                         MaintenanceChatOutput.notice(player::sendMessage,
-                                "Every retained record must match before approval and receipt.");
+                                "Any database change after the full precheck invalidates approval.");
                         MaintenanceChatOutput.danger(player::sendMessage,
                                 "NO file moves unless a valid clean-shutdown receipt is created.");
                     }
