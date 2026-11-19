@@ -112,6 +112,89 @@ class CompactionActivationTest {
     }
 
     @Test
+    void snapshotApprovalUsesOnlineFingerprintsAndCleanCheckpointWithoutShutdownFileHashes()
+            throws Exception {
+        try (var job = new CompactionReplacementPolicyTest.Setup(root,
+                MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
+            // Snapshot consent permits loss of history between VACUUM snapshot
+            // and approval. The original backup hash must reflect those rows.
+            try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + job.source);
+                 Statement sql = connection.createStatement()) {
+                sql.execute("UPDATE rollback_jobs SET updated_at=updated_at+250 WHERE id=1");
+                sql.execute("INSERT INTO block_changes "
+                        + "(happened_at,actor_uuid,actor_name,world,world_uuid,x,y,z,"
+                        + "chunk_x,chunk_z,action,before_data,after_data) "
+                        + "VALUES(999999,'actor','actor','world','uuid',32,64,0,2,0,"
+                        + "'PLACE','minecraft:air','minecraft:stone')");
+            }
+            var approved = job.policy.prepare(job.operator,
+                    CompactionReplacementPolicy.SNAPSHOT_ACKNOWLEDGEMENT)
+                    .get(90, TimeUnit.SECONDS);
+            assertTrue(approved.approved());
+            assertTrue(job.policy.hasPendingSnapshotProof());
+            assertTrue(job.policy.validateBeforeStoppingWriter().get(10, TimeUnit.SECONDS));
+            // A legitimate shutdown checkpoint is allowed to advance
+            // PRAGMA data_version without committing new history.
+            try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + job.source);
+                 Statement sql = connection.createStatement();
+                 var checkpoint = sql.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+                assertTrue(checkpoint.next());
+                assertEquals(0, checkpoint.getInt(1));
+            }
+            var proof = job.policy.finalizeSnapshotAfterShutdown(true, true, true)
+                    .get(15, TimeUnit.SECONDS);
+            assertEquals(MaintenancePolicy.MAINTENANCE_SNAPSHOT, proof.policy());
+            var receipt = CompactionActivation.recordCleanShutdown(root,
+                    job.state.snapshot(), true, proof);
+            assertEquals(proof.originalSha256(), receipt.originalSha256());
+            assertNotEquals(receipt.originalSha256(), receipt.candidateSha256());
+            assertTrue(Files.isRegularFile(receipt.path()));
+            manualSwap(job);
+            var installed = CompactionActivation.verifyInstalled(root, job.state.snapshot());
+            assertEquals(9L, installed.verifiedRows(),
+                    "Snapshot copy must preserve six original changes and saved jobs");
+            assertTrue(Files.isRegularFile(receipt.backup()));
+        }
+    }
+
+    @Test
+    void snapshotProofRefusesChangesAfterFingerprintAndNeverWritesReceipt() throws Exception {
+        try (var job = new CompactionReplacementPolicyTest.Setup(root,
+                MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
+            job.policy.prepare(job.operator, CompactionReplacementPolicy.SNAPSHOT_ACKNOWLEDGEMENT)
+                    .get(90, TimeUnit.SECONDS);
+            try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + job.source);
+                 Statement sql = connection.createStatement()) {
+                sql.execute("UPDATE rollback_jobs SET updated_at=updated_at+500 WHERE id=1");
+            }
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> job.policy.validateBeforeStoppingWriter().get(15, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> job.policy.finalizeSnapshotAfterShutdown(true, true, true)
+                            .get(15, TimeUnit.SECONDS));
+            assertFalse(Files.exists(CompactionActivation.receiptPath(root, job.state.snapshot())));
+            assertTrue(Files.isRegularFile(job.source));
+            assertTrue(Files.isRegularFile(job.copy.candidate()));
+        }
+    }
+
+    @Test
+    void snapshotProofCannotBeReusedByAnotherPolicyInstanceAfterForceKill() throws Exception {
+        try (var job = new CompactionReplacementPolicyTest.Setup(root,
+                MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
+            job.policy.prepare(job.operator, CompactionReplacementPolicy.SNAPSHOT_ACKNOWLEDGEMENT)
+                    .get(90, TimeUnit.SECONDS);
+            try (var other = new CompactionReplacementPolicy(root, job.state)) {
+                assertFalse(other.hasPendingSnapshotProof());
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> other.finalizeSnapshotAfterShutdown(true, true, true)
+                                .get(15, TimeUnit.SECONDS));
+            }
+            assertFalse(Files.exists(CompactionActivation.receiptPath(root, job.state.snapshot())));
+        }
+    }
+
+    @Test
     void shutdownReceiptCannotBeCreatedIfCheckpointWasNotConfirmed()
             throws Exception {
         try (var job = prepared(MaintenancePolicy.MAINTENANCE_SNAPSHOT)) {
