@@ -438,10 +438,12 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             long baseline = readDataVersion(watcher);
             FileStamp initial = stamp(source);
             String originalHash = OnlineDatabaseCompaction.fileSha256(source);
+            FileStamp candidateBefore = stamp(candidatePath(state));
             checkCandidate(state, verified); // rehash verified copy, pre-shutdown
             FileStamp candidateStamp = stamp(candidatePath(state));
             if (baseline != readDataVersion(watcher)
-                    || !initial.equals(stamp(source)) || walHasFrames()) {
+                    || !initial.equals(stamp(source))
+                    || !candidateBefore.equals(candidateStamp) || walHasFrames()) {
                 throw new IOException("Source changed while computing Snapshot backup fingerprint; "
                         + "no approval. Wait for a quiet period and retry with a new candidate.");
             }
