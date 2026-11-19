@@ -11,7 +11,7 @@ enum MaintenanceConfirmAction {
     APPROVE_STRICT("approve", "Prepare STRICT replacement",
             "A full asynchronous source-to-copy comparison runs BEFORE shutdown. Do not stop Paper until the scan passes. Final approval still needs an unchanged source, clean stop and checkpoint receipt."),
     APPROVE_SNAPSHOT("approve snapshot-acknowledge", "Accept irreversible history loss",
-            "FINAL LOSS CONSENT: Post-copy history/undo/retention may be lost and Minecraft worlds NEVER roll back. Full file fingerprints are computed ONLINE during approval. Wait for completion, avoid further DB writes, then stop Paper cleanly. NEVER move files without a receipt."),
+            "FINAL LOSS CONSENT: Post-copy history/undo/retention may be lost and The Minecraft world NEVER rolls back. Full file fingerprints are computed ONLINE during approval. Wait for completion, avoid further DB writes, then stop Paper cleanly. NEVER move files without a receipt."),
     CANCEL("cancel", "Cancel maintenance stage",
             "Existing DB and incomplete copies are preserved. READY/ACTIVATING cannot be cancelled here.");
 
