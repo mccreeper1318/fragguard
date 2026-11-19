@@ -39,6 +39,136 @@ final class FragGuardGuiRenderer {
         inv.setItem(16, item(Material.REDSTONE_TORCH, "&aStorage Status", "&7Run the existing status command."));
         inv.setItem(20, item(Material.BOOK, "&fCommand Help", "&7Show existing FragGuard commands."));
         inv.setItem(22, item(Material.BARRIER, "&cClose"));
+        inv.setItem(24, item(Material.COMPARATOR, "&bDatabase Diagnostics",
+                "&7View a read-only database overview.",
+                "&7Exact counts and integrity checks",
+                "&7are available from /fg diagnostics."));
+        inv.setItem(26, item(Material.ANVIL, "&6Database Maintenance",
+                "&7Schedule countdown and preview compaction.",
+                "&7Verify snapshots and approve replacement.",
+                "&eRestricted to server administrators."));
+        return inv;
+    }
+
+    static Inventory maintenanceMenu(MaintenanceMenuView view) {
+        return maintenanceMenu(view, null, false);
+    }
+
+    static Inventory maintenanceMenu(MaintenanceMenuView view,
+                                     ReclaimableSpaceMonitor.Snapshot space,
+                                     boolean monitoringEnabled) {
+        Inventory inv = Bukkit.createInventory(null, 54, component("&8FragGuard &7• &6Database Maintenance"));
+        fillRange(inv, 0, 8, Material.GRAY_STAINED_GLASS_PANE);
+        fillRange(inv, 45, 53, Material.BLACK_STAINED_GLASS_PANE);
+        inv.setItem(0, item(Material.CLOCK, "&bMaintenance: &f" + view.phase(),
+                "&7Operation: &f" + (view.operationId().isBlank() ? "none" : truncate(view.operationId())),
+                "&7" + truncate(view.detail())));
+        inv.setItem(4, item(Material.COMPARATOR, "&bCurrent policy: &f" + view.policy(),
+                "&7Default: STRICT (no lost history allowed).",
+                "&cSnapshot Mode requires explicit loss consent.",
+                "&7The copy time is NOT the countdown time."));
+        inv.setItem(8, item(Material.BARRIER, "&cClose"));
+        inv.setItem(10, item(Material.REDSTONE_TORCH, "&bQuick Diagnostics",
+                "&7Read-only database sizes and health.", "&eClick to run."));
+        inv.setItem(12, item(Material.WRITABLE_BOOK, "&bDeep Diagnostics",
+                "&7Read-only full SQLite/history/undo scan.", "&7A long scan has no known total.", "&eClick to run."));
+        inv.setItem(14, item(Material.MAP, "&eCompaction Preview",
+                "&7Preflight storage, quota and SQLite temp.",
+                "&7A preflight is required before compaction.",
+                "&eClick to run; no DB files are changed."));
+        inv.setItem(16, item(Material.CLOCK, "&fRefresh Status",
+                "&7Copy: &f" + truncate(view.copyStage())
+                        + (view.copying() ? " (RUNNING)" : ""),
+                "&7Verified: &f" + (view.verified() ? "YES" : "not yet"),
+                "&7Scan: &f" + truncate(view.scanStage())
+                        + (view.scanning() ? " (" + view.scannedRows() + " rows)" : ""),
+                "&7No invented VACUUM progress percentage.",
+                "&eClick to refresh."));
+        if (space == null) {
+            inv.setItem(18, item(Material.PAPER, "&bSpace Recommendation",
+                    monitoringEnabled ? "&7Background monitoring enabled."
+                            : "&7Background monitoring is disabled.",
+                    "&7No completed storage sample yet.",
+                    "&eClick for a read-only overview."));
+        } else {
+            inv.setItem(18, item(space.recommended() ? Material.GOLD_INGOT : Material.PAPER,
+                    "&bSpace Recommendation", space.guiLore()));
+        }
+        inv.setItem(19, item(Material.OAK_SIGN, "&7File size comparison",
+                "&f" + truncate(view.sizeSummary()),
+                "&7Savings excludes active WAL/SHM.",
+                "&7Source/candidate may change after snapshot."));
+        inv.setItem(20, item(view.canSchedule() ? Material.EMERALD_BLOCK : Material.GRAY_DYE,
+                "&aSchedule STRICT (default)",
+                "&7Countdown: configured in config.yml.",
+                "&7Only starts when no maintenance is active.",
+                view.canSchedule() ? "&eClick to review" : "&8Not available in current stage"));
+        inv.setItem(22, item(view.canSchedule() ? Material.GOLD_BLOCK : Material.GRAY_DYE,
+                "&6Schedule Snapshot Mode",
+                "&cMAY PERMANENTLY LOSE post-copy history",
+                "&cand saved rollback/undo data.",
+                "&cMinecraft worlds are NOT rolled back.",
+                view.canSchedule() ? "&eClick for explicit confirmation"
+                        : "&8Not available in current stage"));
+        inv.setItem(24, item(view.canCompact() ? Material.IRON_PICKAXE : Material.GRAY_DYE,
+                "&bStart Compaction",
+                "&7Requires ACTIVE and an accepted fresh preflight.",
+                "&7Only one candidate can be created.",
+                view.canCompact() ? "&eClick to review" : "&8Not available in current stage"));
+        inv.setItem(28, item(view.canVerify() ? Material.BOOK : Material.GRAY_DYE,
+                "&bVerify Candidate",
+                "&7Checks every history and undo record.",
+                "&7Background scan, no known total percentage.",
+                view.canVerify() ? "&eClick to run" : "&8Candidate not ready for verification"));
+        inv.setItem(30, item(view.canApprove() ? Material.EMERALD : Material.GRAY_DYE,
+                "&aApprove Replacement Policy",
+                "&7Full verification is mandatory.",
+                view.policy() == MaintenancePolicy.STRICT
+                        ? "&7Full scan online; final unchanged proof at shutdown."
+                        : "&cSnapshot Mode: explicit irreversible loss consent.",
+                view.canApprove() ? "&eClick for confirmation"
+                        : "&8Candidate has no verified manifest"));
+        inv.setItem(32, item(Material.PAPER, "&eManual Activation Instructions",
+                "&7STOP Paper completely after approval.",
+                "&7Keep original DB and matching WAL/SHM.",
+                "&7Copy has its own fingerprint/manifest.",
+                "&eClick for exact file-manager steps."));
+        inv.setItem(34, item(view.canCancel() ? Material.BARRIER : Material.GRAY_DYE,
+                "&cCancel Maintenance",
+                "&7Does not delete original or candidate.",
+                "&7FAILED can be acknowledged once workers stop.",
+                "&7Never bypass READY/ACTIVATING recovery checks.",
+                view.canCancel() ? "&eClick to review" : "&8Unavailable in this stage"));
+        inv.setItem(45, item(Material.SPECTRAL_ARROW, "&bRefresh this view",
+                view.secondsLeft() >= 0
+                        ? "&7Countdown: " + view.secondsLeft() + "s ("
+                            + view.countdownPercent() + "% remaining)"
+                        : "&7View current maintenance stage"));
+        inv.setItem(49, item(Material.ARROW, "&fBack to FragGuard"));
+        inv.setItem(53, item(Material.BARRIER, "&cClose"));
+        return inv;
+    }
+
+    static Inventory maintenanceConfirmation(MaintenanceConfirmAction action) {
+        Inventory inv = Bukkit.createInventory(null, 27,
+                component("&8FragGuard &7• &cConfirm Maintenance"));
+        fillRange(inv, 0, 26, Material.BLACK_STAINED_GLASS_PANE);
+        inv.setItem(4, item(Material.PAPER, "&e" + action.heading(),
+                "&cThis change affects maintenance admission",
+                "&cor the active database recovery workflow.",
+                "&7Read the warning before proceeding."));
+        // Lore is intentionally explicit, not merely a generic yes/no prompt.
+        List<String> explanation = new ArrayList<>();
+        explanation.add("&c" + action.heading());
+        String warning = action.warning();
+        for (int i = 0; i < warning.length(); i += 55) {
+            explanation.add("&7" + warning.substring(i, Math.min(warning.length(), i + 55)));
+        }
+        inv.setItem(13, item(Material.WRITABLE_BOOK, "&cRead Before Confirming", explanation));
+        inv.setItem(11, item(Material.ARROW, "&fBack — do not change maintenance"));
+        inv.setItem(15, item(Material.EMERALD_BLOCK, "&aConfirm: " + action.heading(),
+                "&eClick to execute the guarded /fg command."));
+        inv.setItem(26, item(Material.BARRIER, "&cClose — no changes"));
         return inv;
     }
 

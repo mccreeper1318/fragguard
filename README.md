@@ -4,6 +4,382 @@ FragGuard is a Paper plugin that records world-changing block history in SQLite,
 
 History is retained for 30 days by default. The `26.3-1.2.0` inventory GUI condenses related events for easier browsing without deleting, rewriting, or hiding the underlying raw history. Large investigations are database-backed and paged, so the operator can browse far more than 5,000 matching events without loading the complete result set into one GUI session.
 
+## 26.3-1.2.2 database maintenance (pending release validation)
+
+Development of built-in database maintenance begins with #159. FragGuard now
+stores a separate, checksummed `maintenance-state.properties` lifecycle file.
+It records the scheduled operator and countdown, strict or acknowledged
+snapshot policy, candidate identity, snapshot cutoff, validation manifest and
+maintenance stage without changing the active SQLite database. If a server
+stops during compaction or verification, the candidate remains **unverified**;
+FragGuard retains the metadata and requires deliberate administrator recovery.
+New rollback/undo job creation is blocked while maintenance is active. Normal
+block history, existing accepted jobs, the database file and WAL/SHM are not
+modified by the maintenance-state component.
+
+### Quick read-only diagnostics (#162)
+
+Use **/fg diagnostics** or click **Database Diagnostics** on the /fg main menu
+to see the active database location, main/WAL/SHM file sizes, schema version,
+page/free-list storage, estimated reusable pages, filesystem free-space signal,
+retention settings, and existing write-queue health. The report is asynchronous
+and **does not modify the database**. The free-list estimate is **not** a
+prediction of exact VACUUM INTO savings, and the host quota/SQLite temporary
+space remain unknown.
+
+**/fg diagnostics counts** requests exact history and rollback job row counts;
+**/fg diagnostics check** requests SQLite's lightweight `quick_check(1)`
+integrity pass. These optional scans run on a separate read-only connection with
+configurable deadlines (15s/45s defaults); on a huge database they can time out,
+and the overview intentionally doesn't scan millions of records. Only server
+operators with `fragguard.admin` can view database details. No external tools
+are required.
+
+### Optional storage recommendations (#170)
+
+FragGuard can periodically sample SQLite's page count and free-list pages
+without scanning the history or slowing down the server tick. It also shows
+the separate WAL footprint and how the combined main DB + WAL file sizes have
+changed since the previous sample. These numbers are **estimates**, not a
+guarantee of bytes saved by `VACUUM INTO`; a large WAL file alone is not proof
+that the main database needs compaction.
+
+Monitoring is **off by default**. Set
+`database-reclaimable-monitor-enabled: true` in `config.yml` to sample
+every 60 minutes by default. Both the free-list estimate (1,024 MiB) and
+percentage of database pages (10%) must meet the configurable warning
+thresholds. Repeated notices have a default 24-hour cooldown. Notices go only
+to the server console and online operators with `fragguard.admin`, never
+to regular players.
+
+The Database Maintenance GUI includes a cached, timestamped recommendation.
+Use its recommendation item or `/fg diagnostics` to request a fresh, read-only
+overview even with monitoring disabled. Monitoring **never** runs a VACUUM,
+starts maintenance, modifies the retention schedule, or replaces the original
+DB/WAL/SHM; compaction still requires explicit administrator action and
+preflight checks.
+
+### Optional incremental SQLite reclamation (#171)
+
+SQLite has three `PRAGMA auto_vacuum` modes: `NONE` (0), `FULL` (1),
+and `INCREMENTAL` (2). Only databases already formatted for `INCREMENTAL`
+can reclaim free-list pages with `PRAGMA incremental_vacuum`. Use
+`/fg diagnostics` to see your database's mode and eligibility.
+
+Both options are **disabled by default**:
+
+- `database-new-auto-vacuum-incremental: true` selects INCREMENTAL mode
+  **only when `fragguard.db` does not exist yet**, before any tables are
+  created. It does not switch modes or change an existing database, including
+  the large production history.
+- `database-incremental-reclaim-enabled: true` asks the serialized SQLite
+  worker to attempt a small reclamation pass **after successful retention
+  cleanup** if history or finished rollback jobs were actually deleted.
+  `database-incremental-reclaim-pages-per-pass` defaults to 16 and is
+  capped at 128 pages. Incompatible modes and empty free lists are skipped.
+
+Incremental reclamation does not alter retention periods or undo rules. It
+is serialized with database writes, off the Paper tick thread, and uses a
+short SQLite query deadline. SQLite may reclaim fewer pages than requested,
+and the active WAL can retain its size until checkpointing; page-count
+reduction is **not guaranteed bytes freed from the filesystem or hosting
+quota**. On failure the already committed cleanup and live block logging
+remain independent.
+
+**Existing databases must never be switched by startup.** Converting an
+existing `NONE`/`FULL` database to `INCREMENTAL` requires a full
+in-place VACUUM, which this feature intentionally does not attempt. For
+existing large histories, use the separately approved `VACUUM INTO`
+candidate/verification/replacement workflow instead. Back up the matching
+DB/WAL/SHM coherently before any deliberate maintenance.
+
+### Deep history validation (#163)
+
+Use **/fg diagnostics deep** to run opt-in, full read-only SQLite validation on
+a separate worker. It performs SQLite's full `integrity_check`, checks
+foreign keys and missing/orphan rollback records, validates required schema,
+index keys and history coordinates, and streams **every column** in retained
+block history, rollback jobs, rollback changes and chunk reservations (including
+container and other block-entity BLOBs) into SHA-256 digests. No stored records
+are sampled or skipped for convenience; memory stays bounded by row buffers.
+
+Use **/fg diagnostics progress** for phase and scanned row count, or
+**/fg diagnostics cancel** to interrupt. The configurable timeout defaults
+to one hour (maximum six hours). Missing schema, cancellation or timeout produces
+a **PARTIAL/UNTRUSTED** result, never a passing verification. Completed scans
+write a summary and redacted manifest inside
+`plugins/FragGuard/diagnostic-reports/`: counts, schema metadata hashes and
+per-table digests, never raw player, inventory or block-state content. Output
+names are generated internally, never supplied by players. Commands require
+OP plus `fragguard.admin`.
+
+This is a current read snapshot, **not a guarantee that a future compacted
+candidate includes later writes**. Candidate verification and post-snapshot
+policies are enforced by full copy verification and approval. Long read transactions can delay WAL
+checkpoint recycling, so use full scans deliberately rather than on a timer.
+
+### Online VACUUM INTO candidate creation (#165)
+
+When the durable maintenance state is **ACTIVE**, an operator can create an
+unverified, compacted SQLite copy **without stopping Paper**. The copy runs
+on its own worker and read-only connection to the live source's coherent
+SQLite/WAL snapshot. It does not use FragGuard's normal database write worker,
+make an intermediate full-size input duplicate, truncate the source, change the
+source schema or substitute files.
+
+1. Run `/fg diagnostics preflight` and review space, hosting quota and
+   native SQLite temp warnings. Use `/fg diagnostics preflight acknowledge`
+   if you deliberately accept *unknown* headroom (never a known shortage).
+2. During **ACTIVE** maintenance only, run `/fg maintenance compact` within
+   25 seconds of an accepted preflight. Use `/fg maintenance status` to
+   monitor progress or `/fg maintenance cancel` to request interruption.
+   This command cannot bypass the active maintenance admission gate.
+3. FragGuard reserves a uniquely named `compaction-candidates/fragguard-compact-*.db`
+   and runs SQLite `VACUUM INTO`. A separate `.snapshot.properties`
+   file records **unverified** candidate metadata (source identity digest,
+   copy invocation/completion interval, copied history and rollback-job
+   high-water marks, schema version, candidate size). These are derived from
+   the actual copied SQLite snapshot, **not from a countdown timestamp**.
+   The wall-clock start is recorded only as a conservative lower bound;
+   SQLite does not expose the exact snapshot acquisition timestamp via JDBC.
+4. A completed copy enters **VERIFYING** and is **not READY_TO_SWAP**.
+   Full source/candidate integrity verification, the strict versus
+   acknowledged snapshot replacement policy, and safe activation are required
+   before the copy can replace anything.
+
+The source database, WAL/SHM files and existing backups remain unchanged by
+the compaction worker. Operators and permitted background processes may
+continue generating history after SQLite starts its snapshot: **later changes
+may not appear in the candidate**. The required replacement-policy checks
+prevent accidental substitution; explicitly approved snapshot replacement
+may lose history and rollback/undo changes newer than the copied snapshot.
+The Minecraft world would NOT automatically revert.
+
+Cancellation, shutdown, `SQLITE_FULL`, or interrupted output never promotes
+a partial copy. Any candidate and reservation are preserved for staff review.
+The next boot automatically treats an interrupted COMPACTING/VERIFYING
+maintenance state as failed, not as a verified replacement.
+
+### Database Maintenance commands and GUI (#169)
+
+Open **/fg** and select **Database Maintenance**, or use **/fg maintenance**
+to open the same panel. The inventory shows the current persistent maintenance
+phase, selected replacement policy, countdown, compaction/verification status,
+candidate filename and approximate before/after SQLite main-file sizes.
+Unknown totals have **no invented percentage**. Staff see existing Boss Bar
+stages and players receive the configured yellow countdown warnings.
+
+All operations are restricted to OPs with `fragguard.admin`. The GUI routes
+actions through the **same validated commands**, uses confirmation screens
+for changes, and closes before submitting an action to prevent duplicate clicks.
+It never bypasses storage preflight, snapshot policy, or saved database safety.
+
+- `/fg maintenance start` or `/fg maintenance start strict`: schedule the
+  configured countdown (default STRICT); players are warned before admissions
+  close and maintenance becomes ACTIVE.
+- `/fg maintenance start snapshot acknowledge`: explicitly opt in to a
+  potentially lossy copy, but **does not approve replacement**.
+- `/fg maintenance preview` or `/fg diagnostics preflight`: read-only
+  capacity estimate; unknown headroom requires separate acknowledgment.
+- `/fg maintenance compact`: when ACTIVE and a fresh preflight has passed,
+  produce one compacted snapshot without changing the original.
+- `/fg maintenance verify`: run a full asynchronous candidate scan using the
+  original copy-time evidence from the **same running process**.
+- `/fg maintenance approve`: after verified STRICT mode, start a full
+  **asynchronous source-versus-candidate comparison while Paper is running**.
+  Do **not** stop Paper until chat explicitly reports `STRICT precheck: PASSED`.
+  Approval remains PENDING until a clean final shutdown confirms **no SQLite
+  commits since the precheck**, unchanged source/candidate file identity and
+  a complete WAL checkpoint. Any later history/undo/retention mutation refuses
+  activation; a refused result must never be replaced with Snapshot Mode.
+- `/fg maintenance approve snapshot-acknowledge`: after verification,
+  explicitly accept that **all FragGuard history, rollback/undo and retention
+  changes after the actual SQLite snapshot may be lost**. Minecraft worlds
+  do **not** roll back. Confirmation is required again even if scheduling
+  selected Snapshot Mode. The plugin computes **both full SQLite file SHA-256
+  fingerprints asynchronously before the server stops**. Wait for confirmed
+  Snapshot approval, then stop Paper without making any further database
+  changes: later writes invalidate the source-backup proof and prohibit a
+  shutdown receipt. The short shutdown window performs no multi-GiB hashing.
+  Changes after the VACUUM snapshot but **before Snapshot approval** are
+  allowed and included in the preserved original backup.
+- `/fg maintenance status`, `/fg maintenance cancel`, and
+  `/fg maintenance instructions`: inspect stage/progress, cancel eligible
+  operations without deleting the original, or view the exact stopped-server
+  file-manager steps.
+
+### Clearer operator chat output (#197)
+
+Database diagnostics and maintenance status now use labeled sections, visually
+distinct values and colored PASS/warning/failure states without changing how
+SQLite is inspected or how approval is enforced. Long commands have a short
+safety-first summary with an explicit, admin-only full-detail view:
+
+- `/fg diagnostics preflight`: compact capacity decision, free-space needs,
+  unknown hosting/temp evidence and **all refusal reasons**. Run
+  `/fg diagnostics preflight details` to view every measured estimate and the
+  original safety notes for the **most recently viewed** report. Details are
+  display-only and never refresh or approve the preflight. The existing
+  `/fg diagnostics preflight acknowledge` requirement and two-minute window
+  are unchanged.
+- `/fg maintenance status`: stage, policy, candidate and what to do next.
+  `/fg maintenance status full` includes the exact operation ID, progress,
+  filenames, sizes and all recovery warnings.
+- `/fg maintenance instructions`: first-page stop/receipt/backup warnings.
+  `/fg maintenance instructions full` shows **all original numbered
+  file-manager steps and exact filenames**. When STRICT approval is pending,
+  both views are PREVIEW ONLY; neither authorizes a file swap.
+
+An unknown quota is never presented as verified free space. A red FAILED state
+never means it is safe to swap files, and Snapshot Mode continues to display
+its explicit post-copy history/undo-loss warning. Only OPs with
+`fragguard.admin` can access these paths and reports.
+
+**Do not rename SQLite files while Paper is running.** An approved replacement
+still requires a clean shutdown receipt and full restart verification (#168).
+Recovery-sensitive READY_TO_SWAP/ACTIVATING stages cannot be cancelled through
+the quick maintenance menu. Live-server validation is scheduled for the final
+1.2.2 testing phase.
+
+### Manual compacted-database activation (#168)
+
+**No shell, external utility or custom launch command is required.** A verified
+candidate **must** first have an approved replacement policy (#167). STRICT
+(default) runs its complete source/candidate scan **before Paper is stopped**
+and requires an unchanged SQLite write-version watcher at the **pre-stop
+gate**. The writer must then stop without draining late writes, and a clean
+WAL checkpoint must leave the source/candidate identities unchanged. SQLite
+may itself increment `data_version` on a checkpoint even without history
+changes, so that version is checked *before* checkpointing. The host's short
+stop grace is not used for expensive scans or large file hashes. The next startup still rechecks
+the original/candidate fingerprints and complete activation evidence. Snapshot
+mode likewise computes full source/candidate fingerprints online *before*
+stopping Paper; subsequent changes refuse the receipt, and a restarted process
+cannot reuse an earlier in-memory proof. Snapshot mode still requires exact
+administrator consent acknowledging that **all FragGuard history, undo/rollback
+jobs and retention updates after the SQLite snapshot may be lost**. Minecraft
+worlds are **never** rolled back along with a database.
+
+**Keep Paper stopped for the entire file-manager operation.** When the plugin
+finishes a clean shutdown, its console prints a *per-operation* original-backup
+filename and writes a non-overwriting `.shutdown.properties` receipt. If no
+clean-shutdown receipt was created, **do not swap any files**. The presence of
+`READY_TO_SWAP` alone is not a clean checkpoint.
+
+For a candidate named
+`plugins/FragGuard/compaction-candidates/fragguard-compact-EXAMPLE.db`:
+
+1. **Stop Paper completely.** Confirm the clean FragGuard checkpoint and
+   `fragguard-compact-EXAMPLE.shutdown.properties` receipt. Never rename an
+   open SQLite database.
+2. In your host file manager rename
+   `plugins/FragGuard/fragguard.db` to
+   `plugins/FragGuard/fragguard-original-EXAMPLE.db`.
+   **Preserve this original backup. Never overwrite/delete it.**
+3. **If they exist**, rename the *matching* original sidecars alongside it:
+   `fragguard.db-wal` → `fragguard-original-EXAMPLE.db-wal`, and
+   `fragguard.db-shm` → `fragguard-original-EXAMPLE.db-shm`.
+   Do not delete sidecars, discard nonempty WAL data, attach them to the
+   compacted copy, or mix unrelated WAL/SHM files.
+4. **Move/rename**, not copy, the verified
+   `compaction-candidates/fragguard-compact-EXAMPLE.db`
+   to `plugins/FragGuard/fragguard.db`. Keep the `.manifest`,
+   `.policy.properties`, `.snapshot.properties` and `.shutdown.properties`
+   files inside `compaction-candidates/`, unchanged.
+5. Start Paper normally. Before starting live logging, FragGuard checks
+   the original backup's SHA-256 and recorded sidecars, the installed
+   candidate's exact SHA-256/size, operation/policy/consent evidence, and
+   full read-only SQLite integrity, schema, indexes, history and undo digests.
+   It durably records **ACTIVATING** before opening the SQLite writer, so a
+   restart after a partial initialization revalidates the logical history
+   and new candidate WAL/SHM without mistaking them for the original's sidecars.
+   Maintenance clears **only if** SQLite initialization also succeeds.
+   On any mismatch Paper refuses to open FragGuard; stop the server and
+   preserve **all files** for recovery.
+
+Use the **actual** filename reported by FragGuard; `EXAMPLE` is not a valid
+stand-in. A partial rename, missing original backup, nonempty WAL at shutdown,
+wrong sidecar, corrupted candidate or missing receipt is never treated as a
+successful activation. The original SQLite files remain available for manual
+recovery, subject to schema compatibility: **an older plugin may not be able to
+read a database migrated by a newer release**. Never assume downgrade is safe.
+
+### Compaction storage and quota preflight (#164)
+
+Run **/fg diagnostics preflight** as an OP with `fragguard.admin`. The
+asynchronous read-only check reports active SQLite main/WAL/SHM sizes, page
+statistics, a conservative **new output** estimate, extra WAL growth,
+verification allowance, SQLite working files and a configurable safety margin.
+These are additional *free* bytes needed **on top of** the active database,
+WAL/SHM, existing backups and any reserved candidates. The calculated number
+is advisory, not a guarantee of a fixed upper bound while history is growing.
+
+Three capacity signals are shown separately: the **actual data filesystem's**
+reported usable bytes, the **hosting account/container quota** (unknown by
+default), and **SQLite's native temp free space** (unknown by default).
+Java's temp filesystem is displayed only as an advisory; it cannot prove where
+SQLite's native temporary pages are stored. If your host confirms current free
+capacity, set `maintenance-compaction-account-free-mib` and
+`maintenance-compaction-sqlite-temp-free-mib` in `config.yml`; use **-1**
+for unknown, **0** for known zero, and positive MiB for confirmed free bytes.
+The extra margin defaults to 256 MiB.
+
+Known shortages, suspicious storage paths, and any existing compaction
+candidates/reservation markers are always **REFUSED**. Unknown capacity causes
+`ACKNOWLEDGEMENT_REQUIRED`. After reading the warning, an OP can type
+**/fg diagnostics preflight acknowledge** within two minutes to explicitly
+accept *unknown* headroom and rerun the estimate; this never bypasses a known
+shortage. It **does not start a compaction**. The compaction worker must obtain
+a fresh approved preflight and reserve a unique internally named output under
+`plugins/FragGuard/compaction-candidates/` before starting any write.
+An atomic single-operation marker prevents two compactions on one data folder.
+Unverified/partial candidates and user backups are never automatically deleted.
+
+If SQLite later reports `SQLITE_FULL`, the compaction must stop without
+promoting a candidate. Keep the original main DB and matching WAL/SHM and
+preserve the partial output for operator inspection. Workload changes, hosting
+quotas, and SQLite temporary files make **all** preflight estimates imperfect.
+
+### Maintenance countdown and status display (#160)
+
+When an operator schedules maintenance, FragGuard shows a
+**configurable 10-minute countdown** with a shared yellow Minecraft Boss Bar.
+Its text displays the actual remaining `mm:ss` and the bar shrinks from full
+to empty against the persistent server-side deadline. Players joining partway
+through see the same remaining time. Server-wide chat reminders default to
+10, 5, 3, and 1 minutes, then 30 and 10 seconds. Late ticks cannot repeat
+warnings or dump multiple stale announcements.
+
+Staff with `fragguard.maintenance.bypass` (OP by default) will see persistent
+status Boss Bars once maintenance is ACTIVE: red while active/failed, blue during
+compaction or verification, green when a verified candidate requires restart.
+All text, colors, visibility and warning intervals can be changed in
+`config.yml`. The indicator is restored when authorized staff reconnect,
+and disappears on cancellation or plugin shutdown.
+
+### Maintenance player access (#161)
+
+At countdown expiry, FragGuard closes admission while it durably saves ACTIVE
+state. Regular players are kicked with a configurable message, and new logins
+are rejected at Paper's synchronous login stage. OPs and players explicitly
+granted `fragguard.maintenance.bypass` (default OP) may remain or reconnect;
+`fragguard.admin` is for commands and does **not** independently grant bypass.
+Online permissions are rechecked every second, so staff who lose bypass are
+removed. The same restrictions cover recovered ACTIVE, COMPACTING, VERIFYING,
+READY_TO_SWAP and FAILED states until cancellation or verified completion.
+
+Set `maintenance-kick-message` and `maintenance-login-denied-message` in
+`config.yml` to customize text. If maintenance metadata is unreadable, the
+server stops instead of silently admitting everyone. This is a **player access
+gate**, not a world freeze: environment ticks, redstone, other plugins and
+bypass staff can still change blocks, and logging continues.
+
+**Release gate:** all maintenance features are implemented but the 26.3-1.2.2
+release still requires final live Paper/server-owner sign-off. See the
+[release validation matrix, safe host-file-manager checklist and evidence log](docs/26.3-1.2.2-release-validation.md).
+The [Modrinth release text](docs/26.3-1.2.2-modrinth-draft.md) is a draft and
+must not be published before approval.
+
 ## What it tracks
 
 - Player block placement and destruction
@@ -42,13 +418,16 @@ Only server operators with `fragguard.admin` can use FragGuard administration co
 /fg rollback confirm <token>
 /fg undo <job-id>
 /fg status
+/fg diagnostics
+/fg diagnostics counts
+/fg diagnostics check
 ```
 
 `/fg` and `/fragguard` with no arguments open the in-game GUI. Existing subcommands remain available.
 
 ## In-game GUI
 
-The GUI uses ordinary server-side Minecraft inventories and requires no client mod or resource pack. The main menu provides access to history lookup, rollback setup/confirmation, undoable rollback jobs, storage status, and command help.
+The GUI uses ordinary server-side Minecraft inventories and requires no client mod or resource pack. The main menu provides access to history lookup, rollback setup/confirmation, undoable rollback jobs, storage status, database diagnostics, and command help.
 
 ### GUI lookup setup
 
@@ -548,7 +927,7 @@ them, and no world blocks or entities change.
 
 Requires Java 25. The Gradle 9.8.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-The current development version is `26.3-1.2.1`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
+The current development version is `26.3-1.2.2`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
 
 ```bash
 ./gradlew build
@@ -557,7 +936,7 @@ The current development version is `26.3-1.2.1`. Development targets Paper API `
 The plugin JAR is produced under:
 
 ```text
-build/libs/FragGuard-26.3-1.2.1.jar
+build/libs/FragGuard-26.3-1.2.2.jar
 ```
 
 Put the JAR in the server's `plugins` folder and restart Paper.

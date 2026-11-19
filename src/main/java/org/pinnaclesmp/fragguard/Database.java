@@ -70,6 +70,9 @@ final class Database {
     private final int batchSize;
     private final int pressureFlushThreshold;
     private final int queryTimeoutSeconds;
+    private final boolean configureNewIncrementalVacuum;
+    private final boolean incrementalReclaimEnabled;
+    private final int incrementalReclaimPageLimit;
 
     private volatile Thread worker;
     private volatile boolean running;
@@ -97,6 +100,15 @@ final class Database {
                 Math.max(1, plugin.getConfig().getInt("database-write-batch-size", 500)));
         this.pressureFlushThreshold = Math.min(batchSize, Math.max(1, (writeCapacity * 3) / 4));
         this.queryTimeoutSeconds = Math.max(1, plugin.getConfig().getInt("database-query-timeout-seconds", 15));
+        // Only brand-new SQLite files may have their format selected automatically.
+        // Existing databases, regardless of schema version, are never converted.
+        this.configureNewIncrementalVacuum = plugin.getConfig().getBoolean(
+                "database-new-auto-vacuum-incremental", false);
+        this.incrementalReclaimEnabled = plugin.getConfig().getBoolean(
+                "database-incremental-reclaim-enabled", false);
+        this.incrementalReclaimPageLimit = Math.max(1, Math.min(
+                IncrementalSqliteReclamation.MAX_PAGES_PER_PASS,
+                plugin.getConfig().getInt("database-incremental-reclaim-pages-per-pass", 16)));
         this.writeQueue = new ArrayBlockingQueue<>(writeCapacity);
         this.operationQueue = new ArrayBlockingQueue<>(operationCapacity);
     }
@@ -150,6 +162,21 @@ final class Database {
                     + " seconds while starting FragGuard's database worker (current step: "
                     + startupStage + ").", exception);
         }
+    }
+
+    /**
+     * After a VERIFIED activation has committed IDLE, safely catch up any
+     * world-name changes on the normal ordered SQLite worker. World rename
+     * updates must never run in the crash-recoverable ACTIVATING window.
+     */
+    CompletableFuture<Void> refreshWorldNamesAfterActivationAsync() {
+        List<WorldIdentity> loadedWorlds = plugin.getServer().getWorlds().stream()
+                .map(world -> new WorldIdentity(world.getUID().toString(), world.getName()))
+                .toList();
+        return submit(connection -> inTransaction(connection, () -> {
+            refreshRollbackWorldNames(connection, loadedWorlds);
+            return null;
+        }), false);
     }
 
     DatabaseShutdownSnapshot shutdown() {
@@ -471,6 +498,39 @@ final class Database {
             scheduleCleanupBatch(run);
             return run.finished;
         }
+    }
+
+    /**
+     * Runs only after a committed retention cleanup and only if explicitly
+     * enabled. Reclamation is serialized behind normal accepted block writes;
+     * maintenance errors cannot mark the history write worker unavailable.
+     */
+    CompletableFuture<IncrementalSqliteReclamation.Result> incrementalReclaimAfterCleanupAsync() {
+        if (!incrementalReclaimEnabled) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("Incremental reclamation is disabled"));
+        }
+        // Retention cleanup must not start a second overlapping maintenance
+        // task, and a shutdown must not enqueue more reclamation work.
+        if (!running) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("Database is shutting down"));
+        }
+        return submit(databaseConnection -> {
+            // A manual maintenance transition may occur AFTER queueing. Check
+            // again on the worker to avoid touching a source under verification.
+            if (plugin instanceof FragGuardPlugin fragGuard
+                    && fragGuard.maintenanceBlocksNewJobs()) {
+                throw new IllegalStateException("Manual maintenance started; "
+                        + "skipping optional incremental reclamation");
+            }
+            return IncrementalSqliteReclamation.reclaim(
+                    databaseConnection, incrementalReclaimPageLimit);
+        }, true, true);
+    }
+
+    boolean incrementalReclaimEnabled() {
+        return incrementalReclaimEnabled;
     }
 
     private void scheduleCleanupBatch(CleanupRun run) {
@@ -894,9 +954,15 @@ final class Database {
                                                            int centerX, int centerZ, int radius,
                                                            long targetTimestamp, long snapshotTimestamp,
                                                            boolean force, List<RollbackTarget> targets) {
+        try {
+            rejectNewJobsDuringMaintenance();
+        } catch (IllegalStateException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
         String worldUuid = resolveWorldUuid(worldName);
         List<RollbackTarget> savedTargets = List.copyOf(targets);
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            rejectNewJobsDuringMaintenance(); // Recheck after queued writes and earlier work.
             rejectOverlappingChunks(databaseConnection,
                     RollbackJobChunk.radius(worldUuid, centerX, centerZ, radius), -1L);
             long now = System.currentTimeMillis();
@@ -968,6 +1034,11 @@ final class Database {
     CompletableFuture<RollbackJob> createPlayerRollbackJobAsync(
             String operatorUuid, String operatorName, PlayerRollbackPlan plan,
             String worldScopeName, boolean force) {
+        try {
+            rejectNewJobsDuringMaintenance();
+        } catch (IllegalStateException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
         List<RollbackTarget> targets = List.copyOf(plan.targets());
         if (targets.isEmpty()) {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
@@ -1001,6 +1072,7 @@ final class Database {
         }
         int affectedWorlds = (int) reservations.stream().map(RollbackJobChunk::worldUuid).distinct().count();
         return submit(db -> inTransaction(db, () -> {
+            rejectNewJobsDuringMaintenance(); // Reject if maintenance activated while queued.
             rejectOverlappingChunks(db, reservations, -1L);
             // Do not persist an unsafe/stale plan even if another operator
             // changed the world after the original preview was displayed.
@@ -1331,7 +1403,13 @@ final class Database {
     }
 
     CompletableFuture<RollbackJob> beginUndoAsync(long jobId) {
+        try {
+            rejectNewJobsDuringMaintenance();
+        } catch (IllegalStateException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
         return submit(databaseConnection -> inTransaction(databaseConnection, () -> {
+            rejectNewJobsDuringMaintenance(); // Do not begin a new undo after activation.
             RollbackJob job = loadJob(databaseConnection, jobId);
             if (!job.status().equals("COMPLETED") && !job.status().equals("FAILED")) {
                 throw new IllegalStateException("Rollback job #" + jobId + " cannot be undone while it is " + job.status() + ".");
@@ -1347,15 +1425,26 @@ final class Database {
         }), false);
     }
 
+    private void rejectNewJobsDuringMaintenance() {
+        if (plugin instanceof FragGuardPlugin fragGuard && fragGuard.maintenanceBlocksNewJobs()) {
+            throw new IllegalStateException("FragGuard maintenance is active. New rollback and undo jobs "
+                    + "are disabled; existing accepted jobs may continue or recover.");
+        }
+    }
+
     private void runWorker(CompletableFuture<Void> started, List<WorldIdentity> loadedWorlds) {
         startupStage = "opening SQLite database";
+        // SQLite auto_vacuum format must be configured before any table exists.
+        // The existence check precedes the connection opening (which creates
+        // a file if absent); never treat an existing DB as eligible for conversion.
+        boolean brandNewDatabase = !databaseFile.exists();
         try (Connection databaseConnection = DriverManager.getConnection(jdbcUrl)) {
             connection = databaseConnection;
             startupStage = "verifying active SQLite JDBC runtime";
             SqliteDriverProvenance.log(databaseConnection, plugin.getLogger()::info,
                     plugin.getLogger()::warning);
             startupStage = "initializing SQLite schema";
-            initializeSchema(databaseConnection, loadedWorlds);
+            initializeSchema(databaseConnection, loadedWorlds, brandNewDatabase);
             startupStage = "ready";
             started.complete(null);
 
@@ -1443,7 +1532,8 @@ final class Database {
         }
     }
 
-    private void initializeSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds) throws SQLException {
+    private void initializeSchema(Connection databaseConnection, List<WorldIdentity> loadedWorlds,
+                                  boolean brandNewDatabase) throws SQLException {
         try (Statement statement = databaseConnection.createStatement()) {
             statement.execute("PRAGMA busy_timeout=5000");
         }
@@ -1457,6 +1547,18 @@ final class Database {
                 + "or overwrite history. Use a compatible newer FG build for forward "
                 + "recovery, or restore an independently verified matching-schema "
                 + "backup only if one actually exists.");
+        }
+
+        if (brandNewDatabase && configureNewIncrementalVacuum) {
+            // New DB only: no tables exist yet, so mode selection needs no
+            // VACUUM rewrite. This remains opt-in and is independent of the
+            // periodic incremental-reclamation switch.
+            IncrementalSqliteReclamation.configureNewDatabase(databaseConnection);
+            plugin.getLogger().info("New FragGuard database configured with SQLite "
+                    + "auto_vacuum=INCREMENTAL; reclamation still requires opt-in.");
+        } else if (configureNewIncrementalVacuum && !brandNewDatabase) {
+            plugin.getLogger().info("Existing SQLite database was not converted to incremental "
+                    + "auto-vacuum. No startup VACUUM or format rewrite was attempted.");
         }
 
         boolean existingSchema = schemaVersion < SCHEMA_VERSION && hasExistingSchema(databaseConnection);
@@ -1546,10 +1648,24 @@ final class Database {
                     + " to version " + schemaVersion + ".");
         }
 
-        inTransaction(databaseConnection, () -> {
-            refreshRollbackWorldNames(databaseConnection, loadedWorlds);
-            return null;
-        });
+        // #168: ACTIVATING is persisted BEFORE Database.init() can switch
+        // journal_mode to WAL. World rename refreshes are legitimate writes,
+        // but would change verified rollback-job/undo row hashes if startup
+        // crashes before the activation reset commits. Defer ONLY during this
+        // activation stage; queue the refresh after the state is durably IDLE.
+        boolean activating = plugin instanceof FragGuardPlugin fragGuard
+                && fragGuard.getMaintenanceCoordinator() != null
+                && fragGuard.getMaintenanceCoordinator().snapshot().phase()
+                        == MaintenancePhase.ACTIVATING;
+        if (!activating) {
+            inTransaction(databaseConnection, () -> {
+                refreshRollbackWorldNames(databaseConnection, loadedWorlds);
+                return null;
+            });
+        } else {
+            plugin.getLogger().info("Deferring rollback world-name refresh until "
+                    + "compacted database activation is durably complete.");
+        }
         if (startingVersion < SCHEMA_VERSION && migrationBackup != null) {
             pruneVerifiedMigrationBackups();
         }

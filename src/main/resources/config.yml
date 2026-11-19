@@ -1,3 +1,31 @@
+# Player notifications for upcoming FragGuard database maintenance.
+# A trusted OP can schedule the countdown through /fg maintenance start.
+# These settings do NOT automatically start maintenance or run compaction.
+maintenance-countdown-seconds: 600
+# Chat warnings in seconds remaining (duplicates and out-of-range values ignored).
+maintenance-warning-seconds: [600, 300, 180, 60, 30, 10]
+# Configurable Minecraft Boss Bars: supported colors include YELLOW, RED, BLUE, GREEN.
+maintenance-countdown-bossbar-enabled: true
+maintenance-staff-bossbar-enabled: true
+maintenance-countdown-bossbar-color: YELLOW
+maintenance-active-bossbar-color: RED
+maintenance-compacting-bossbar-color: BLUE
+maintenance-ready-bossbar-color: GREEN
+maintenance-countdown-bossbar-title: "&eMaintenance Begins in %time%"
+maintenance-active-bossbar-title: "&cSERVER MAINTENANCE ACTIVE"
+maintenance-compacting-bossbar-title: "&bDATABASE COMPACTION IN PROGRESS"
+maintenance-verifying-bossbar-title: "&bVERIFYING COMPACTED DATABASE"
+maintenance-ready-bossbar-title: "&aDATABASE READY - RESTART REQUIRED"
+maintenance-failed-bossbar-title: "&cMAINTENANCE ERROR - STAFF REVIEW REQUIRED"
+# %time% displays actual remaining mm:ss; traditional & color formatting works.
+maintenance-warning-message: "&eServer maintenance begins in &f%time%&e. Please finish up."
+maintenance-start-message: "&cServer maintenance has started."
+maintenance-postponed-message: "&eMaintenance could not start safely and has been cancelled."
+# Message when a regular player is kicked at maintenance activation, with & color formatting.
+maintenance-kick-message: "&cMaintenance has started. Please return when the server reopens."
+# Message when a regular player tries to reconnect during active maintenance.
+maintenance-login-denied-message: "&cThe server is undergoing database maintenance. Please return later."
+
 # How long block logs are kept before automatic deletion.
 retention-days: 30
 
@@ -11,6 +39,20 @@ database-retention-cleanup-batch-size: 500
 # If expired history remains, it is processed at the next scheduled interval.
 database-retention-cleanup-max-batches-per-run: 2000
 
+# Optional incremental SQLite page reclamation (#171). Both switches are OFF by default.
+# Applies auto_vacuum=INCREMENTAL ONLY when fragguard.db does not exist yet.
+# Existing databases are never converted, migrated or VACUUMed to change modes.
+# Enabling this alone does not reclaim anything until the second switch is enabled.
+database-new-auto-vacuum-incremental: false
+# After successful retention cleanup, attempt at most one small page-reclaim operation
+# on the ordered SQLite writer. Only compatible auto_vacuum=INCREMENTAL DBs qualify.
+# Unsupported modes (NONE/FULL) are skipped; no in-place full VACUUM is run.
+database-incremental-reclaim-enabled: false
+# Cap pages per operation to prevent long pauses; hard maximum 128, default 16.
+# SQLite may reclaim fewer or zero pages. WAL file size will not shrink immediately
+# or necessarily match page-count reductions; /fg diagnostics shows the actual mode.
+database-incremental-reclaim-pages-per-pass: 16
+
 # How long completed/undone rollback jobs remain available before their saved snapshots are deleted.
 # Recoverable failed jobs are kept so /fg undo can still finish them.
 rollback-job-retention-days: 30
@@ -20,6 +62,25 @@ database-write-queue-capacity: 20000
 database-operation-queue-capacity: 256
 database-write-batch-size: 500
 database-query-timeout-seconds: 15
+# Separate read-only diagnostics have their own limits and never occupy the write worker.
+# Exact counts may scan tens of millions of records. A full quick_check may scan every DB page.
+diagnostics-query-timeout-seconds: 15
+diagnostics-quick-check-timeout-seconds: 45
+# Opt-in full-history/BLOB scan: 1-21600 seconds, default one hour.
+# Incomplete/interrupted scans are never trusted as verification.
+diagnostics-deep-timeout-seconds: 3600
+# Optional, read-only page/free-list monitoring (#170). OFF by default.
+# Runs a bounded overview in the background; never starts VACUUM INTO.
+# Alerts appear only to online OPs with fragguard.admin and in the console.
+database-reclaimable-monitor-enabled: false
+database-reclaimable-monitor-interval-minutes: 60
+# Both estimated reusable free-list space AND percentage must reach threshold.
+# WAL file size and file-growth trends are displayed separately: neither
+# represents guaranteed compacted savings.
+database-reclaimable-warning-mib: 1024
+database-reclaimable-warning-percent: 10.0
+# Minimum time between repeat admin warnings while the threshold is met.
+database-reclaimable-warning-cooldown-minutes: 1440
 # Slow startup work (including migration backups/schema maintenance) reports progress instead of failing at 30s.
 database-startup-warning-seconds: 30
 # 0 disables the hard startup cutoff so large databases can finish initializing safely.
@@ -41,6 +102,21 @@ database-migration-sqlite-temp-free-mib: 0
 # Auto-pruning only applies to backups this version has explicitly created and marked as verified;
 # older/unmarked backups are never deleted automatically. At least one verified full migration backup is retained.
 database-migration-backup-retention-count: 1
+
+# Compaction capacity preflight (#164), separate from schema migration above.
+# Estimated free headroom includes a new candidate, WAL growth, SQLite working
+# space, verification allowance, and margin; the original and backups remain intact.
+# -1 = UNKNOWN (default), 0 = confirmed zero free, positive = operator-confirmed
+# CURRENT FREE MiB from your host/account or SQLite's actual native temp mount.
+# These are NOT total plan quotas or Java FileStore / java.io.tmpdir estimates.
+# Stale values can change before/during VACUUM INTO; SQLITE_FULL remains possible.
+maintenance-compaction-account-free-mib: -1
+maintenance-compaction-sqlite-temp-free-mib: -1
+maintenance-compaction-safety-mib: 256
+# Unknown values require an explicit per-request admin acknowledgement in-game.
+# Acknowledgement can NEVER bypass known insufficient capacity, unsafe paths,
+# existing candidates, or a stale preflight. No automatic candidate cleanup.
+
 database-shutdown-timeout-seconds: 15
 # Extra grace period after an active SQLite statement is cancelled during shutdown.
 database-shutdown-cancel-timeout-seconds: 5
