@@ -2244,6 +2244,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
         String acknowledgement = state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
                 ? CompactionReplacementPolicy.SNAPSHOT_ACKNOWLEDGEMENT : "";
+        if (state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT) {
+            MaintenanceChatOutput.title(player::sendMessage, "Snapshot Fingerprint Precheck");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "Hashing original DB and verified copy while Paper is ONLINE.");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "This may take several minutes for large databases.");
+            MaintenanceChatOutput.danger(player::sendMessage,
+                    "DO NOT STOP Paper until Snapshot approval succeeds.");
+            MaintenanceChatOutput.notice(player::sendMessage,
+                    "Any SQLite write after approval invalidates the shutdown receipt.");
+        }
         if (state.policy() == MaintenancePolicy.STRICT) {
             MaintenanceChatOutput.title(player::sendMessage, "STRICT Full Precheck Started");
             MaintenanceChatOutput.notice(player::sendMessage,
@@ -2268,9 +2279,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     MaintenanceChatOutput.title(player::sendMessage, "Replacement Policy");
                     if (decision.approved()) {
                         MaintenanceChatOutput.value(player::sendMessage,
-                                "Snapshot policy", "APPROVED", NamedTextColor.YELLOW);
+                                "Snapshot policy", "APPROVED; file fingerprints completed",
+                                NamedTextColor.YELLOW);
                         MaintenanceChatOutput.danger(player::sendMessage,
                                 "Post-copy history, rollback/undo and retention CAN BE LOST.");
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Do not change FragGuard history after this approval.");
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "A later SQLite write prevents the clean shutdown receipt.");
                         MaintenanceChatOutput.danger(player::sendMessage,
                                 "Minecraft worlds are NOT rolled back.");
                         MaintenanceChatOutput.notice(player::sendMessage,
