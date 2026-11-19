@@ -283,13 +283,14 @@ public final class FragGuardPlugin extends JavaPlugin {
         // any SQLite row changes. Do not start stopping the writer until this
         // small pre-stop gate is resolved. If it fails, finish ordinary safe
         // shutdown but never issue a compaction activation receipt.
-        boolean strictSourceUnchangedBeforeStop = false;
-        if (replacementPolicy != null && replacementPolicy.hasPendingStrict()) {
+        boolean sourceUnchangedBeforeStop = false;
+        if (replacementPolicy != null && (replacementPolicy.hasPendingStrict()
+                || replacementPolicy.hasPendingSnapshotProof())) {
             try {
-                strictSourceUnchangedBeforeStop = replacementPolicy
+                sourceUnchangedBeforeStop = replacementPolicy
                         .validateBeforeStoppingWriter().get(3L, TimeUnit.SECONDS);
             } catch (Exception changed) {
-                getLogger().log(Level.SEVERE, "STRICT source changed since online precheck, "
+                getLogger().log(Level.SEVERE, "Source changed since online replacement proof, "
                         + "or a safe pre-stop attestation failed. No file swap is permitted.", changed);
             }
         }
@@ -338,7 +339,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                                 // A write accepted/finished after the pre-stop
                                 // gate invalidates the online proof even if the
                                 // final SQLite checkpoint itself is clean.
-                                if (!strictSourceUnchangedBeforeStop
+                                if (!sourceUnchangedBeforeStop
                                         || report.queuedWritesAtStart() != 0
                                         || report.drainedWrites() != 0) {
                                     throw new IllegalStateException("STRICT pre-stop proof "
@@ -355,10 +356,25 @@ public final class FragGuardPlugin extends JavaPlugin {
                                         + "complete online comparison; policy " + approved.status());
                             }
                             if (maintenance.snapshot().phase() == MaintenancePhase.READY_TO_SWAP) {
-                                if (maintenance.snapshot().policy() == MaintenancePolicy.STRICT
-                                        && strictProof == null) {
-                                    throw new IllegalStateException("No in-process STRICT proof "
-                                            + "available; refusing slow/unauthenticated shutdown receipt");
+                                if (maintenance.snapshot().policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT) {
+                                    // Approved Snapshot loss consent is not permission
+                                    // to hash 30GiB while Paper's host is killing it.
+                                    if (!sourceUnchangedBeforeStop
+                                            || report.queuedWritesAtStart() != 0
+                                            || report.drainedWrites() != 0) {
+                                        throw new IllegalStateException("Snapshot pre-stop fingerprint "
+                                                + "failed or writes drained during shutdown. "
+                                                + "Preserve source and candidate: no receipt.");
+                                    }
+                                    strictProof = replacementPolicy.finalizeSnapshotAfterShutdown(
+                                            report.workerStopped(), report.walCheckpointCompleted(),
+                                            report.clean()).get(8L, TimeUnit.SECONDS);
+                                }
+                                if (strictProof == null
+                                        || strictProof.policy() != maintenance.snapshot().policy()) {
+                                    throw new IllegalStateException("No in-process approved "
+                                            + "replacement fingerprint proof for this policy. "
+                                            + "Refusing slow shutdown hashing and file replacement");
                                 }
                                 var receipt = CompactionActivation.recordCleanShutdown(
                                         getDataFolder().toPath(), maintenance.snapshot(), true,
