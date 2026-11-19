@@ -66,10 +66,10 @@ final class CompactionActivation {
     }
 
     /**
-     * #198: STRICT may carry a process-bound, fully verified checksum proof
-     * from its online comparison. It is only produced after the writer stopped
-     * cleanly, the checkpoint succeeded, and PRAGMA data_version + file stamps
-     * remained identical. Do NOT rehash 30GiB during the host's stop grace.
+     * #198: STRICT and Snapshot carry process-bound, fully fingerprinted
+     * source/candidate evidence from online prechecks. They are issued only
+     * after a clean stopped writer, checkpoint, and unchanged SQLite write
+     * version/file identities. Do NOT rehash 30GiB in the host's stop grace.
      * Offline activation independently rechecks every SHA-256 before opening
      * FragGuard's next writer.
      */
@@ -117,8 +117,8 @@ final class CompactionActivation {
                         CompactionReplacementPolicy.stamp(original))
                     || !strictProof.candidateStamp().equals(
                         CompactionReplacementPolicy.stamp(candidate)))) {
-            throw new IOException("STRICT source or compacted candidate changed since "
-                    + "its full online comparison; no shutdown receipt created");
+            throw new IOException("Source or candidate changed since online fingerprinting; "
+                    + "no shutdown receipt created");
         }
         Path wal = root.resolve("fragguard.db-wal");
         if (Files.exists(wal, LinkOption.NOFOLLOW_LINKS)
@@ -135,8 +135,8 @@ final class CompactionActivation {
         if (strictProof != null
                 && (!sourceHash.matches("[a-f0-9]{64}")
                     || !candidateHash.matches("[a-f0-9]{64}")
-                    || state.policy() != MaintenancePolicy.STRICT)) {
-            throw new IOException("Missing authenticated online STRICT fingerprints");
+                    || state.policy() != strictProof.policy())) {
+            throw new IOException("Missing or mismatched authenticated online file fingerprints");
         }
         if (!candidateHash.equals(approval.verified().getProperty("candidate_sha256"))) {
             throw new IOException("Compaction candidate changed after full verification");
