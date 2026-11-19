@@ -196,7 +196,13 @@ It never bypasses storage preflight, snapshot policy, or saved database safety.
   explicitly accept that **all FragGuard history, rollback/undo and retention
   changes after the actual SQLite snapshot may be lost**. Minecraft worlds
   do **not** roll back. Confirmation is required again even if scheduling
-  selected Snapshot Mode.
+  selected Snapshot Mode. The plugin computes **both full SQLite file SHA-256
+  fingerprints asynchronously before the server stops**. Wait for confirmed
+  Snapshot approval, then stop Paper without making any further database
+  changes: later writes invalidate the source-backup proof and prohibit a
+  shutdown receipt. The short shutdown window performs no multi-GiB hashing.
+  Changes after the VACUUM snapshot but **before Snapshot approval** are
+  allowed and included in the preserved original backup.
 - `/fg maintenance status`, `/fg maintenance cancel`, and
   `/fg maintenance instructions`: inspect stage/progress, cancel eligible
   operations without deleting the original, or view the exact stopped-server
@@ -246,10 +252,13 @@ WAL checkpoint must leave the source/candidate identities unchanged. SQLite
 may itself increment `data_version` on a checkpoint even without history
 changes, so that version is checked *before* checkpointing. The host's short
 stop grace is not used for expensive scans or large file hashes. The next startup still rechecks
-the original/candidate fingerprints and complete activation evidence. Snapshot mode must
-have the exact administrator consent acknowledging that **all FragGuard history,
-undo/rollback jobs and retention updates after the SQLite snapshot may be
-lost**. Minecraft worlds are **never** rolled back along with a database.
+the original/candidate fingerprints and complete activation evidence. Snapshot
+mode likewise computes full source/candidate fingerprints online *before*
+stopping Paper; subsequent changes refuse the receipt, and a restarted process
+cannot reuse an earlier in-memory proof. Snapshot mode still requires exact
+administrator consent acknowledging that **all FragGuard history, undo/rollback
+jobs and retention updates after the SQLite snapshot may be lost**. Minecraft
+worlds are **never** rolled back along with a database.
 
 **Keep Paper stopped for the entire file-manager operation.** When the plugin
 finishes a clean shutdown, its console prints a *per-operation* original-backup
