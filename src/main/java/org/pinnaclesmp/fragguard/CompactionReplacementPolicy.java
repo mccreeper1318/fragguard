@@ -89,12 +89,16 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     // Transient, process-bound proof only: never recover it after a crash or reload.
     // The read-only watcher sees commits made by the separate live SQLite writer.
     private StrictProbe pendingStrictProof;
+    private StrictProbe pendingSnapshotProof;
     private volatile boolean strictValidatedBeforeStop;
+    private volatile boolean snapshotValidatedBeforeStop;
     private volatile StrictFinalProof finalizedStrictProof;
+    private volatile StrictFinalProof finalizedSnapshotProof;
     private volatile boolean closed;
 
     record StrictFinalProof(String originalSha256, String candidateSha256,
-                            FileStamp sourceStamp, FileStamp candidateStamp) { }
+                            FileStamp sourceStamp, FileStamp candidateStamp,
+                            MaintenancePolicy policy) { }
     record FileStamp(long bytes, java.nio.file.attribute.FileTime modified,
                      Object fileKey) { }
     private record StrictProbe(String operationId, Connection watcher, long dataVersion,
@@ -142,18 +146,39 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 }
                 long now = System.currentTimeMillis();
                 if (now < upper) throw new IOException("Consent cannot predate completed snapshot");
-                Properties approval = policyProperties(state, verified, "APPROVED");
-                approval.setProperty("consent_at_millis", Long.toString(now));
-                approval.setProperty("consent_operator_uuid", operator.toString());
-                approval.setProperty("consent_statement_sha256",
-                        digestText(SNAPSHOT_ACKNOWLEDGEMENT));
-                approval.setProperty("warning", "World is not rolled back; post-snapshot "
-                        + "history and undo data may be lost");
-                Path target = approvedFile(directory, state);
-                persist(target, approval);
-                await(maintenance.markReady());
-                return new Decision(state.policy(), "APPROVED", target, state.operationId(),
-                        lower, upper, now, operator.toString(), SNAPSHOT_WARNING);
+                // Snapshot mode allows changes since the VACUUM snapshot, but
+                // its final source-backup fingerprint must still be exact. Do
+                // the potentially 30GiB+ file work BEFORE Paper is stopping.
+                // A later SQLite commit invalidates this in-memory proof.
+                if (pendingSnapshotProof != null) {
+                    throw new IOException("Snapshot source fingerprint already prepared");
+                }
+                StrictProbe probe = runOnlineSnapshotPrecheck(state, verified);
+                try {
+                    MaintenanceSnapshot current = maintenance.snapshot();
+                    if (current.phase() != MaintenancePhase.VERIFYING
+                            || !current.operationId().equals(state.operationId())) {
+                        throw new IOException("Snapshot maintenance was cancelled during fingerprinting");
+                    }
+                    Properties approval = policyProperties(state, verified, "APPROVED");
+                    approval.setProperty("consent_at_millis", Long.toString(now));
+                    approval.setProperty("consent_operator_uuid", operator.toString());
+                    approval.setProperty("consent_statement_sha256",
+                            digestText(SNAPSHOT_ACKNOWLEDGEMENT));
+                    approval.setProperty("warning", "World is not rolled back; post-snapshot "
+                            + "history and undo data may be lost");
+                    Path target = approvedFile(directory, state);
+                    persist(target, approval);
+                    pendingSnapshotProof = probe;
+                    snapshotValidatedBeforeStop = false;
+                    await(maintenance.markReady());
+                    return new Decision(state.policy(), "APPROVED", target, state.operationId(),
+                            lower, upper, now, operator.toString(), SNAPSHOT_WARNING);
+                } catch (Throwable failure) {
+                    if (pendingSnapshotProof == probe) pendingSnapshotProof = null;
+                    probe.watcher().close();
+                    throw failure;
+                }
             }
             if (acknowledgement != null && !acknowledgement.isBlank()) {
                 throw new IllegalArgumentException("STRICT does not accept snapshot-loss consent");
@@ -207,7 +232,10 @@ final class CompactionReplacementPolicy implements AutoCloseable {
 
     private void releaseStrictProofIfSuperseded() throws java.sql.SQLException {
         StrictProbe probe = pendingStrictProof;
-        if (probe == null) return;
+        if (probe == null) {
+            releaseSnapshotProofIfSuperseded();
+            return;
+        }
         MaintenanceSnapshot current = maintenance.snapshot();
         if (current.phase() == MaintenancePhase.VERIFYING
                 && current.operationId().equals(probe.operationId())) {
@@ -216,6 +244,22 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         pendingStrictProof = null;
         strictValidatedBeforeStop = false;
         finalizedStrictProof = null;
+        probe.watcher().close();
+        releaseSnapshotProofIfSuperseded();
+    }
+
+    private void releaseSnapshotProofIfSuperseded() throws java.sql.SQLException {
+        StrictProbe probe = pendingSnapshotProof;
+        if (probe == null) return;
+        MaintenanceSnapshot current = maintenance.snapshot();
+        if (current.phase() == MaintenancePhase.READY_TO_SWAP
+                && current.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                && current.operationId().equals(probe.operationId())) {
+            return;
+        }
+        pendingSnapshotProof = null;
+        snapshotValidatedBeforeStop = false;
+        finalizedSnapshotProof = null;
         probe.watcher().close();
     }
 
@@ -232,8 +276,14 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     CompletableFuture<Boolean> validateBeforeStoppingWriter() {
         return run(() -> {
             strictValidatedBeforeStop = false;
-            MaintenanceSnapshot state = verifiedState();
-            StrictProbe probe = pendingStrictProof;
+            snapshotValidatedBeforeStop = false;
+            MaintenanceSnapshot state = maintenance.snapshot();
+            boolean snapshot = state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                    && state.phase() == MaintenancePhase.READY_TO_SWAP;
+            if (!snapshot && state.phase() != MaintenancePhase.VERIFYING) {
+                throw new IOException("No pending replacement pre-stop proof");
+            }
+            StrictProbe probe = snapshot ? pendingSnapshotProof : pendingStrictProof;
             if (probe == null || !state.operationId().equals(probe.operationId())) {
                 throw new IOException("STRICT online precheck not complete in this process");
             }
@@ -244,8 +294,50 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 throw new IOException("SQLite source or compacted copy changed since the "
                         + "online STRICT comparison. Stop without replacing files.");
             }
-            strictValidatedBeforeStop = true;
+            if (snapshot) snapshotValidatedBeforeStop = true;
+            else strictValidatedBeforeStop = true;
             return true;
+        });
+    }
+
+    boolean hasPendingSnapshotProof() {
+        MaintenanceSnapshot state = maintenance.snapshot();
+        return state.phase() == MaintenancePhase.READY_TO_SWAP
+                && state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                && pendingSnapshotProof != null
+                && state.operationId().equals(pendingSnapshotProof.operationId());
+    }
+
+    CompletableFuture<StrictFinalProof> finalizeSnapshotAfterShutdown(boolean writerStopped,
+            boolean walCheckpointCompleted, boolean allWritesDrained) {
+        return run(() -> {
+            MaintenanceSnapshot state = maintenance.snapshot();
+            StrictProbe probe = pendingSnapshotProof;
+            if (!writerStopped || !walCheckpointCompleted || !allWritesDrained
+                    || !snapshotValidatedBeforeStop || !hasPendingSnapshotProof()
+                    || probe == null) {
+                throw new IOException("No valid in-process Snapshot proof and clean stopped writer; "
+                        + "original preserved, no shutdown receipt");
+            }
+            if (walHasFrames() || !stamp(source).equals(probe.sourceStamp())
+                    || !stamp(candidatePath(state)).equals(probe.candidateStamp())) {
+                throw new IOException("Source or candidate changed since Snapshot fingerprint; "
+                        + "no shutdown receipt. Changes after the snapshot are accepted only "
+                        + "through the recorded consent, not after source-backup fingerprinting");
+            }
+            ApprovedEvidence approved = approvedEvidence(root, state);
+            if (!probe.candidateSha256().equals(
+                    approved.verified().getProperty("candidate_sha256"))
+                    || !OnlineDatabaseCompaction.sourceIdentity(source).equals(
+                    approved.verified().getProperty("source_identity_sha256"))) {
+                throw new IOException("Snapshot source/candidate provenance changed at shutdown");
+            }
+            probe.watcher().close();
+            pendingSnapshotProof = null;
+            finalizedSnapshotProof = new StrictFinalProof(probe.sourceSha256(),
+                    probe.candidateSha256(), probe.sourceStamp(), probe.candidateStamp(),
+                    MaintenancePolicy.MAINTENANCE_SNAPSHOT);
+            return finalizedSnapshotProof;
         });
     }
 
@@ -308,7 +400,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             await(maintenance.markReady());
             finalizedStrictProof = new StrictFinalProof(
                     probe.sourceSha256(), probe.candidateSha256(),
-                    probe.sourceStamp(), probe.candidateStamp());
+                    probe.sourceStamp(), probe.candidateStamp(), MaintenancePolicy.STRICT);
             return new Decision(state.policy(), "APPROVED", target,
                     state.operationId(), number(verified, "invoked_at_millis"),
                     number(verified, "completed_at_millis"), 0, "", STRICT_WARNING);
@@ -321,6 +413,44 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             throw new IllegalStateException("No confirmed STRICT shutdown proof");
         }
         return proof;
+    }
+
+    StrictFinalProof finalizedSnapshotProof() {
+        StrictFinalProof proof = finalizedSnapshotProof;
+        if (proof == null || maintenance.snapshot().phase() != MaintenancePhase.READY_TO_SWAP) {
+            throw new IllegalStateException("No confirmed Snapshot shutdown proof");
+        }
+        return proof;
+    }
+
+    /**
+     * Compute byte-exact source/backup provenance and candidate SHA in the
+     * online worker. Snapshot consent still permits post-copy history loss,
+     * but after this fingerprint completes, even Snapshot mode rejects later
+     * writes to prevent a forged/incorrect original-backup receipt.
+     */
+    private StrictProbe runOnlineSnapshotPrecheck(MaintenanceSnapshot state,
+                                                  Properties verified) throws Exception {
+        checkpointForPrecheck();
+        Connection watcher = DriverManager.getConnection("jdbc:sqlite:"
+                + source.toUri() + "?mode=ro");
+        try {
+            long baseline = readDataVersion(watcher);
+            FileStamp initial = stamp(source);
+            String originalHash = OnlineDatabaseCompaction.fileSha256(source);
+            checkCandidate(state, verified); // rehash verified copy, pre-shutdown
+            FileStamp candidateStamp = stamp(candidatePath(state));
+            if (baseline != readDataVersion(watcher)
+                    || !initial.equals(stamp(source)) || walHasFrames()) {
+                throw new IOException("Source changed while computing Snapshot backup fingerprint; "
+                        + "no approval. Wait for a quiet period and retry with a new candidate.");
+            }
+            return new StrictProbe(state.operationId(), watcher, baseline, initial,
+                    candidateStamp, originalHash, verified.getProperty("candidate_sha256"));
+        } catch (Throwable failure) {
+            watcher.close();
+            throw failure;
+        }
     }
 
     /**
@@ -502,15 +632,14 @@ final class CompactionReplacementPolicy implements AutoCloseable {
     }
 
     /**
-     * A STRICT clean shutdown may use the in-process write-version watcher +
-     * cached, fully scanned fingerprints. Only the authenticated receipt path
-     * may defer another full source hash to offline activation/startup.
+     * A clean shutdown with a process-bound full source/candidate fingerprint
+     * may defer the expensive rehash to offline activation/startup. Both STRICT
+     * and explicitly consented Snapshot still require valid approved policy.
      */
     static void requireApprovedForShutdownReceipt(Path root, MaintenanceSnapshot state)
             throws IOException {
-        if (state.policy() != MaintenancePolicy.STRICT
-                || state.phase() != MaintenancePhase.READY_TO_SWAP) {
-            throw new IOException("Fast receipt proof only allowed for sealed STRICT shutdown");
+        if (state.phase() != MaintenancePhase.READY_TO_SWAP) {
+            throw new IOException("Fast receipt proof requires approved READY shutdown");
         }
         requireApproved(root, state, false);
     }
@@ -825,15 +954,15 @@ final class CompactionReplacementPolicy implements AutoCloseable {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted during policy shutdown", ex);
         } finally {
-            if (pendingStrictProof != null) {
-                try {
-                    pendingStrictProof.watcher().close();
-                } catch (java.sql.SQLException failure) {
-                    throw new IllegalStateException("Could not close STRICT data-version watcher",
-                            failure);
-                } finally {
-                    pendingStrictProof = null;
-                }
+            try {
+                if (pendingStrictProof != null) pendingStrictProof.watcher().close();
+                if (pendingSnapshotProof != null) pendingSnapshotProof.watcher().close();
+            } catch (java.sql.SQLException failure) {
+                throw new IllegalStateException("Could not close replacement proof watcher",
+                        failure);
+            } finally {
+                pendingStrictProof = null;
+                pendingSnapshotProof = null;
             }
         }
     }
