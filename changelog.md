@@ -25,7 +25,7 @@
 - Updated Gradle wrapper to 9.9.1 (#175, #193).
 
 ### Fixed
-- Fixed STRICT compaction approval timing by moving full validation before shutdown and guarding the final clean-stop receipt against later writes (#198).
+- Fixed compaction approval timing by moving STRICT validation and Snapshot file hashes before shutdown, with clean-stop and late-write protections (#198).
 - Fixed cancelled database scans blocking future diagnostics (#176).
 - Fixed completed database scans briefly blocking immediate follow-up diagnostics (#176).
 - Made maintenance state updates durable across host crashes (#173).
