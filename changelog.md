@@ -21,8 +21,8 @@
 
 - Improved maintenance and diagnostics chat readability with clear warnings, concise summaries and full-detail commands (#197).
 ### Changed
-- Updated Java setup action to 6.2.0 (#174).
-- Updated Gradle wrapper to 9.9.1 (#175, #193).
+- Updated Java setup action to 6.3.0 (#174, #201).
+- Updated Gradle wrapper to 9.9.2 (#175, #193, #202).
 
 ### Fixed
 - Fixed compaction approval timing by moving STRICT validation and Snapshot file hashes before shutdown, with clean-stop and late-write protections (#198).
