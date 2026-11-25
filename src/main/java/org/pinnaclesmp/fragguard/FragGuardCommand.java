@@ -769,7 +769,14 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
 
     void resumeInterruptedJobs() {
         database.loadResumableJobsAsync().whenComplete((jobs, throwable) -> onServerThread(() -> {
+            // A new maintenance transition can happen while the async read
+            // is running. Re-defer instead of starting unaudited world edits.
+            if (plugin.maintenanceBlocksNewJobs()) {
+                plugin.deferRollbackRecovery();
+                return;
+            }
             if (throwable != null) {
+                plugin.deferRollbackRecovery();
                 plugin.getLogger().log(Level.SEVERE, "Could not recover interrupted FragGuard rollback jobs", unwrap(throwable));
                 return;
             }
@@ -2286,6 +2293,10 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 });
             }
             plugin.completeMaintenanceCancellation();
+            // Restricted startup deferred persisted RUNNING/UNDOING jobs.
+            // SQLite is writable and new-job admission is safe now; rescan
+            // and restart only work that is not already running in this JVM.
+            plugin.resumeDeferredRollbackRecoveryAfterCancellation();
             MaintenanceChatOutput.title(player::sendMessage, "Maintenance Cancelled");
             MaintenanceChatOutput.action(player::sendMessage,
                     "FragGuard history logging RESUMED; original and candidates preserved.");
