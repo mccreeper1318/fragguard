@@ -21,6 +21,7 @@
 
 - Improved maintenance and diagnostics chat readability with clear warnings, concise summaries and full-detail commands (#197).
 ### Changed
+- Paused new block-history and rollback/undo writes at maintenance activation after draining accepted SQLite work; countdown logging stays active and cancellation resumes safely (#203).
 - Updated Java setup action to 6.3.0 (#174, #201).
 - Updated Gradle wrapper to 9.9.2 (#175, #193, #202).
 
