@@ -196,7 +196,10 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
         // A status Boss Bar is not a progress meter: never show an invented
         // percentage for a long-running VACUUM/verification operation.
         staffBar.setProgress(1.0);
-        staffBar.setTitle(legacy(title));
+        // #203: only the countdown records normal history. Staff continue
+        // using the world during ACTIVE, but those edits are NOT recorded.
+        // Keep this explicit through compaction/verification/failure.
+        staffBar.setTitle(legacy(title + " - BLOCK LOGGING PAUSED"));
     }
 
     private static void syncViewers(BossBar bar, Collection<? extends Player> expected) {
