@@ -34,9 +34,11 @@ class MaintenanceFreezeReviewTest {
             stmt.executeUpdate("""
                     INSERT INTO rollback_jobs
                     (created_at, updated_at, actor_uuid, actor_name, world_uuid, world,
-                     center_x, center_z, radius, target_timestamp, status, total_blocks)
+                     center_x, center_z, radius, target_timestamp, status, total_blocks,
+                     processed_blocks, applied_blocks, undo_processed_blocks, scope_type,
+                     snapshot_timestamp)
                     VALUES (100, 100, 'actor', 'Owner', 'world', 'world', 0, 0, 5, 100,
-                            'RUNNING', 0)
+                            'RUNNING', 0, 0, 0, 0, 'RADIUS', 100)
                     """);
         }
         Database database = start(false);
