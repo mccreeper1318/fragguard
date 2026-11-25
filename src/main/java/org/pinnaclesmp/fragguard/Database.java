@@ -209,6 +209,25 @@ final class Database {
                     acceptedWriteSequence.get(), db -> {
                 try (Statement pragma = db.createStatement()) {
                     pragma.execute("PRAGMA query_only=OFF");
+                    // A VACUUM INTO candidate can start in DELETE journal mode.
+                    // Restore the same connection settings as ordinary startup
+                    // BEFORE publishing open write admission after activation.
+                    // Do this after durable IDLE / safe CANCELLED, never while
+                    // the original source is under an approved verification.
+                    try (ResultSet mode = pragma.executeQuery("PRAGMA journal_mode=WAL")) {
+                        if (!mode.next() || !"wal".equalsIgnoreCase(mode.getString(1))) {
+                            throw new SQLException("Could not restore WAL journaling after "
+                                    + "maintenance. Keeping block logging paused.");
+                        }
+                    }
+                    pragma.execute("PRAGMA synchronous=NORMAL");
+                    pragma.execute("PRAGMA foreign_keys=ON");
+                    try (ResultSet keys = pragma.executeQuery("PRAGMA foreign_keys")) {
+                        if (!keys.next() || keys.getInt(1) != 1) {
+                            throw new SQLException("Could not restore SQLite foreign key "
+                                    + "enforcement; maintenance write gate remains closed");
+                        }
+                    }
                 }
                 synchronized (coalescedChanges) {
                     maintenanceFrozen = false;
