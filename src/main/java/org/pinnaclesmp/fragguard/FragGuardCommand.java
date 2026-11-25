@@ -762,6 +762,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }));
     }
 
+    /** Main-thread guard: never close SQLite writes while a world job callback is live. */
+    boolean hasExecutingRollbackJobs() {
+        return !executingJobs.isEmpty();
+    }
+
     void resumeInterruptedJobs() {
         database.loadResumableJobsAsync().whenComplete((jobs, throwable) -> onServerThread(() -> {
             if (throwable != null) {
