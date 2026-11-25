@@ -86,7 +86,7 @@ class DatabaseTest {
         assertThrows(CompletionException.class,
                 () -> database.cleanupOldRecordsAsync(30, 30).join());
         assertEquals(9, database.lookupAsync("world", 0, 0, 200, 1, 20, 30)
-                .join().totalRecords(),
+                .join().totalRows(),
                 "Read-only history lookups must remain available during the pause");
 
         database.resumeWritesAfterCancellationAsync()
