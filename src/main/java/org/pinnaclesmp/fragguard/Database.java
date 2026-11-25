@@ -79,6 +79,13 @@ final class Database {
     private volatile boolean healthy = true;
     private volatile boolean walCheckpointCompleted;
     private volatile boolean workerStopped = true;
+    // #203: this admission barrier is independent of maintenance metadata.
+    // CLOSE before ACTIVE is persisted; reopen ONLY after CANCELLED or a
+    // verified activation. All accepted work drains ahead of the SQL seal.
+    private volatile boolean maintenanceFreezeRequested;
+    private volatile boolean maintenanceFrozen;
+    private final AtomicLong intentionallyUnlogged = new AtomicLong();
+    private volatile long loggingPausedAtMillis;
     private volatile int activeWriteBatchSize;
     private volatile String lastError = "";
     private final Object cleanupLock = new Object();
@@ -111,6 +118,101 @@ final class Database {
                 plugin.getConfig().getInt("database-incremental-reclaim-pages-per-pass", 16)));
         this.writeQueue = new ArrayBlockingQueue<>(writeCapacity);
         this.operationQueue = new ArrayBlockingQueue<>(operationCapacity);
+    }
+
+    boolean maintenanceWritesPaused() {
+        return maintenanceFreezeRequested;
+    }
+
+    boolean maintenanceFullyFrozen() {
+        return maintenanceFreezeRequested && maintenanceFrozen;
+    }
+
+    long intentionallyUnloggedDuringMaintenance() {
+        return intentionallyUnlogged.get();
+    }
+
+    long loggingPausedAtMillis() {
+        return loggingPausedAtMillis;
+    }
+
+    /**
+     * Atomically close write admission, then queue a control barrier AFTER
+     * every previously accepted operation. The writer first flushes accepted
+     * block events through the barrier, executes older jobs and transactions,
+     * then sets SQLite query_only=ON. No new mutation can overtake it.
+     */
+    CompletableFuture<Void> freezeForMaintenanceAsync() {
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        synchronized (coalescedChanges) {
+            if (!running) return CompletableFuture.failedFuture(
+                    new IllegalStateException("Cannot freeze a stopped SQLite writer"));
+            if (maintenanceFreezeRequested) {
+                return maintenanceFrozen
+                        ? CompletableFuture.completedFuture(null)
+                        : CompletableFuture.failedFuture(
+                            new IllegalStateException("Maintenance freeze already pending"));
+            }
+            maintenanceFreezeRequested = true;
+            loggingPausedAtMillis = System.currentTimeMillis();
+            DatabaseOperation<Void> barrier = new DatabaseOperation<>(
+                    acceptedWriteSequence.get(), databaseConnection -> {
+                // Rollback/undo must have completed before source becomes immutable.
+                try (Statement statement = databaseConnection.createStatement();
+                     ResultSet jobs = statement.executeQuery(
+                             "SELECT COUNT(*) FROM rollback_jobs "
+                             + "WHERE status IN ('RUNNING', 'UNDOING')")) {
+                    if (jobs.next() && jobs.getLong(1) > 0) {
+                        throw new SQLException("Active rollback/undo jobs have not finished; "
+                                + "no compaction may start until they are resolved.");
+                    }
+                }
+                try (Statement pragma = databaseConnection.createStatement()) {
+                    pragma.execute("PRAGMA query_only=ON");
+                }
+                maintenanceFrozen = true;
+                return null;
+            }, result, false, false);
+            if (!operationQueue.offer(barrier)) {
+                // Fail CLOSED: do not resume recording automatically after
+                // an overfull operation queue or unknown worker state.
+                result.completeExceptionally(new IllegalStateException(
+                        "Database operation queue full; maintenance write admission "
+                        + "remains paused. Do not compact; resolve or safely cancel."));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Cancellation only. Caller must have durably saved CANCELLED and waited
+     * for any running VACUUM/verification workers to stop. The gate remains
+     * closed until the ordered SQLite worker has disabled query_only.
+     */
+    CompletableFuture<Void> resumeWritesAfterCancellationAsync() {
+        synchronized (coalescedChanges) {
+            if (!maintenanceFreezeRequested) return CompletableFuture.completedFuture(null);
+            if (!running) return CompletableFuture.failedFuture(
+                    new IllegalStateException("Cannot resume writes on stopped SQLite writer"));
+            CompletableFuture<Void> result = new CompletableFuture<>();
+            DatabaseOperation<Void> barrier = new DatabaseOperation<>(
+                    acceptedWriteSequence.get(), db -> {
+                try (Statement pragma = db.createStatement()) {
+                    pragma.execute("PRAGMA query_only=OFF");
+                }
+                synchronized (coalescedChanges) {
+                    maintenanceFrozen = false;
+                    maintenanceFreezeRequested = false;
+                    loggingPausedAtMillis = 0L;
+                }
+                return null;
+            }, result, false, false);
+            if (!operationQueue.offer(barrier)) {
+                result.completeExceptionally(new IllegalStateException(
+                        "Cannot queue safe maintenance unfreeze; logging remains paused"));
+            }
+            return result;
+        }
     }
 
     void init() throws SQLException, ClassNotFoundException {
@@ -258,6 +360,10 @@ final class Database {
     }
 
     void insertAsync(BlockChange change) {
+        if (maintenanceFreezeRequested) {
+            intentionallyUnlogged.incrementAndGet();
+            return;
+        }
         if (!running) {
             warnStorage("Cannot record block changes because FragGuard's database is not running.", null);
             droppedWrites.incrementAndGet();
@@ -271,6 +377,10 @@ final class Database {
                 : change.serverTick();
         CoalesceKey key = new CoalesceKey(worldUuid, change.x(), change.y(), change.z(), serverTick);
         synchronized (coalescedChanges) {
+            if (maintenanceFreezeRequested) {
+                intentionallyUnlogged.incrementAndGet();
+                return;
+            }
             if (!running) {
                 warnStorage("Cannot record block changes because FragGuard's database is not running.", null);
                 droppedWrites.incrementAndGet();
@@ -304,6 +414,10 @@ final class Database {
     }
 
     CompletableFuture<List<Long>> insertRequiredAsync(List<BlockChange> changes) {
+        if (maintenanceFreezeRequested) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Maintenance paused history logging; required rollback audit is prohibited"));
+        }
         List<RequiredBlockChange> requiredChanges = changes.stream()
                 .filter(change -> !sameState(change.beforeData(), change.beforeEntityData(),
                         change.afterData(), change.afterEntityData()))
@@ -611,7 +725,7 @@ final class Database {
      * capture its bounded snapshot and count through GuiLookupStore exactly once.</p>
      */
     CompletableFuture<Void> awaitWritesAsync() {
-        return submit(databaseConnection -> null, true);
+        return submitRead(databaseConnection -> null, true);
     }
 
     /**
@@ -1539,6 +1653,27 @@ final class Database {
         }
 
         int schemaVersion = readSchemaVersion(databaseConnection);
+        // Restarting ACTIVE/VERIFYING/FAILED must NOT execute normal SQLite
+        // migration, world rename or cleanup writes before maintenance exits.
+        // A different schema or missing source requires operator recovery.
+        if (plugin instanceof FragGuardPlugin fragGuard
+                && fragGuard.maintenanceBlocksNewJobs()) {
+            if (brandNewDatabase || schemaVersion != SCHEMA_VERSION) {
+                throw new SQLException("Cannot open writable/migrate SQLite during "
+                        + "restricted maintenance. Preserve the original and WAL/SHM.");
+            }
+            try (Statement readonly = databaseConnection.createStatement()) {
+                readonly.execute("PRAGMA query_only=ON");
+            }
+            synchronized (coalescedChanges) {
+                maintenanceFreezeRequested = true;
+                maintenanceFrozen = true;
+                loggingPausedAtMillis = System.currentTimeMillis();
+            }
+            plugin.getLogger().warning("Maintenance recovered: FragGuard SQLite history "
+                    + "remains READ ONLY. Staff changes are NOT recorded.");
+            return;
+        }
         if (schemaVersion > SCHEMA_VERSION) {
             throw new SQLException("FragGuard database schema version " + schemaVersion
                     + " is newer than the supported version " + SCHEMA_VERSION
@@ -2276,11 +2411,20 @@ final class Database {
     }
 
     private <T> CompletableFuture<T> submit(SqlOperation<T> work, boolean timedQuery) {
-        return submit(work, timedQuery, false);
+        return submit(work, timedQuery, false, true);
+    }
+
+    private <T> CompletableFuture<T> submitRead(SqlOperation<T> work, boolean timedQuery) {
+        return submit(work, timedQuery, false, false);
     }
 
     private <T> CompletableFuture<T> submit(SqlOperation<T> work, boolean timedQuery,
                                              boolean cleanupOperation) {
+        return submit(work, timedQuery, cleanupOperation, true);
+    }
+
+    private <T> CompletableFuture<T> submit(SqlOperation<T> work, boolean timedQuery,
+                                             boolean cleanupOperation, boolean mutation) {
         CompletableFuture<T> future = new CompletableFuture<>();
         if (!running) {
             future.completeExceptionally(new IllegalStateException("FragGuard's database is not running."));
@@ -2291,6 +2435,12 @@ final class Database {
         synchronized (coalescedChanges) {
             if (!running) {
                 future.completeExceptionally(new IllegalStateException("FragGuard's database is not running."));
+                return future;
+            }
+            if (mutation && maintenanceFreezeRequested) {
+                future.completeExceptionally(new IllegalStateException(
+                        "FragGuard database mutation paused for maintenance; "
+                        + "new history and rollback/undo writes are not accepted"));
                 return future;
             }
             operation = new DatabaseOperation<>(acceptedWriteSequence.get(), work, future,
