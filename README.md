@@ -208,6 +208,28 @@ It never bypasses storage preflight, snapshot policy, or saved database safety.
   operations without deleting the original, or view the exact stopped-server
   file-manager steps.
 
+### Maintenance write-freeze barrier (#203)
+
+**COUNTDOWN continues logging normally.** At the deadline, FragGuard first
+restricts ordinary player access and closes SQL write admission, then flushes
+every accepted block-log write and queued DB operation. The maintenance stage
+does **not** enter ACTIVE until the SQLite worker is sealed with
+`PRAGMA query_only=ON` and no active rollback/undo jobs remain. An incomplete
+barrier refuses compaction; it never silently discards previously accepted
+history. During ACTIVE and all subsequent maintenance stages, staff/world
+edits can continue but **FragGuard does NOT record them**, so those edits
+cannot be looked up or rolled back with FragGuard later. This is intentional,
+and distinct from SQLite storage failures or dropped accepted writes.
+
+A staff Boss Bar includes **BLOCK LOGGING PAUSED** through maintenance. Read-only
+lookups remain usable, but new mutation operations are rejected on the database
+worker as well as by command/job gates. A durable cancellation does **not**
+reopen normal player access until the SQLite worker has made logging writable
+again; if the unfreeze fails, logging/access remain restricted. Existing source,
+WAL/SHM, candidate and manifest are preserved. This issue does not implement
+automatic database file replacement or the improved cleanup lifecycle (#204);
+the latter must be verified before final release.
+
 ### Clearer operator chat output (#197)
 
 Database diagnostics and maintenance status now use labeled sections, visually

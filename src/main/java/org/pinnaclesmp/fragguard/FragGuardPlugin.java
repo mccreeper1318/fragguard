@@ -34,6 +34,14 @@ public final class FragGuardPlugin extends JavaPlugin {
     private boolean incrementalIncompatibleNotified;
     private long lastStorageWarningAt;
     private int guiLookupFetchSize = DEFAULT_GUI_LOOKUP_FETCH_SIZE;
+    // Countdown expiry must refuse NEW rollback/undo jobs while already
+    // accepted world mutations and their persisted audit callbacks finish.
+    // Do not set the SQLite write freeze before the jobs are quiescent.
+    private volatile boolean rollbackJobsQuiescing;
+    // A restricted startup cannot resume saved RUNNING/UNDOING jobs until
+    // maintenance has been safely cancelled and the SQLite writer is writable.
+    // Keep this request across failed/aborted cancellation attempts.
+    private boolean deferredRollbackRecovery;
 
     @Override
     public void onEnable() {
@@ -116,6 +124,11 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // the actual SQLite writer successfully initialized, can
                 // the durable maintenance gate be cleared.
                 maintenance.finishVerifiedActivation().get(30, TimeUnit.SECONDS);
+                // The replacement was checked before this writable startup.
+                // ACTIVATING initialized this connection read-only; restore
+                // SQL writes on its ordered worker ONLY AFTER durable IDLE,
+                // before posting any legitimate world-name refresh.
+                database.resumeWritesAfterCancellationAsync().get(30, TimeUnit.SECONDS);
                 // The persisted ACTIVATING -> IDLE transition must complete
                 // BEFORE any world-name normalization can update retained
                 // rollback jobs or undo records. This preserves crash
@@ -183,7 +196,14 @@ public final class FragGuardPlugin extends JavaPlugin {
         PluginCommand command = Objects.requireNonNull(getCommand("fg"), "Command /fg is missing from plugin.yml");
         command.setExecutor(commandExecutor);
         command.setTabCompleter(commandExecutor);
-        commandExecutor.resumeInterruptedJobs();
+        if (!maintenanceBlocksNewJobs()) {
+            commandExecutor.resumeInterruptedJobs();
+        } else {
+            deferRollbackRecovery();
+            getLogger().warning("Maintenance remains restricted: rollback/undo jobs "
+                    + "will not resume until maintenance is safely cancelled, and "
+                    + "world changes are NOT logged.");
+        }
         scheduleCleanup();
         scheduleStorageHealthMonitor();
         scheduleReclaimableSpaceMonitor();
@@ -430,28 +450,180 @@ public final class FragGuardPlugin extends JavaPlugin {
     private void activateMaintenanceAtDeadline(MaintenanceSnapshot expired) {
         MaintenanceAdmissionGate gate = maintenanceAdmissionGate;
         if (gate == null || !gate.beginActivation(expired)) return;
-        maintenance.activate().whenComplete((active, failure) -> {
-            if (!isEnabled()) return;
+        if (database == null || commandExecutor == null) {
+            getLogger().severe("Database or rollback coordinator unavailable at maintenance "
+                    + "deadline. Keeping admissions closed; no compaction may begin.");
+            gate.activationFailed();
+            return;
+        }
+
+        // Stop NEW rollback/undo jobs without interrupting already accepted
+        // jobs, which can still be applying world edits or confirming audits.
+        // The SQLite freeze barrier is not allowed to race those callbacks.
+        rollbackJobsQuiescing = true;
+        getLogger().info("Maintenance deadline reached. Waiting for existing rollback/undo "
+                + "jobs to finish and commit all their audits before pausing history logging.");
+        long deadlineNanos = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
+        waitForRollbackJobsBeforeFreeze(expired, deadlineNanos);
+    }
+
+    private void waitForRollbackJobsBeforeFreeze(MaintenanceSnapshot expected,
+                                                 long deadlineNanos) {
+        if (!isEnabled() || maintenance == null) return;
+        MaintenanceSnapshot current = maintenance.snapshot();
+        if (current.phase() != MaintenancePhase.COUNTDOWN
+                || !current.operationId().equals(expected.operationId())) return;
+        if (System.nanoTime() - deadlineNanos >= 0) {
+            failMaintenanceFreeze("Previously accepted rollback/undo jobs did not finish "
+                    + "within five minutes. No database freeze or compaction occurred.");
+            return;
+        }
+        if (commandExecutor == null || database == null) {
+            failMaintenanceFreeze("Database or rollback executor became unavailable "
+                    + "while waiting to freeze; source remains unchanged.");
+            return;
+        }
+        if (commandExecutor.hasExecutingRollbackJobs()) {
+            scheduleRollbackDrainRetry(expected, deadlineNanos);
+            return;
+        }
+
+        // Ordered SQLite read after previously queued SQL work. Even if a
+        // rollback job was created before the expiry and its main-thread
+        // callback has not started, its RUNNING row prevents an early seal.
+        database.hasActiveRollbackJobsAsync().whenComplete((active, failure) -> {
             try {
                 Bukkit.getScheduler().runTask(this, () -> {
-                    if (maintenanceAdmissionGate == null) return;
-                    if (failure != null || active == null || active.phase() != MaintenancePhase.ACTIVE) {
-                        getLogger().log(Level.SEVERE, "Could not persist maintenance activation; "
-                                + "admissions remain closed until an operator resolves the failure", failure);
-                        maintenanceAdmissionGate.activationFailed();
+                    if (!isEnabled() || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+                            || !maintenance.snapshot().operationId().equals(expected.operationId())) return;
+                    if (failure != null) {
+                        failMaintenanceFreeze("Could not confirm that existing rollback/undo "
+                                + "jobs finished. No database freeze or compaction occurred.");
+                        getLogger().log(Level.SEVERE, "Rollback drain probe failed", failure);
                         return;
                     }
-                    // Announce committed activation and update staff bars;
-                    // ordinary players were already removed at the deadline.
-                    if (maintenanceNoticeDisplay != null) maintenanceNoticeDisplay.tick();
-                    maintenanceAdmissionGate.activationCompleted();
+                    if (active || commandExecutor == null
+                            || commandExecutor.hasExecutingRollbackJobs()) {
+                        scheduleRollbackDrainRetry(expected, deadlineNanos);
+                        return;
+                    }
+                    freezeAfterRollbackJobsDrained(expected);
                 });
             } catch (RuntimeException schedulingFailure) {
-                getLogger().log(Level.SEVERE, "Could not complete maintenance activation on the "
-                        + "main thread; stopping Paper to prevent unguarded access", schedulingFailure);
+                getLogger().log(Level.SEVERE, "Could not schedule rollback drain completion; "
+                        + "stopping Paper to preserve maintenance restrictions", schedulingFailure);
                 Bukkit.shutdown();
             }
         });
+    }
+
+    private void scheduleRollbackDrainRetry(MaintenanceSnapshot expected, long deadlineNanos) {
+        try {
+            Bukkit.getScheduler().runTaskLater(this,
+                    () -> waitForRollbackJobsBeforeFreeze(expected, deadlineNanos), 20L);
+        } catch (RuntimeException schedulingFailure) {
+            getLogger().log(Level.SEVERE, "Rollback drain retry could not be scheduled; "
+                    + "stopping Paper with source files preserved", schedulingFailure);
+            Bukkit.shutdown();
+        }
+    }
+
+    private void freezeAfterRollbackJobsDrained(MaintenanceSnapshot expected) {
+        if (maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+                || !maintenance.snapshot().operationId().equals(expected.operationId())) return;
+        // At this point no new job can start, and the worker has confirmed
+        // there are no RUNNING/UNDOING jobs. Close SQL admission atomically,
+        // finish previously accepted history and other queued SQL, checkpoint
+        // WAL and set query_only before persisting ACTIVE.
+        database.freezeForMaintenanceAsync().whenComplete((unused, freezeFailure) -> {
+            if (freezeFailure != null) {
+                failMaintenanceFreeze("Database write freeze failed; preserve source and "
+                        + "review SQLite storage. No candidate may be created.");
+                getLogger().log(Level.SEVERE, "FragGuard could not seal the SQLite "
+                        + "writer at maintenance activation", freezeFailure);
+                return;
+            }
+            maintenance.activate().whenComplete((active, failure) -> {
+                if (!isEnabled()) return;
+                try {
+                    Bukkit.getScheduler().runTask(this, () -> {
+                        if (maintenanceAdmissionGate == null) return;
+                        if (failure != null || active == null
+                                || active.phase() != MaintenancePhase.ACTIVE) {
+                            getLogger().log(Level.SEVERE, "Could not persist maintenance "
+                                    + "activation; admissions remain closed", failure);
+                            maintenanceAdmissionGate.activationFailed();
+                            return;
+                        }
+                        if (maintenanceNoticeDisplay != null) maintenanceNoticeDisplay.tick();
+                        maintenanceAdmissionGate.activationCompleted();
+                        getLogger().warning("FragGuard maintenance ACTIVE. Block logging is "
+                                + "PAUSED. World edits during maintenance cannot be rolled back.");
+                    });
+                } catch (RuntimeException schedulingFailure) {
+                    getLogger().log(Level.SEVERE, "Could not complete maintenance activation "
+                            + "on the main thread; stopping Paper", schedulingFailure);
+                    Bukkit.shutdown();
+                }
+            });
+        });
+    }
+
+    private void failMaintenanceFreeze(String reason) {
+        getLogger().severe(reason);
+        if (maintenance != null && maintenance.snapshot().phase() == MaintenancePhase.COUNTDOWN) {
+            maintenance.fail(reason);
+        }
+        try {
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.activationFailed();
+            });
+        } catch (RuntimeException schedulingFailure) {
+            Bukkit.shutdown();
+        }
+    }
+
+    /** Ensure normal players remain gated until SQLite is writable again. */
+    void beginMaintenanceCancellation() {
+        if (maintenanceAdmissionGate != null) {
+            maintenanceAdmissionGate.beginCancellation(
+                    database != null && database.maintenanceWritesPaused());
+        }
+    }
+
+    void completeMaintenanceCancellation() {
+        rollbackJobsQuiescing = false;
+        if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.cancellationCompleted();
+    }
+
+    void deferRollbackRecovery() {
+        deferredRollbackRecovery = true;
+    }
+
+    /**
+     * Restart only rollback/undo jobs that were withheld during restricted
+     * startup. This is deliberately invoked after the durable CANCELLED state,
+     * query_only=OFF, restored connection PRAGMAs, and released job admission.
+     *
+     * The pending flag is consumed once on the main thread. If an intervening
+     * maintenance transition restricts the async load callback, the command
+     * executor re-arms this flag instead of starting any jobs.
+     */
+    void resumeDeferredRollbackRecoveryAfterCancellation() {
+        if (!deferredRollbackRecovery) return;
+        if (database == null || commandExecutor == null
+                || maintenance == null || maintenanceBlocksNewJobs()
+                || maintenance.snapshot().phase() != MaintenancePhase.CANCELLED
+                || database.maintenanceWritesPaused()) {
+            return; // Retain the request until maintenance is safely cancelled.
+        }
+        deferredRollbackRecovery = false;
+        getLogger().info("Resuming rollback/undo recovery deferred by maintenance.");
+        commandExecutor.resumeInterruptedJobs();
+    }
+
+    void failedMaintenanceCancellation() {
+        if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.cancellationFailed();
     }
 
     int getRetentionDays() {
@@ -495,7 +667,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     }
 
     boolean maintenanceBlocksNewJobs() {
-        return maintenance != null && maintenance.blocksNewJobs();
+        return rollbackJobsQuiescing || (maintenance != null && maintenance.blocksNewJobs());
     }
 
     FragGuardCommand getFragGuardCommand() {

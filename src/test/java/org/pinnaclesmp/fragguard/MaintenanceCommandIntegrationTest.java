@@ -119,6 +119,43 @@ class MaintenanceCommandIntegrationTest {
         verify(test.player, atLeastOnce()).sendMessage(any(net.kyori.adventure.text.Component.class));
     }
 
+    @Test
+    void deferredRollbackRecoveryWaitsForSafeCancellationAndOnlyStartsOnce() throws Exception {
+        FragGuardPlugin plugin = mock(FragGuardPlugin.class, CALLS_REAL_METHODS);
+        MaintenanceCoordinator coordinator = mock(MaintenanceCoordinator.class);
+        Database db = mock(Database.class);
+        FragGuardCommand command = mock(FragGuardCommand.class);
+        when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getLogger("DeferredRecoveryTest"));
+        var coordinatorField = FragGuardPlugin.class.getDeclaredField("maintenance");
+        coordinatorField.setAccessible(true);
+        coordinatorField.set(plugin, coordinator);
+        var dbField = FragGuardPlugin.class.getDeclaredField("database");
+        dbField.setAccessible(true);
+        dbField.set(plugin, db);
+        var commandField = FragGuardPlugin.class.getDeclaredField("commandExecutor");
+        commandField.setAccessible(true);
+        commandField.set(plugin, command);
+
+        var scheduled = MaintenanceSnapshot.scheduled(ADMIN, NOW, NOW + 600_000,
+                MaintenancePolicy.STRICT);
+        when(coordinator.snapshot()).thenReturn(
+                scheduled.withPhase(MaintenancePhase.FAILED, "recovery pending"));
+        plugin.deferRollbackRecovery();
+        plugin.resumeDeferredRollbackRecoveryAfterCancellation();
+        verify(command, never()).resumeInterruptedJobs();
+
+        when(coordinator.snapshot()).thenReturn(
+                scheduled.withPhase(MaintenancePhase.CANCELLED, "cancelled"));
+        when(db.maintenanceWritesPaused()).thenReturn(true);
+        plugin.resumeDeferredRollbackRecoveryAfterCancellation();
+        verify(command, never()).resumeInterruptedJobs();
+
+        when(db.maintenanceWritesPaused()).thenReturn(false);
+        plugin.resumeDeferredRollbackRecoveryAfterCancellation();
+        plugin.resumeDeferredRollbackRecoveryAfterCancellation();
+        verify(command, times(1)).resumeInterruptedJobs();
+    }
+
     private static void execute(Fixture f, String... args) {
         String[] full = new String[args.length + 1];
         full[0] = "maintenance";

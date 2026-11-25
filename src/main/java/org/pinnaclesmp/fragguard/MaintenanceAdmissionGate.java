@@ -34,6 +34,10 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     private final Component kickReason;
     private final String loginDenial;
     private volatile boolean activationPending;
+    private volatile boolean cancellationPending;
+    // An in-flight early countdown cancellation must remain tracked across
+    // deadline expiry, even if CANCELLED is durably published before SQL unfreezes.
+    private volatile long cancellationCountdownDeadlineMillis;
     private BukkitTask task;
     private boolean stopped;
 
@@ -75,9 +79,42 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     }
 
     void activationFailed() {
-        // Keep the admission gate closed even if the persisted transition
-        // failed before the coordinator could publish the new state.
-        activationPending = true;
+        // A stale activation callback must not re-close admissions after
+        // CANCELLED was saved and its SQLite unfreeze completed. An in-flight
+        // cancellation independently holds admission until it is safe.
+        if (coordinator.snapshot().phase() != MaintenancePhase.CANCELLED) {
+            // A failed or uncertain activation otherwise remains fail-closed.
+            activationPending = true;
+        }
+        enforceOnline();
+    }
+
+    void beginCancellation(boolean loggingPaused) {
+        // Always track the asynchronous cancellation. An early countdown
+        // cancellation must NOT kick anyone yet, but expiry during the save
+        // must hold player admission until SQLite is writable again.
+        MaintenanceSnapshot state = coordinator.snapshot();
+        boolean wasRestricted = restricted() || loggingPaused;
+        cancellationCountdownDeadlineMillis = state.phase() == MaintenancePhase.COUNTDOWN
+                ? state.countdownEndsAtMillis() : 0L;
+        cancellationPending = true;
+        if (wasRestricted) activationPending = true;
+        enforceOnline();
+    }
+
+    void cancellationCompleted() {
+        // Called only after durable CANCELLED and the ordered SQLite unfreeze.
+        cancellationPending = false;
+        cancellationCountdownDeadlineMillis = 0L;
+        activationPending = false;
+        enforceOnline();
+    }
+
+    void cancellationFailed() {
+        // Do not kick before an unexpired countdown, but keep the in-flight
+        // cancellation tracked: an expired deadline or failed activation must
+        // still fail closed until the operator can safely cancel again.
+        if (restricted()) activationPending = true;
         enforceOnline();
     }
 
@@ -89,7 +126,9 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
         // maintenance metadata writes.
         return activationPending || coordinator.blocksNewJobs()
                 || (state.phase() == MaintenancePhase.COUNTDOWN
-                    && clock.getAsLong() >= state.countdownEndsAtMillis());
+                    && clock.getAsLong() >= state.countdownEndsAtMillis())
+                || (cancellationPending && cancellationCountdownDeadlineMillis > 0L
+                    && clock.getAsLong() >= cancellationCountdownDeadlineMillis);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -114,7 +153,8 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     void enforceOnline() {
         if (stopped) return;
         MaintenancePhase phase = coordinator.snapshot().phase();
-        if (phase == MaintenancePhase.CANCELLED || phase == MaintenancePhase.IDLE) {
+        if ((phase == MaintenancePhase.CANCELLED || phase == MaintenancePhase.IDLE)
+                && !cancellationPending) {
             activationPending = false;
         }
         if (!restricted()) return;
