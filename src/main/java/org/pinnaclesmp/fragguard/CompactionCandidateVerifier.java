@@ -326,6 +326,13 @@ final class CompactionCandidateVerifier implements AutoCloseable {
         }
     }
 
+    /** Completes only after the worker has stopped and committed its final state. */
+    CompletableFuture<Void> whenStopped() {
+        Attempt task = active.get();
+        return task == null ? CompletableFuture.completedFuture(null)
+                : task.response.handle((ignored, failure) -> null);
+    }
+
     boolean cancel() {
         Attempt request = active.get();
         if (request == null) return false;
