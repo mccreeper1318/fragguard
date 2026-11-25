@@ -50,6 +50,78 @@ class DatabaseTest {
     }
 
     @Test
+    void maintenanceFreezeDrainsAcceptedEventsThenSuppressesNewHistoryWithoutStorageErrors()
+            throws Exception {
+        database = startDatabase();
+        long now = System.currentTimeMillis();
+        // Same-tick queued events must be committed BEFORE the freeze seal.
+        for (int x = 1; x <= 9; x++) {
+            database.insertAsync(change(now, 100L, x, 64, 2,
+                    "minecraft:stone", "minecraft:air"));
+        }
+        assertFalse(database.maintenanceWritesPaused());
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.maintenanceWritesPaused());
+        assertTrue(database.maintenanceFullyFrozen());
+        assertTrue(database.loggingPausedAtMillis() > 0L);
+        assertEquals(0, database.health().queuedWrites());
+        assertEquals(0, database.inFlightWrites());
+        try (Connection conn = openDatabase(); Statement st = conn.createStatement();
+             ResultSet rows = st.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(9L, rows.getLong(1), "All writes accepted before freeze are durable");
+        }
+
+        database.insertAsync(change(now + 1, 101L, 10, 64, 2,
+                "minecraft:stone", "minecraft:air"));
+        database.insertAsync(change(now + 1, 101L, 11, 64, 2,
+                "minecraft:stone", "minecraft:air"));
+        assertEquals(2L, database.intentionallyUnloggedDuringMaintenance());
+        assertEquals(0L, database.health().droppedWrites(),
+                "Intentional logging pauses are not a SQLite storage failure");
+        assertTrue(database.health().storageAvailable());
+        assertThrows(CompletionException.class, () -> database.insertRequiredAsync(List.of(
+                change(now + 1, 101L, 12, 64, 2,
+                        "minecraft:stone", "minecraft:air"))).join());
+        assertThrows(CompletionException.class,
+                () -> database.cleanupOldRecordsAsync(30, 30).join());
+        assertEquals(9, database.lookupAsync("world", 0, 0, 200, 1, 20, 30)
+                .join().totalRecords(),
+                "Read-only history lookups must remain available during the pause");
+
+        database.resumeWritesAfterCancellationAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertFalse(database.maintenanceWritesPaused());
+        assertFalse(database.maintenanceFullyFrozen());
+        assertEquals(0L, database.loggingPausedAtMillis());
+        database.insertRequiredAsync(List.of(change(now + 2, 102L, 13, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        try (Connection conn = openDatabase(); Statement st = conn.createStatement();
+             ResultSet rows = st.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(10L, rows.getLong(1),
+                    "After safe cancellation, new logging must resume without replaying suppressed events");
+        }
+    }
+
+    @Test
+    void maintenanceFreezeIsIdempotentAndReadOnlySqliteSealRejectsWritesFromPluginWorker()
+            throws Exception {
+        database = startDatabase();
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertThrows(CompletionException.class, () -> database.insertRequiredAsync(List.of(
+                change(System.currentTimeMillis(), 104L, 22, 64, 2,
+                        "minecraft:stone", "minecraft:air"))).join());
+        assertTrue(database.health().storageAvailable());
+        database.resumeWritesAfterCancellationAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        database.resumeWritesAfterCancellationAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.health().storageAvailable());
+    }
+
+    @Test
     void initializesVersionedSchemaAndPersistsStableActionIdentifiers() throws Exception {
         database = startDatabase();
         database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
