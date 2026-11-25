@@ -34,6 +34,7 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     private final Component kickReason;
     private final String loginDenial;
     private volatile boolean activationPending;
+    private volatile boolean cancellationPending;
     private BukkitTask task;
     private boolean stopped;
 
@@ -81,6 +82,25 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
         enforceOnline();
     }
 
+    void beginCancellation() {
+        // Persisting CANCELLED does NOT yet mean SQL query_only is cleared.
+        cancellationPending = true;
+        activationPending = true;
+        enforceOnline();
+    }
+
+    void cancellationCompleted() {
+        cancellationPending = false;
+        activationPending = false;
+        enforceOnline();
+    }
+
+    void cancellationFailed() {
+        cancellationPending = true;
+        activationPending = true;
+        enforceOnline();
+    }
+
     boolean restricted() {
         MaintenanceSnapshot state = coordinator.snapshot();
         // Close admissions at the actual persisted deadline, even if the
@@ -114,7 +134,8 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     void enforceOnline() {
         if (stopped) return;
         MaintenancePhase phase = coordinator.snapshot().phase();
-        if (phase == MaintenancePhase.CANCELLED || phase == MaintenancePhase.IDLE) {
+        if ((phase == MaintenancePhase.CANCELLED || phase == MaintenancePhase.IDLE)
+                && !cancellationPending) {
             activationPending = false;
         }
         if (!restricted()) return;
