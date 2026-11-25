@@ -183,7 +183,12 @@ public final class FragGuardPlugin extends JavaPlugin {
         PluginCommand command = Objects.requireNonNull(getCommand("fg"), "Command /fg is missing from plugin.yml");
         command.setExecutor(commandExecutor);
         command.setTabCompleter(commandExecutor);
-        commandExecutor.resumeInterruptedJobs();
+        if (!maintenanceBlocksNewJobs()) {
+            commandExecutor.resumeInterruptedJobs();
+        } else {
+            getLogger().warning("Maintenance remains restricted: rollback/undo jobs "
+                    + "will not resume and world changes are NOT logged.");
+        }
         scheduleCleanup();
         scheduleStorageHealthMonitor();
         scheduleReclaimableSpaceMonitor();
@@ -430,7 +435,31 @@ public final class FragGuardPlugin extends JavaPlugin {
     private void activateMaintenanceAtDeadline(MaintenanceSnapshot expired) {
         MaintenanceAdmissionGate gate = maintenanceAdmissionGate;
         if (gate == null || !gate.beginActivation(expired)) return;
-        maintenance.activate().whenComplete((active, failure) -> {
+        if (database == null) {
+            getLogger().severe("No SQLite worker available to freeze. Keeping maintenance access restricted.");
+            gate.activationFailed();
+            return;
+        }
+        // #203: the database write admission gate closes *before* ACTIVE is
+        // persisted. The async barrier drains all previously accepted inserts
+        // and SQL operations, confirms no running rollback/undo jobs, and
+        // switches the live connection to query_only=ON. Never compact
+        // a source that is still accepting history or cleanup writes.
+        database.freezeForMaintenanceAsync().whenComplete((unused, freezeFailure) -> {
+            if (freezeFailure != null) {
+                getLogger().log(Level.SEVERE, "FragGuard could not freeze the SQLite "
+                        + "writer at maintenance activation. No candidate may be made; "
+                        + "logging remains intentionally paused.", freezeFailure);
+                maintenance.fail("Database write freeze failed; preserve source and "
+                        + "review active rollback/undo jobs or SQLite storage");
+                try {
+                    Bukkit.getScheduler().runTask(this, gate::activationFailed);
+                } catch (RuntimeException schedulingFailure) {
+                    Bukkit.shutdown();
+                }
+                return;
+            }
+            maintenance.activate().whenComplete((active, failure) -> {
             if (!isEnabled()) return;
             try {
                 Bukkit.getScheduler().runTask(this, () -> {
@@ -451,7 +480,21 @@ public final class FragGuardPlugin extends JavaPlugin {
                         + "main thread; stopping Paper to prevent unguarded access", schedulingFailure);
                 Bukkit.shutdown();
             }
+            });
         });
+    }
+
+    /** Ensure normal players remain gated until SQLite is writable again. */
+    void beginMaintenanceCancellation() {
+        if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.beginCancellation();
+    }
+
+    void completeMaintenanceCancellation() {
+        if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.cancellationCompleted();
+    }
+
+    void failedMaintenanceCancellation() {
+        if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.cancellationFailed();
     }
 
     int getRetentionDays() {
