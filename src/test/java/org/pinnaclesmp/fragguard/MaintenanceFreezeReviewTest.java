@@ -94,6 +94,7 @@ class MaintenanceFreezeReviewTest {
         when(plugin.getServer()).thenReturn(server);
         when(plugin.getLogger()).thenReturn(Logger.getLogger("FGMaintenanceReviewTest"));
         when(plugin.getMaintenanceCoordinator()).thenReturn(coordinator);
+        when(coordinator.snapshot()).thenReturn(MaintenanceSnapshot.idle());
         when(plugin.maintenanceBlocksNewJobs()).thenReturn(activating);
         when(server.getWorlds()).thenReturn(List.of(world));
         when(server.getCurrentTick()).thenReturn(100);
