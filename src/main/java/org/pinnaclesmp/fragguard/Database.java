@@ -167,6 +167,16 @@ final class Database {
                                 + "no compaction may start until they are resolved.");
                     }
                 }
+                // Checkpoint while this connection is still writable; only
+                // then seal it as query-only. If another reader holds WAL
+                // frames, refuse ACTIVE and preserve all source/sidecars.
+                try (Statement checkpoint = databaseConnection.createStatement();
+                     ResultSet rows = checkpoint.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+                    if (!rows.next() || rows.getInt(1) != 0) {
+                        throw new SQLException("Maintenance freeze WAL checkpoint was busy; "
+                                + "source cannot be declared stable.");
+                    }
+                }
                 try (Statement pragma = databaseConnection.createStatement()) {
                     pragma.execute("PRAGMA query_only=ON");
                 }
