@@ -120,6 +120,22 @@ final class Database {
         this.operationQueue = new ArrayBlockingQueue<>(operationCapacity);
     }
 
+    /**
+     * Read-only, ordered SQLite probe. A positive result means accepted
+     * rollback/undo work may still have main-thread world callbacks and final
+     * audit/confirmation SQL to complete. Do NOT close mutation admission yet.
+     */
+    CompletableFuture<Boolean> hasActiveRollbackJobsAsync() {
+        return submitRead(db -> {
+            try (PreparedStatement statement = db.prepareStatement(
+                    "SELECT 1 FROM rollback_jobs "
+                    + "WHERE status IN ('RUNNING', 'UNDOING') LIMIT 1");
+                 ResultSet jobs = statement.executeQuery()) {
+                return jobs.next();
+            }
+        }, true);
+    }
+
     boolean maintenanceWritesPaused() {
         return maintenanceFreezeRequested;
     }
