@@ -84,6 +84,10 @@ final class Database {
     // verified activation. All accepted work drains ahead of the SQL seal.
     private volatile boolean maintenanceFreezeRequested;
     private volatile boolean maintenanceFrozen;
+    // #204: close background cleanup/reclamation admission at the deadline,
+    // BEFORE the SQLite write freeze. All operations already admitted to the
+    // ordered worker must finish ahead of the drain barrier.
+    private volatile boolean maintenanceBackgroundPaused;
     private final AtomicLong intentionallyUnlogged = new AtomicLong();
     private volatile long loggingPausedAtMillis;
     private volatile int activeWriteBatchSize;
@@ -140,6 +144,27 @@ final class Database {
         return maintenanceFreezeRequested;
     }
 
+    boolean backgroundMutationsPausedForMaintenance() {
+        return maintenanceBackgroundPaused || maintenanceFreezeRequested;
+    }
+
+    /**
+     * Close retention/reclamation admission atomically with SQL queueing,
+     * then wait for every previously accepted operation to commit or fail.
+     * An in-flight cleanup may finish its current bounded transaction, but
+     * its completion callback must not schedule another batch.
+     */
+    CompletableFuture<Void> pauseBackgroundMutationsForMaintenanceAsync() {
+        synchronized (coalescedChanges) {
+            if (!running) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("Cannot pause a stopped SQLite worker"));
+            }
+            maintenanceBackgroundPaused = true;
+            return submitRead(db -> null, true);
+        }
+    }
+
     boolean maintenanceFullyFrozen() {
         return maintenanceFreezeRequested && maintenanceFrozen;
     }
@@ -169,6 +194,7 @@ final class Database {
                         : CompletableFuture.failedFuture(
                             new IllegalStateException("Maintenance freeze already pending"));
             }
+            maintenanceBackgroundPaused = true;
             maintenanceFreezeRequested = true;
             loggingPausedAtMillis = System.currentTimeMillis();
             DatabaseOperation<Void> barrier = new DatabaseOperation<>(
@@ -217,7 +243,12 @@ final class Database {
      */
     CompletableFuture<Void> resumeWritesAfterCancellationAsync() {
         synchronized (coalescedChanges) {
-            if (!maintenanceFreezeRequested) return CompletableFuture.completedFuture(null);
+            if (!maintenanceFreezeRequested) {
+                // An unexpired countdown may have cancelled after the earlier
+                // background drain but before the SQLite write seal.
+                if (running) maintenanceBackgroundPaused = false;
+                return CompletableFuture.completedFuture(null);
+            }
             if (!running) return CompletableFuture.failedFuture(
                     new IllegalStateException("Cannot resume writes on stopped SQLite writer"));
             CompletableFuture<Void> result = new CompletableFuture<>();
@@ -248,6 +279,7 @@ final class Database {
                 synchronized (coalescedChanges) {
                     maintenanceFrozen = false;
                     maintenanceFreezeRequested = false;
+                    maintenanceBackgroundPaused = false;
                     loggingPausedAtMillis = 0L;
                 }
                 return null;
@@ -644,6 +676,9 @@ final class Database {
     CompletableFuture<DatabaseCleanupResult> cleanupOldRecordsAsync(
             int retentionDays, int rollbackJobRetentionDays) {
         synchronized (cleanupLock) {
+            if (backgroundMutationsPausedForMaintenance()) {
+                return CompletableFuture.completedFuture(DatabaseCleanupResult.paused());
+            }
             if (activeCleanup != null && !activeCleanup.isDone()) return activeCleanup;
             int limit = Math.max(1, Math.min(5000,
                     plugin.getConfig().getInt("database-retention-cleanup-batch-size", 500)));
@@ -671,11 +706,19 @@ final class Database {
         }
         // Retention cleanup must not start a second overlapping maintenance
         // task, and a shutdown must not enqueue more reclamation work.
+        if (backgroundMutationsPausedForMaintenance()) {
+            return CompletableFuture.failedFuture(new MaintenanceBackgroundPausedException());
+        }
         if (!running) {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("Database is shutting down"));
         }
         return submit(databaseConnection -> {
+            // The operation may have been queued before the background pause.
+            // Refuse execution if the ordered worker has not yet run it.
+            if (backgroundMutationsPausedForMaintenance()) {
+                throw new MaintenanceBackgroundPausedException();
+            }
             // A manual maintenance transition may occur AFTER queueing. Check
             // again on the worker to avoid touching a source under verification.
             if (plugin instanceof FragGuardPlugin fragGuard
@@ -694,6 +737,14 @@ final class Database {
 
     private void scheduleCleanupBatch(CleanupRun run) {
         if (run.finished.isDone()) return;
+        // Stop at a committed batch boundary. Previously accepted work ahead
+        // of the maintenance drain is allowed to finish; callbacks, retries
+        // and cursor continuations cannot enqueue any further DELETEs.
+        if (backgroundMutationsPausedForMaintenance()) {
+            run.finished.complete(new DatabaseCleanupResult(run.blockDeleted,
+                    run.jobsDeleted, run.batches, false, true));
+            return;
+        }
         if (run.batches >= run.maxBatches) {
             run.finished.complete(new DatabaseCleanupResult(run.blockDeleted, run.jobsDeleted,
                     run.batches, true));
@@ -707,6 +758,15 @@ final class Database {
                         : RetentionCleanupBatcher.deleteExpiredHistory(db, run.blockCutoff, run.batchSize)),
                 false, true);
         attempt.whenComplete((step, failure) -> {
+            // Prefer a controlled pause over an SQLITE_FULL retry or a
+            // queued mutation rejection. No new work can follow this callback.
+            if (backgroundMutationsPausedForMaintenance()) {
+                run.finished.complete(new DatabaseCleanupResult(run.blockDeleted
+                        + (step == null ? 0L : step.blocksDeleted()),
+                        run.jobsDeleted + (step == null ? 0L : step.jobsDeleted()),
+                        run.batches + (step == null ? 0 : 1), false, true));
+                return;
+            }
             if (failure != null) {
                 Throwable cause = failure instanceof CompletionException wrapper
                         ? wrapper.getCause() : failure;
@@ -739,6 +799,12 @@ final class Database {
             }
             scheduleCleanupBatch(run);
         });
+    }
+
+    static final class MaintenanceBackgroundPausedException extends IllegalStateException {
+        MaintenanceBackgroundPausedException() {
+            super("PAUSED FOR MAINTENANCE: background SQLite mutations are deferred");
+        }
     }
 
     private static final class CleanupRun {
@@ -1711,6 +1777,7 @@ final class Database {
                 readonly.execute("PRAGMA query_only=ON");
             }
             synchronized (coalescedChanges) {
+                maintenanceBackgroundPaused = true;
                 maintenanceFreezeRequested = true;
                 maintenanceFrozen = true;
                 loggingPausedAtMillis = System.currentTimeMillis();
@@ -2480,6 +2547,10 @@ final class Database {
         synchronized (coalescedChanges) {
             if (!running) {
                 future.completeExceptionally(new IllegalStateException("FragGuard's database is not running."));
+                return future;
+            }
+            if (cleanupOperation && backgroundMutationsPausedForMaintenance()) {
+                future.completeExceptionally(new MaintenanceBackgroundPausedException());
                 return future;
             }
             if (mutation && maintenanceFreezeRequested) {
