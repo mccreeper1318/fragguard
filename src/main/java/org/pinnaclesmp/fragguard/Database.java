@@ -246,7 +246,9 @@ final class Database {
             if (!maintenanceFreezeRequested) {
                 // An unexpired countdown may have cancelled after the earlier
                 // background drain but before the SQLite write seal.
-                if (running) maintenanceBackgroundPaused = false;
+                if (!running) return CompletableFuture.failedFuture(
+                        new IllegalStateException("Cannot resume a stopped SQLite worker"));
+                maintenanceBackgroundPaused = false;
                 return CompletableFuture.completedFuture(null);
             }
             if (!running) return CompletableFuture.failedFuture(

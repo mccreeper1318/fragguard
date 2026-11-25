@@ -767,6 +767,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                         db.incrementalReclaimAfterCleanupAsync().whenComplete((result, failure) -> {
                             if (failure != null) {
                                 if (db.backgroundMutationsPausedForMaintenance()
+                                        || failure instanceof Database.MaintenanceBackgroundPausedException
                                         || failure.getCause() instanceof Database.MaintenanceBackgroundPausedException) {
                                     noteRetentionCleanupPaused();
                                     return;
