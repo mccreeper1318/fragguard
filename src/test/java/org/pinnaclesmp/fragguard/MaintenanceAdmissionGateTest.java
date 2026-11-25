@@ -183,7 +183,8 @@ class MaintenanceAdmissionGateTest {
             // A pending cancellation races with deadline activation. The
             // coordinator then publishes CANCELLED before SQLite unfreezes.
             clock.set(countdown.countdownEndsAtMillis());
-            assertTrue(gate.beginActivation(countdown));
+            assertFalse(gate.beginActivation(countdown),
+                    "An already pending cancellation must block a new freeze");
             state.set(countdown.withPhase(MaintenancePhase.CANCELLED, "cancelled"));
             gate.enforceOnline();
             assertTrue(gate.restricted(),
