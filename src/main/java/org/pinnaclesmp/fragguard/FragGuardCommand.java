@@ -1906,6 +1906,20 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 } else {
                     MaintenanceChatOutput.statusSummary(player::sendMessage, state);
                 }
+                if (database.maintenanceWritesPaused()) {
+                    MaintenanceChatOutput.danger(player::sendMessage,
+                            "BLOCK LOGGING PAUSED: world edits now are NOT recorded or rollbackable.");
+                    MaintenanceChatOutput.value(player::sendMessage, "Intentionally unlogged",
+                            Long.toString(database.intentionallyUnloggedDuringMaintenance()));
+                    if (database.loggingPausedAtMillis() > 0L) {
+                        MaintenanceChatOutput.value(player::sendMessage, "Paused since",
+                                java.time.Instant.ofEpochMilli(database.loggingPausedAtMillis()).toString());
+                    }
+                    if (!database.maintenanceFullyFrozen()) {
+                        MaintenanceChatOutput.notice(player::sendMessage,
+                                "Database barrier not complete. Do not compact.");
+                    }
+                }
             }
             case "help" -> maintenanceUsage(player);
             case "preview" -> {
