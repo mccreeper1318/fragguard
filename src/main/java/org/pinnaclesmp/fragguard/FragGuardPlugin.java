@@ -116,6 +116,11 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // the actual SQLite writer successfully initialized, can
                 // the durable maintenance gate be cleared.
                 maintenance.finishVerifiedActivation().get(30, TimeUnit.SECONDS);
+                // The replacement was checked before this writable startup.
+                // ACTIVATING initialized this connection read-only; restore
+                // SQL writes on its ordered worker ONLY AFTER durable IDLE,
+                // before posting any legitimate world-name refresh.
+                database.resumeWritesAfterCancellationAsync().get(30, TimeUnit.SECONDS);
                 // The persisted ACTIVATING -> IDLE transition must complete
                 // BEFORE any world-name normalization can update retained
                 // rollback jobs or undo records. This preserves crash
