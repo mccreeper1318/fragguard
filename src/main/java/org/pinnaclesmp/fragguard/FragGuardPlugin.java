@@ -585,7 +585,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     /** Ensure normal players remain gated until SQLite is writable again. */
     void beginMaintenanceCancellation() {
-        if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.beginCancellation();
+        if (maintenanceAdmissionGate != null) {
+            maintenanceAdmissionGate.beginCancellation(
+                    database != null && database.maintenanceWritesPaused());
+        }
     }
 
     void completeMaintenanceCancellation() {

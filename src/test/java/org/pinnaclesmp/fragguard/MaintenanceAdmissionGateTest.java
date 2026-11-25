@@ -116,12 +116,72 @@ class MaintenanceAdmissionGateTest {
         try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
              var gate = gate(coordinator)) {
             bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of());
-            gate.beginCancellation();
+            gate.beginCancellation(true);
             state.set(state.get().withPhase(MaintenancePhase.CANCELLED, "cancelled"));
             gate.enforceOnline();
             assertTrue(gate.restricted(),
                     "Durable cancellation cannot reopen joins until SQLite query_only is OFF");
             assertDenied(gate, regular);
+            gate.cancellationCompleted();
+            assertFalse(gate.restricted());
+            assertAllowed(gate, regular);
+        }
+    }
+
+    @Test
+    void cancellingAnUnexpiredCountdownDoesNotKickPlayersOrRejectLogins() {
+        MaintenanceCoordinator coordinator = mock(MaintenanceCoordinator.class);
+        MaintenanceSnapshot countdown = MaintenanceSnapshot.scheduled(
+                ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT);
+        AtomicReference<MaintenanceSnapshot> state = new AtomicReference<>(countdown);
+        when(coordinator.snapshot()).thenAnswer(ignored -> state.get());
+        when(coordinator.blocksNewJobs()).thenAnswer(ignored -> state.get().blocksNewJobs());
+        Player regular = player(false, false);
+        AtomicLong clock = new AtomicLong(NOW + 30_000L);
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             var gate = gate(coordinator, clock::get)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of(regular));
+            assertFalse(gate.restricted());
+            gate.beginCancellation(false); // Countdown logging is still active.
+            gate.enforceOnline();
+            assertFalse(gate.restricted());
+            assertAllowed(gate, regular);
+            verify(regular, never()).kick(any(Component.class));
+
+            // Even a failed state-save attempt must not kick on an early cancel.
+            gate.cancellationFailed();
+            assertFalse(gate.restricted());
+            assertAllowed(gate, regular);
+            verify(regular, never()).kick(any(Component.class));
+
+            state.set(countdown.withPhase(MaintenancePhase.CANCELLED, "cancelled"));
+            gate.cancellationCompleted();
+            assertFalse(gate.restricted());
+            assertAllowed(gate, regular);
+            verify(regular, never()).kick(any(Component.class));
+        }
+    }
+
+    @Test
+    void pausedSqliteWriterStillGatesPlayersEvenIfMaintenanceStateIsCancelled() {
+        MaintenanceCoordinator coordinator = mock(MaintenanceCoordinator.class);
+        MaintenanceSnapshot cancelled = MaintenanceSnapshot.scheduled(
+                ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT)
+                .withPhase(MaintenancePhase.CANCELLED, "cancelled");
+        when(coordinator.snapshot()).thenReturn(cancelled);
+        when(coordinator.blocksNewJobs()).thenReturn(false);
+        Player regular = player(false, false);
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             var gate = gate(coordinator)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of(regular));
+            gate.beginCancellation(true); // query_only has not yet been cleared.
+            assertTrue(gate.restricted());
+            assertDenied(gate, regular);
+            verify(regular).kick(any(Component.class));
+            gate.cancellationFailed();
+            assertTrue(gate.restricted());
             gate.cancellationCompleted();
             assertFalse(gate.restricted());
             assertAllowed(gate, regular);

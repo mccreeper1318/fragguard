@@ -82,8 +82,13 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
         enforceOnline();
     }
 
-    void beginCancellation() {
-        // Persisting CANCELLED does NOT yet mean SQL query_only is cleared.
+    void beginCancellation(boolean loggingPaused) {
+        // Cancelling a countdown before its deadline has not frozen SQLite
+        // or restricted player admission. Do not disconnect players just
+        // because the operator decided to cancel scheduled maintenance.
+        // Failed/active maintenance, an expired countdown, or a paused writer
+        // must remain gated until cancellation and SQLite unfreeze complete.
+        if (!restricted() && !loggingPaused) return;
         cancellationPending = true;
         activationPending = true;
         enforceOnline();
@@ -96,7 +101,13 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
     }
 
     void cancellationFailed() {
-        cancellationPending = true;
+        // An unexpired countdown never acquired the cancellation gate.
+        // Preserve access on a failed early cancellation, while still
+        // honoring any newly expired deadline or uncertain coordinator state.
+        if (!cancellationPending) {
+            enforceOnline();
+            return;
+        }
         activationPending = true;
         enforceOnline();
     }
