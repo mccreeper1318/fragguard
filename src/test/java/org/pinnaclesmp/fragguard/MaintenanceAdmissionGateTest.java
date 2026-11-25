@@ -105,6 +105,30 @@ class MaintenanceAdmissionGateTest {
     }
 
     @Test
+    void cancelledStateDoesNotAdmitPlayersUntilSqliteLoggingIsRestored() {
+        MaintenanceCoordinator coordinator = mock(MaintenanceCoordinator.class);
+        MaintenanceSnapshot countdown = MaintenanceSnapshot.scheduled(
+                ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT);
+        var state = new AtomicReference<>(countdown.withPhase(MaintenancePhase.ACTIVE, "active"));
+        when(coordinator.snapshot()).thenAnswer(call -> state.get());
+        when(coordinator.blocksNewJobs()).thenAnswer(call -> state.get().blocksNewJobs());
+        Player regular = player(false, false);
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             var gate = gate(coordinator)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of());
+            gate.beginCancellation();
+            state.set(state.get().withPhase(MaintenancePhase.CANCELLED, "cancelled"));
+            gate.enforceOnline();
+            assertTrue(gate.restricted(),
+                    "Durable cancellation cannot reopen joins until SQLite query_only is OFF");
+            assertDenied(gate, regular);
+            gate.cancellationCompleted();
+            assertFalse(gate.restricted());
+            assertAllowed(gate, regular);
+        }
+    }
+
+    @Test
     void joinRaceAndPeriodicEnforcementHandlePermissionRevocation() {
         MaintenanceCoordinator coordinator = mock(MaintenanceCoordinator.class);
         MaintenanceSnapshot countdown = MaintenanceSnapshot.scheduled(
