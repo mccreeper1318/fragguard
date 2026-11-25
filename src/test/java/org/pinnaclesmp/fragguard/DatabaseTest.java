@@ -122,6 +122,27 @@ class DatabaseTest {
     }
 
     @Test
+    void frozenDatabaseStopsAndCheckpointsCleanlyWithoutLoggingFurtherEvents()
+            throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(),
+                105L, 1, 64, 4, "minecraft:stone", "minecraft:air"))).join();
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.maintenanceFullyFrozen());
+        database.shutdown();
+        assertTrue(database.workerStopped(),
+                "Worker must stop cleanly even with PRAGMA query_only enabled");
+        assertTrue(database.walCheckpointCompleted(),
+                "Maintenance shutdown still requires a complete WAL checkpoint");
+        assertTrue(database.health().storageAvailable());
+        try (Connection db = openDatabase(); Statement stmt = db.createStatement();
+             ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(1L, rows.getLong(1));
+        }
+    }
+
+    @Test
     void initializesVersionedSchemaAndPersistsStableActionIdentifiers() throws Exception {
         database = startDatabase();
         database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
