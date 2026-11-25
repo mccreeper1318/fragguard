@@ -734,7 +734,7 @@ final class Database {
      */
     CompletableFuture<HistoricalPlayerResolver.HistoricalPlayerIdentity> resolveHistoricalPlayerAsync(
             String playerArgument) {
-        return submit(connection -> HistoricalPlayerResolver.resolve(connection, playerArgument,
+        return submitRead(connection -> HistoricalPlayerResolver.resolve(connection, playerArgument,
                 this::queryStatement), true);
     }
 
@@ -746,7 +746,7 @@ final class Database {
     CompletableFuture<PlayerLookupPage> lookupPlayerAsync(
             String playerArgument, String worldName, int page, int pageSize,
             long durationMillis, int retentionDays) {
-        return submit(connection -> {
+        return submitRead(connection -> {
             long now = System.currentTimeMillis();
             long retainedMillis = TimeUnit.DAYS.toMillis(Math.max(1, retentionDays));
             long window = durationMillis <= 0L ? retainedMillis : Math.min(retainedMillis, durationMillis);
@@ -822,7 +822,7 @@ final class Database {
     CompletableFuture<LookupPage> lookupAsync(String worldName, int centerX, int centerZ, int radius,
                                               int page, int pageSize, int retentionDays) {
         String worldUuid = resolveWorldUuid(worldName);
-        return submit(databaseConnection -> {
+        return submitRead(databaseConnection -> {
             long cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays);
             int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius, cutoff);
             int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
@@ -836,7 +836,7 @@ final class Database {
     CompletableFuture<LookupPage> lookupSinceAsync(String worldName, int centerX, int centerZ, int radius,
                                                    int page, int pageSize, long cutoffTimestamp) {
         String worldUuid = resolveWorldUuid(worldName);
-        return submit(databaseConnection -> {
+        return submitRead(databaseConnection -> {
             int total = countLookup(databaseConnection, worldUuid, worldName, centerX, centerZ, radius,
                     cutoffTimestamp);
             int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
@@ -893,7 +893,7 @@ final class Database {
             }
         }
         final String scopedUuid = worldScopeUuid;
-        return submit(databaseConnection -> {
+        return submitRead(databaseConnection -> {
             long now = System.currentTimeMillis();
             long upper = Math.min(snapshotTimestamp, now);
             long cutoff = Math.max(targetTimestamp,
@@ -1059,7 +1059,7 @@ final class Database {
                                                                    long snapshotTimestamp, int maxBlocks,
                                                                    long maxSnapshotBytes) {
         String worldUuid = resolveWorldUuid(worldName);
-        return submit(databaseConnection -> selectRollbackTargets(databaseConnection, worldUuid, worldName,
+        return submitRead(databaseConnection -> selectRollbackTargets(databaseConnection, worldUuid, worldName,
                 centerX, centerZ, radius, targetTimestamp, snapshotTimestamp,
                 Math.max(1, maxBlocks), Math.max(1L, maxSnapshotBytes)), true);
     }
@@ -1299,11 +1299,11 @@ final class Database {
     }
 
     CompletableFuture<RollbackJob> loadRollbackJobAsync(long jobId) {
-        return submit(db -> loadJob(db, jobId), true);
+        return submitRead(db -> loadJob(db, jobId), true);
     }
 
     CompletableFuture<List<RollbackJob>> loadResumableJobsAsync() {
-        return submit(databaseConnection -> {
+        return submitRead(databaseConnection -> {
             List<RollbackJob> jobs = new ArrayList<>();
             try (PreparedStatement statement = databaseConnection.prepareStatement(
                     "SELECT * FROM rollback_jobs WHERE status IN ('RUNNING', 'UNDOING') ORDER BY id")) {
@@ -1324,7 +1324,7 @@ final class Database {
     CompletableFuture<List<RollbackJobChange>> loadRollbackChangesAsync(long jobId, boolean undo,
                                                                          long maxSnapshotBytes) {
         long maximumSnapshotBytes = Math.max(1L, maxSnapshotBytes);
-        return submit(databaseConnection -> {
+        return submitRead(databaseConnection -> {
             String condition = undo
                     ? "before_data IS NOT NULL AND conflicted = 0 AND undone = 0"
                     : "processed = 0";
