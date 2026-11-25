@@ -472,6 +472,8 @@ public final class FragGuardPlugin extends JavaPlugin {
             try {
                 Bukkit.getScheduler().runTask(this, () -> {
                     if (!isEnabled() || maintenance == null
+                            || maintenanceAdmissionGate == null
+                            || maintenanceAdmissionGate.cancellationInProgress()
                             || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
                             || !maintenance.snapshot().operationId().equals(expired.operationId())) {
                         return; // A concurrent cancellation won; do not re-freeze.
@@ -495,7 +497,8 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     private void waitForRollbackJobsBeforeFreeze(MaintenanceSnapshot expected,
                                                  long deadlineNanos) {
-        if (!isEnabled() || maintenance == null) return;
+        if (!isEnabled() || maintenance == null || maintenanceAdmissionGate == null
+                || maintenanceAdmissionGate.cancellationInProgress()) return;
         MaintenanceSnapshot current = maintenance.snapshot();
         if (current.phase() != MaintenancePhase.COUNTDOWN
                 || !current.operationId().equals(expected.operationId())) return;
@@ -520,7 +523,9 @@ public final class FragGuardPlugin extends JavaPlugin {
         database.hasActiveRollbackJobsAsync().whenComplete((active, failure) -> {
             try {
                 Bukkit.getScheduler().runTask(this, () -> {
-                    if (!isEnabled() || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+                    if (!isEnabled() || maintenanceAdmissionGate == null
+                            || maintenanceAdmissionGate.cancellationInProgress()
+                            || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
                             || !maintenance.snapshot().operationId().equals(expected.operationId())) return;
                     if (failure != null) {
                         failMaintenanceFreeze("Could not confirm that existing rollback/undo "
@@ -555,7 +560,8 @@ public final class FragGuardPlugin extends JavaPlugin {
     }
 
     private void freezeAfterRollbackJobsDrained(MaintenanceSnapshot expected) {
-        if (maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+        if (maintenanceAdmissionGate == null || maintenanceAdmissionGate.cancellationInProgress()
+                || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
                 || !maintenance.snapshot().operationId().equals(expected.operationId())) return;
         // At this point no new job can start, and the worker has confirmed
         // there are no RUNNING/UNDOING jobs. Close SQL admission atomically,

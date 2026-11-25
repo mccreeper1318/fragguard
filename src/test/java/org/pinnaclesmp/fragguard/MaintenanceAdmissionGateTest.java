@@ -205,6 +205,30 @@ class MaintenanceAdmissionGateTest {
     }
 
     @Test
+    void cancellationInFlightPreventsStartingNewActivationAfterDeadline() {
+        MaintenanceCoordinator coordinator = mock(MaintenanceCoordinator.class);
+        MaintenanceSnapshot countdown = MaintenanceSnapshot.scheduled(
+                ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT);
+        AtomicLong clock = new AtomicLong(NOW + 599_999L);
+        when(coordinator.snapshot()).thenReturn(countdown);
+        when(coordinator.blocksNewJobs()).thenReturn(false);
+        Player regular = player(false, false);
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
+             var gate = gate(coordinator, clock::get)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of(regular));
+            gate.beginCancellation(false);
+            assertTrue(gate.cancellationInProgress());
+            assertFalse(gate.restricted());
+            clock.incrementAndGet();
+            assertFalse(gate.beginActivation(countdown),
+                    "Do not freeze after an early cancellation has already started");
+            assertTrue(gate.restricted(), "Expired countdown still restricts joins");
+            gate.cancellationCompleted();
+            assertFalse(gate.cancellationInProgress());
+        }
+    }
+
+    @Test
     void countdownCancellationFinishingAfterDeadlineHoldsEvenWithoutActivationCallback() {
         MaintenanceCoordinator coordinator = mock(MaintenanceCoordinator.class);
         MaintenanceSnapshot countdown = MaintenanceSnapshot.scheduled(

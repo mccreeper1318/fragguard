@@ -63,7 +63,10 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
      * an operator resolves/cancels the maintenance attempt.
      */
     boolean beginActivation(MaintenanceSnapshot countdown) {
-        if (stopped || countdown.phase() != MaintenancePhase.COUNTDOWN) return false;
+        // A cancellation may still be saving while COUNTDOWN reaches zero.
+        // Do not start a new freeze after cancellation has acquired its gate.
+        if (stopped || cancellationPending
+                || countdown.phase() != MaintenancePhase.COUNTDOWN) return false;
         MaintenanceSnapshot actual = coordinator.snapshot();
         if (actual.phase() != MaintenancePhase.COUNTDOWN
                 || !actual.operationId().equals(countdown.operationId())
@@ -71,6 +74,10 @@ final class MaintenanceAdmissionGate implements Listener, AutoCloseable {
         activationPending = true;
         enforceOnline(); // Kick regular players now, not after the async metadata write.
         return true;
+    }
+
+    boolean cancellationInProgress() {
+        return cancellationPending;
     }
 
     void activationCompleted() {
