@@ -2170,16 +2170,47 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     + "READY/ACTIVATING requires preserving recovery evidence."));
             return;
         }
-        if (state.phase() == MaintenancePhase.COMPACTING && compaction.cancel()) {
-            player.sendMessage(color("&eCompaction cancellation requested. SQLite "
-                    + "worker will preserve the source and unverified candidate."));
+        // Workers persist CANCELLED themselves, but until that promise is
+        // complete the SQL write gate remains frozen and regular players must
+        // not be admitted. This also covers cancelling during VACUUM/verify.
+        if (state.phase() == MaintenancePhase.COMPACTING && compaction.progress().running()) {
+            if (!maintenanceTransitionPending.compareAndSet(false, true)) {
+                player.sendMessage(color("&eA maintenance transition is already pending."));
+                return;
+            }
+            plugin.beginMaintenanceCancellation();
+            if (compaction.cancel()) {
+                player.sendMessage(color("&eStopping compaction and preserving both databases. "
+                        + "Logging will resume after cancellation is durable."));
+                compaction.whenStopped().whenComplete((ignored, error) ->
+                        onServerThread(() -> completeCancelledMaintenance(player, coordinator)));
+            } else {
+                maintenanceTransitionPending.set(false);
+                plugin.failedMaintenanceCancellation();
+                player.sendMessage(color("&cCompaction cancellation could not be confirmed; "
+                        + "logging remains paused."));
+            }
             return;
         }
         if (state.phase() == MaintenancePhase.VERIFYING) {
             CompactionCandidateVerifier verifier = plugin.getCandidateVerifier();
-            if (verifier != null && verifier.cancel()) {
-                player.sendMessage(color("&eVerification cancellation requested. "
-                        + "Original and candidate files remain available."));
+            if (verifier != null && verifier.progress().running()) {
+                if (!maintenanceTransitionPending.compareAndSet(false, true)) {
+                    player.sendMessage(color("&eA maintenance transition is already pending."));
+                    return;
+                }
+                plugin.beginMaintenanceCancellation();
+                if (verifier.cancel()) {
+                    player.sendMessage(color("&eStopping verification; no SQLite files will "
+                            + "be replaced. Logging resumes after durable cancellation."));
+                    verifier.whenStopped().whenComplete((ignored, error) ->
+                            onServerThread(() -> completeCancelledMaintenance(player, coordinator)));
+                } else {
+                    maintenanceTransitionPending.set(false);
+                    plugin.failedMaintenanceCancellation();
+                    player.sendMessage(color("&cVerification cancellation could not be "
+                            + "confirmed; logging remains paused."));
+                }
                 return;
             }
         }
@@ -2212,37 +2243,48 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         plugin.getLogger().log(Level.SEVERE, "Maintenance cancellation failed", error);
                         return;
                     }
-                    // CANCELLED is durable, but ordinary player login remains
-                    // restricted until SQLite has switched out of query_only
-                    // and accepted new writes again.
-                    database.resumeWritesAfterCancellationAsync()
-                            .whenComplete((resumed, resumeError) -> onServerThread(() -> {
-                        maintenanceTransitionPending.set(false);
-                        if (resumeError != null) {
-                            plugin.failedMaintenanceCancellation();
-                            player.sendMessage(color("&cCancellation saved, but SQLite "
-                                    + "could not resume logging. Player access remains "
-                                    + "blocked. Review console before restarting."));
-                            plugin.getLogger().log(Level.SEVERE,
-                                    "Could not safely resume logging after maintenance", resumeError);
-                            return;
-                        }
-                        CompactionReplacementPolicy policy = plugin.getReplacementPolicy();
-                        if (policy != null) {
-                            policy.releaseStrictProofAfterCancel().whenComplete((released, releaseError) -> {
-                                if (releaseError != null) {
-                                    plugin.getLogger().log(Level.FINE,
-                                            "Stale STRICT watcher cleanup deferred until worker finishes",
-                                            unwrap(releaseError));
-                                }
-                            });
-                        }
-                        plugin.completeMaintenanceCancellation();
-                        MaintenanceChatOutput.title(player::sendMessage, "Maintenance Cancelled");
-                        MaintenanceChatOutput.action(player::sendMessage,
-                                "FragGuard history logging RESUMED; original and candidates preserved.");
-                    }));
+                    completeCancelledMaintenance(player, coordinator);
                 }));
+    }
+
+    private void completeCancelledMaintenance(Player player,
+                                              MaintenanceCoordinator coordinator) {
+        if (coordinator.snapshot().phase() != MaintenancePhase.CANCELLED) {
+            maintenanceTransitionPending.set(false);
+            plugin.failedMaintenanceCancellation();
+            player.sendMessage(color("&cMaintenance worker did not confirm cancellation. "
+                    + "Player access and logging remain restricted; review status/console."));
+            return;
+        }
+        // The durable cancellation must not admit regular players before the
+        // single SQLite worker turns query_only OFF and reopens write admission.
+        database.resumeWritesAfterCancellationAsync()
+                .whenComplete((resumed, resumeError) -> onServerThread(() -> {
+            maintenanceTransitionPending.set(false);
+            if (resumeError != null) {
+                plugin.failedMaintenanceCancellation();
+                player.sendMessage(color("&cCancellation saved, but SQLite "
+                        + "could not resume logging. Player access remains "
+                        + "blocked. Review console before restarting."));
+                plugin.getLogger().log(Level.SEVERE,
+                        "Could not safely resume logging after maintenance", resumeError);
+                return;
+            }
+            CompactionReplacementPolicy policy = plugin.getReplacementPolicy();
+            if (policy != null) {
+                policy.releaseStrictProofAfterCancel().whenComplete((released, releaseError) -> {
+                    if (releaseError != null) {
+                        plugin.getLogger().log(Level.FINE,
+                                "Stale STRICT watcher cleanup deferred until worker finishes",
+                                unwrap(releaseError));
+                    }
+                });
+            }
+            plugin.completeMaintenanceCancellation();
+            MaintenanceChatOutput.title(player::sendMessage, "Maintenance Cancelled");
+            MaintenanceChatOutput.action(player::sendMessage,
+                    "FragGuard history logging RESUMED; original and candidates preserved.");
+        }));
     }
 
     private void approveMaintenancePolicy(Player player, String[] args,
