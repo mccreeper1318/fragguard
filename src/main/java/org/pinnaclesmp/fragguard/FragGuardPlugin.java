@@ -38,6 +38,10 @@ public final class FragGuardPlugin extends JavaPlugin {
     // accepted world mutations and their persisted audit callbacks finish.
     // Do not set the SQLite write freeze before the jobs are quiescent.
     private volatile boolean rollbackJobsQuiescing;
+    // A restricted startup cannot resume saved RUNNING/UNDOING jobs until
+    // maintenance has been safely cancelled and the SQLite writer is writable.
+    // Keep this request across failed/aborted cancellation attempts.
+    private boolean deferredRollbackRecovery;
 
     @Override
     public void onEnable() {
@@ -195,8 +199,10 @@ public final class FragGuardPlugin extends JavaPlugin {
         if (!maintenanceBlocksNewJobs()) {
             commandExecutor.resumeInterruptedJobs();
         } else {
+            deferRollbackRecovery();
             getLogger().warning("Maintenance remains restricted: rollback/undo jobs "
-                    + "will not resume and world changes are NOT logged.");
+                    + "will not resume until maintenance is safely cancelled, and "
+                    + "world changes are NOT logged.");
         }
         scheduleCleanup();
         scheduleStorageHealthMonitor();
@@ -585,6 +591,32 @@ public final class FragGuardPlugin extends JavaPlugin {
     void completeMaintenanceCancellation() {
         rollbackJobsQuiescing = false;
         if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.cancellationCompleted();
+    }
+
+    void deferRollbackRecovery() {
+        deferredRollbackRecovery = true;
+    }
+
+    /**
+     * Restart only rollback/undo jobs that were withheld during restricted
+     * startup. This is deliberately invoked after the durable CANCELLED state,
+     * query_only=OFF, restored connection PRAGMAs, and released job admission.
+     *
+     * The pending flag is consumed once on the main thread. If an intervening
+     * maintenance transition restricts the async load callback, the command
+     * executor re-arms this flag instead of starting any jobs.
+     */
+    void resumeDeferredRollbackRecoveryAfterCancellation() {
+        if (!deferredRollbackRecovery) return;
+        if (database == null || commandExecutor == null
+                || maintenance == null || maintenanceBlocksNewJobs()
+                || maintenance.snapshot().phase() != MaintenancePhase.CANCELLED
+                || database.maintenanceWritesPaused()) {
+            return; // Retain the request until maintenance is safely cancelled.
+        }
+        deferredRollbackRecovery = false;
+        getLogger().info("Resuming rollback/undo recovery deferred by maintenance.");
+        commandExecutor.resumeInterruptedJobs();
     }
 
     void failedMaintenanceCancellation() {
