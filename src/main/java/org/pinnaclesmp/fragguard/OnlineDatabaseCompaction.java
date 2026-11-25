@@ -410,6 +410,13 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
         }
     }
 
+    /** Completes only after the worker has stopped and committed its final state. */
+    CompletableFuture<Void> whenStopped() {
+        Job task = active.get();
+        return task == null ? CompletableFuture.completedFuture(null)
+                : task.response.handle((ignored, failure) -> null);
+    }
+
     boolean cancel() {
         Job job = active.get();
         if (job == null) return false;
