@@ -69,6 +69,13 @@ final class FrozenMaintenanceProof {
         if (Files.exists(file(rootPath), LinkOption.NOFOLLOW_LINKS)) {
             try {
                 Properties old = load(file(rootPath));
+                if (!FORMAT.equals(old.getProperty("format"))
+                        || !old.getProperty("maintenance_operation_id", "").matches(
+                                "[a-fA-F0-9-]{36}")
+                        || !old.getProperty("source_identity_sha256", "").matches(
+                                "[a-f0-9]{64}")) {
+                    throw new IOException("Previous frozen proof is corrupt; refuse replacement");
+                }
                 if (state.operationId().equals(old.getProperty("maintenance_operation_id"))) {
                     throw new IOException("This maintenance operation already has a freeze proof");
                 }
