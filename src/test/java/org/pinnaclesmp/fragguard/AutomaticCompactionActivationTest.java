@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * #206: simulate a host kill after every individual atomic rename and verify
  * that the next ordinary startup can resume without losing old SQLite state.
- * Optional at-scale run: -Dfg.auto.activation.rows=57000000 (storage permitting).
+ * Optional at-scale run: FG_COMPACTION_VALIDATION_ROWS=57000000 (storage permitting).
  */
 class AutomaticCompactionActivationTest {
     @TempDir Path root;
@@ -191,8 +191,11 @@ class AutomaticCompactionActivationTest {
     }
 
     private int rowCount() {
-        return Math.max(6, Math.min(57_000_000,
-                Integer.getInteger("fg.auto.activation.rows", 3_000)));
+        String value = System.getenv("FG_COMPACTION_VALIDATION_ROWS");
+        int rows = value == null || value.isBlank() ? 3_000 : Integer.parseInt(value);
+        assertTrue(rows >= 100 && rows <= 57_000_000,
+                "At-scale tests require 100..57,000,000 isolated synthetic history rows");
+        return rows;
     }
 
     private CompactionReplacementPolicyTest.Setup prepared(
