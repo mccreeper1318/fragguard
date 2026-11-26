@@ -160,8 +160,10 @@ final class MaintenanceChatOutput {
                     ? "Run /fg maintenance verify after copying completes"
                     : "Review replacement policy before /fg maintenance approve");
             case READY_TO_SWAP -> {
-                danger(send, "STOP Paper cleanly; require a valid shutdown receipt before ANY file move.");
-                action(send, "Preview: /fg maintenance instructions");
+                notice(send, "FragGuard activates the verified copy automatically "
+                        + "when Paper next starts after a clean shutdown.");
+                danger(send, "Do not rename or touch SQLite files.");
+                action(send, "Guide: /fg maintenance instructions");
             }
             case ACTIVATING, FAILED -> {
                 danger(send, "Preserve source, backup, candidate, WAL/SHM and manifests. Do NOT swap files.");
@@ -178,30 +180,33 @@ final class MaintenanceChatOutput {
     static void instructions(Consumer<Component> send,
                              MaintenanceSnapshot state, List<String> full, boolean detailed,
                              boolean strictPending) {
-        title(send, detailed ? "Manual Activation · Full Steps"
-                : "Manual Activation · Summary");
+        title(send, detailed ? "Automatic Activation · Full Guidance"
+                : "Automatic Activation · Summary");
         if (strictPending) {
-            danger(send, "STRICT approval pending: this is PREVIEW ONLY, never permission to move files.");
-            notice(send, "A clean shutdown receipt is mandatory after the final source comparison.");
+            notice(send, "STRICT must finish its complete online comparison "
+                    + "before Paper stops; a clean shutdown receipt is mandatory.");
         } else {
-            notice(send, "Approval still requires a clean shutdown receipt from FragGuard.");
+            notice(send, "A valid clean shutdown receipt must be written "
+                    + "before automatic activation is allowed.");
         }
-        danger(send, "NEVER move or rename SQLite files while Paper is running.");
-        danger(send, "Preserve the original DB and matching WAL/SHM; never mix sidecars.");
+        danger(send, "Do NOT rename, move, or delete SQLite files.");
+        notice(send, "On startup, FragGuard preserves the original with matching WAL/SHM "
+                + "and installs the verified candidate before SQLite opens.");
         if (state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT) {
-            danger(send, "SNAPSHOT can lose history/undo since copy; worlds do NOT roll back.");
+            danger(send, "Snapshot Mode can lose post-copy history/undo. "
+                    + "Minecraft worlds are NOT rolled back.");
         }
         if (detailed) {
-            section(send, "Exact hosting-file-manager steps");
+            section(send, "Hosting-panel activation");
             for (String step : full) {
                 send.accept(Component.text(step, NamedTextColor.WHITE));
             }
         } else {
-            section(send, "After receipt and full server stop");
-            value(send, "Original", "Preserve as the named backup, with matching WAL/SHM");
-            value(send, "Verified copy", state.candidateFile());
-            value(send, "Restart", "Paper validates the replacement before enabling logging");
-            action(send, "Exact filenames and ALL steps: /fg maintenance instructions full");
+            section(send, "What the server owner does");
+            value(send, "After approval", "Paper stops cleanly and writes a verified receipt");
+            value(send, "Restart", "If the host does not auto-restart, press Start once");
+            value(send, "SQLite backup", "FragGuard preserves original DB and matching sidecars");
+            action(send, "Full guidance: /fg maintenance instructions full");
         }
     }
 
