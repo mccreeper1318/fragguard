@@ -37,12 +37,81 @@ class AutomaticCompactionActivationTest {
             AutomaticCompactionActivation.recordVerifiedBeforeDatabaseOpen(folder, state);
             job.state.beginActivation().get(20, TimeUnit.SECONDS);
             assertEquals(MaintenancePhase.ACTIVATING, job.state.snapshot().phase());
+            AutomaticCompactionActivation.recordSuccessfulWriterStartup(
+                    folder, job.state.snapshot());
             job.state.finishVerifiedActivation().get(20, TimeUnit.SECONDS);
             assertEquals(MaintenancePhase.IDLE, job.state.snapshot().phase());
+            AutomaticCompactionActivation.archiveCompletedEvidenceIfPresent(folder);
+            Path archived = folder.resolve("compaction-candidates-old")
+                    .resolve("completed-" + state.operationId());
+            assertTrue(Files.isDirectory(archived));
+            assertFalse(Files.exists(folder.resolve("compaction-candidates")));
+            assertTrue(Files.isRegularFile(archived.resolve(
+                    ".fg-compaction-reservation")),
+                    "Old candidate marker is preserved outside active candidate slot");
+            // A later maintenance should not be blocked by a completed copy.
+            try (CompactionStoragePreflight anotherPreflight =
+                         new CompactionStoragePreflight(folder)) {
+                assertEquals(0, anotherPreflight.measure().existingCandidateFiles());
+            }
             assertTrue(Files.isRegularFile(receipt.backup()),
                     "Successful activation must never erase original history");
             assertTrue(Files.isRegularFile(receipt.path()),
                     "Provenance remains available after activation");
+        }
+    }
+
+    @Test
+    void idledServerCompletesMetadataArchivalAfterInterruptedRestart() throws Exception {
+        Path folder = root.resolve("archive-after-kill");
+        String operationId;
+        try (var job = prepared(folder, MaintenancePolicy.STRICT, 6)) {
+            receipt(job);
+            var state = job.state.snapshot();
+            operationId = state.operationId();
+            AutomaticCompactionActivation.activateBeforeDatabaseOpen(folder, state);
+            CompactionActivation.verifyInstalled(folder, state);
+            AutomaticCompactionActivation.recordVerifiedBeforeDatabaseOpen(folder, state);
+            job.state.beginActivation().join();
+            AutomaticCompactionActivation.recordSuccessfulWriterStartup(
+                    folder, job.state.snapshot());
+            job.state.finishVerifiedActivation().join();
+            // Simulate a host kill after durable IDLE but before archiving.
+            assertTrue(Files.isDirectory(folder.resolve("compaction-candidates")));
+        }
+        try (var restarted = MaintenanceCoordinator.open(folder)) {
+            assertEquals(MaintenancePhase.IDLE, restarted.snapshot().phase());
+            assertFalse(Files.exists(folder.resolve("compaction-candidates")));
+            assertTrue(Files.isRegularFile(folder.resolve("compaction-candidates-old")
+                    .resolve("completed-" + operationId)
+                    .resolve(".fg-auto-activation-complete.properties")));
+            assertTrue(Files.isRegularFile(folder.resolve(
+                    "fragguard-original-" + operationId + ".db"))
+                    || Files.isRegularFile(folder.resolve("fragguard.db")));
+        }
+    }
+
+    @Test
+    void unknownFilesPreventArchiveWithoutDeletingAnyCandidateData() throws Exception {
+        Path folder = root.resolve("unrecognized-artifact");
+        try (var job = prepared(folder, MaintenancePolicy.STRICT, 6)) {
+            receipt(job);
+            var state = job.state.snapshot();
+            AutomaticCompactionActivation.activateBeforeDatabaseOpen(folder, state);
+            CompactionActivation.verifyInstalled(folder, state);
+            AutomaticCompactionActivation.recordVerifiedBeforeDatabaseOpen(folder, state);
+            job.state.beginActivation().join();
+            AutomaticCompactionActivation.recordSuccessfulWriterStartup(
+                    folder, job.state.snapshot());
+            job.state.finishVerifiedActivation().join();
+            Path unknown = folder.resolve("compaction-candidates")
+                    .resolve("unknown-failed-candidate.db");
+            Files.writeString(unknown, "do not delete or archive this failed candidate");
+            assertThrows(IOException.class,
+                    () -> AutomaticCompactionActivation.archiveCompletedEvidenceIfPresent(folder));
+            assertEquals("do not delete or archive this failed candidate",
+                    Files.readString(unknown));
+            assertTrue(Files.isDirectory(folder.resolve("compaction-candidates")));
         }
     }
 
