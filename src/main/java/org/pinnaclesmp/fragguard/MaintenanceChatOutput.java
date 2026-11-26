@@ -183,8 +183,9 @@ final class MaintenanceChatOutput {
         title(send, detailed ? "Automatic Activation · Full Guidance"
                 : "Automatic Activation · Summary");
         if (strictPending) {
-            notice(send, "STRICT must finish its complete online comparison "
-                    + "before Paper stops; a clean shutdown receipt is mandatory.");
+            notice(send, "STRICT approval pending: PREVIEW ONLY. Complete the full "
+                    + "online comparison before Paper stops; a clean shutdown "
+                    + "receipt is mandatory.");
         } else {
             notice(send, "A valid clean shutdown receipt must be written "
                     + "before automatic activation is allowed.");
