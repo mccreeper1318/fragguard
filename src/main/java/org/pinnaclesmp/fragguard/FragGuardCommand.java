@@ -2301,8 +2301,6 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     + "READY/ACTIVATING requires preserving recovery evidence."));
             return;
         }
-        AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
-        if (automatic != null) automatic.abandon(state.operationId());
         // Workers persist CANCELLED themselves, but until that promise is
         // complete the SQL write gate remains frozen and regular players must
         // not be admitted. This also covers cancelling during VACUUM/verify.

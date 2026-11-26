@@ -789,6 +789,12 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     /** Ensure normal players remain gated until SQLite is writable again. */
     void beginMaintenanceCancellation() {
+        // Only abort the automatic workflow AFTER the command successfully
+        // acquires its cancellation transition gate. A rejected/busy cancel
+        // request must not silently disable an otherwise valid automation.
+        if (automaticMaintenance != null && maintenance != null) {
+            automaticMaintenance.abandon(maintenance.snapshot().operationId());
+        }
         if (maintenanceAdmissionGate != null) {
             maintenanceAdmissionGate.beginCancellation(
                     database != null && database.maintenanceWritesPaused());
