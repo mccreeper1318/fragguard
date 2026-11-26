@@ -199,6 +199,11 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                 plan.scheduling = true;
                 return state.schedule(operator, now, now + seconds * 1_000L,
                         MaintenancePolicy.STRICT).thenApply(saved -> {
+                            if (!owned(plan) || saved.phase() != MaintenancePhase.COUNTDOWN
+                                    || !saved.operationId().equals(state.snapshot().operationId())) {
+                                throw new IllegalStateException("Countdown was cancelled or "
+                                        + "superseded before the scheduling callback completed");
+                            }
                             plan.operationId = saved.operationId();
                             plan.stage = "Countdown: block logging ON; waiting for frozen source";
                             notifyOperator(plan, "STRICT maintenance countdown started ("
@@ -339,7 +344,17 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
 
     void abandon(String operationId) {
         Plan plan = current.get();
-        if (plan != null && plan.operationId.equals(operationId)) current.compareAndSet(plan, null);
+        if (plan == null) return;
+        // The coordinator may have DURABLY committed COUNTDOWN while the
+        // schedule future's callback has not yet recorded its operationId
+        // on the Plan. The proper persisted cancellation path must still
+        // abandon the corresponding automatic flow.
+        if (plan.operationId.equals(operationId)
+                || (plan.scheduling && plan.operationId.isBlank()
+                    && !operationId.isBlank()
+                    && operationId.equals(state.snapshot().operationId()))) {
+            current.compareAndSet(plan, null);
+        }
     }
 
     private void fail(Plan plan, Throwable cause) {
