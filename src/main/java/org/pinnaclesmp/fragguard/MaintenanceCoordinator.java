@@ -201,6 +201,22 @@ final class MaintenanceCoordinator implements AutoCloseable {
         return advance(MaintenancePhase.FAILED, reason);
     }
 
+    /**
+     * #207: asynchronous VACUUM/verification/STRICT callbacks may not fail
+     * another operation or a cancelled/ready-for-startup maintenance state.
+     * Compare the operation and phase inside the serialized durable worker.
+     */
+    CompletableFuture<MaintenanceSnapshot> failCurrentWorkIfOperation(
+            String operationId, String reason) {
+        Objects.requireNonNull(operationId, "operationId");
+        return commit(existing -> existing.operationId().equals(operationId)
+                && (existing.phase() == MaintenancePhase.ACTIVE
+                    || existing.phase() == MaintenancePhase.COMPACTING
+                    || existing.phase() == MaintenancePhase.VERIFYING)
+                ? existing.withPhase(MaintenancePhase.FAILED, reason)
+                : existing);
+    }
+
     /** Ignore a failed freeze from a previously cancelled maintenance operation. */
     CompletableFuture<MaintenanceSnapshot> failCountdownIfCurrent(
             String operationId, String reason) {
