@@ -351,7 +351,11 @@ class CompactionReplacementPolicyTest {
         final UUID operator = UUID.randomUUID();
 
         Setup(Path root, MaintenancePolicy kind) throws Exception {
-            source = DatabaseDeepDiagnosticsTest.seededDatabase(root, 6);
+            this(root, kind, 6);
+        }
+
+        Setup(Path root, MaintenancePolicy kind, int historyRows) throws Exception {
+            source = DatabaseDeepDiagnosticsTest.seededDatabase(root, historyRows);
             state = MaintenanceCoordinator.open(root);
             long begin = System.currentTimeMillis() - 5_000;
             state.schedule(operator, begin, begin + 1000, kind)
