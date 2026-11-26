@@ -128,11 +128,11 @@ final class FragGuardGuiRenderer {
                         : "&cSnapshot Mode: explicit irreversible loss consent.",
                 view.canApprove() ? "&eClick for confirmation"
                         : "&8Candidate has no verified manifest"));
-        inv.setItem(32, item(Material.PAPER, "&eManual Activation Instructions",
-                "&7STOP Paper completely after approval.",
-                "&7Keep original DB and matching WAL/SHM.",
-                "&7Copy has its own fingerprint/manifest.",
-                "&eClick for exact file-manager steps."));
+        inv.setItem(32, item(Material.PAPER, "&eAutomatic Activation Guide",
+                "&7FragGuard gracefully stops Paper after approval.",
+                "&7Verified DB and matching WAL/SHM backup on restart.",
+                "&7Host does not auto-restart? Press Start once.",
+                "&eNo manual file moves. Click for safety guidance."));
         inv.setItem(34, item(view.canCancel() ? Material.BARRIER : Material.GRAY_DYE,
                 "&cCancel Maintenance",
                 "&7Does not delete original or candidate.",
