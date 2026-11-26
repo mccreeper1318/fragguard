@@ -56,8 +56,8 @@ class AutomaticCompactionActivationTest {
             }
             assertTrue(Files.isRegularFile(receipt.backup()),
                     "Successful activation must never erase original history");
-            assertTrue(Files.isRegularFile(receipt.path()),
-                    "Provenance remains available after activation");
+            assertTrue(Files.isRegularFile(archived.resolve(receipt.path().getFileName())),
+                    "Authenticated shutdown receipt must be preserved inside the completed archive");
         }
     }
 
