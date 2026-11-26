@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 public final class FragGuardPlugin extends JavaPlugin {
@@ -32,6 +33,8 @@ public final class FragGuardPlugin extends JavaPlugin {
     private BlockChangeListener changeListener;
     private boolean storageWarningActive;
     private boolean incrementalIncompatibleNotified;
+    private final AtomicBoolean retentionCleanupDispatchActive = new AtomicBoolean();
+    private final AtomicBoolean retentionCleanupPauseNotified = new AtomicBoolean();
     private long lastStorageWarningAt;
     private int guiLookupFetchSize = DEFAULT_GUI_LOOKUP_FETCH_SIZE;
     // Countdown expiry must refuse NEW rollback/undo jobs while already
@@ -461,15 +464,41 @@ public final class FragGuardPlugin extends JavaPlugin {
         // jobs, which can still be applying world edits or confirming audits.
         // The SQLite freeze barrier is not allowed to race those callbacks.
         rollbackJobsQuiescing = true;
-        getLogger().info("Maintenance deadline reached. Waiting for existing rollback/undo "
-                + "jobs to finish and commit all their audits before pausing history logging.");
+        getLogger().info("Maintenance deadline reached. Pausing background retention/reclamation "
+                + "and waiting for accepted SQLite batches and rollback audits to finish.");
         long deadlineNanos = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
-        waitForRollbackJobsBeforeFreeze(expired, deadlineNanos);
+        database.pauseBackgroundMutationsForMaintenanceAsync()
+                .whenComplete((drained, failure) -> {
+            try {
+                Bukkit.getScheduler().runTask(this, () -> {
+                    if (!isEnabled() || maintenance == null
+                            || maintenanceAdmissionGate == null
+                            || maintenanceAdmissionGate.cancellationInProgress()
+                            || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+                            || !maintenance.snapshot().operationId().equals(expired.operationId())) {
+                        return; // A concurrent cancellation won; do not re-freeze.
+                    }
+                    if (failure != null) {
+                        failMaintenanceFreeze("Background retention/reclamation could not drain "
+                                + "before the SQLite freeze. No compaction may begin.");
+                        getLogger().log(Level.SEVERE,
+                                "Maintenance background-mutation drain failed", failure);
+                        return;
+                    }
+                    waitForRollbackJobsBeforeFreeze(expired, deadlineNanos);
+                });
+            } catch (RuntimeException schedulingFailure) {
+                getLogger().log(Level.SEVERE, "Could not schedule background mutation drain; "
+                        + "stopping Paper with source preserved", schedulingFailure);
+                Bukkit.shutdown();
+            }
+        });
     }
 
     private void waitForRollbackJobsBeforeFreeze(MaintenanceSnapshot expected,
                                                  long deadlineNanos) {
-        if (!isEnabled() || maintenance == null) return;
+        if (!isEnabled() || maintenance == null || maintenanceAdmissionGate == null
+                || maintenanceAdmissionGate.cancellationInProgress()) return;
         MaintenanceSnapshot current = maintenance.snapshot();
         if (current.phase() != MaintenancePhase.COUNTDOWN
                 || !current.operationId().equals(expected.operationId())) return;
@@ -494,7 +523,9 @@ public final class FragGuardPlugin extends JavaPlugin {
         database.hasActiveRollbackJobsAsync().whenComplete((active, failure) -> {
             try {
                 Bukkit.getScheduler().runTask(this, () -> {
-                    if (!isEnabled() || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+                    if (!isEnabled() || maintenanceAdmissionGate == null
+                            || maintenanceAdmissionGate.cancellationInProgress()
+                            || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
                             || !maintenance.snapshot().operationId().equals(expected.operationId())) return;
                     if (failure != null) {
                         failMaintenanceFreeze("Could not confirm that existing rollback/undo "
@@ -529,7 +560,8 @@ public final class FragGuardPlugin extends JavaPlugin {
     }
 
     private void freezeAfterRollbackJobsDrained(MaintenanceSnapshot expected) {
-        if (maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+        if (maintenanceAdmissionGate == null || maintenanceAdmissionGate.cancellationInProgress()
+                || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
                 || !maintenance.snapshot().operationId().equals(expected.operationId())) return;
         // At this point no new job can start, and the worker has confirmed
         // there are no RUNNING/UNDOING jobs. Close SQL admission atomically,
@@ -594,6 +626,9 @@ public final class FragGuardPlugin extends JavaPlugin {
     void completeMaintenanceCancellation() {
         rollbackJobsQuiescing = false;
         if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.cancellationCompleted();
+        // Called only after durable CANCELLED and SQLite query_only=OFF.
+        // Catch up at the normal bounded budget, never an unbounded purge.
+        runRetentionCleanupOnce();
     }
 
     void deferRollbackRecovery() {
@@ -693,12 +728,31 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     private void scheduleCleanup() {
         long ticks = TimeUnit.MINUTES.toSeconds(Math.max(1, getConfig().getInt("cleanup-interval-minutes", 60))) * 20L;
-        Runnable cleanup = () -> database.cleanupOldRecordsAsync(getRetentionDays(), getRollbackJobRetentionDays())
+        Bukkit.getScheduler().runTaskTimerAsynchronously(
+                this, this::runRetentionCleanupOnce, 20L * 30L, ticks);
+    }
+
+    /** One bounded pass at a time, including timer ticks and post-cancel catch-up. */
+    void runRetentionCleanupOnce() {
+        Database db = database;
+        if (db == null || !isEnabled()) return;
+        if (db.backgroundMutationsPausedForMaintenance() || maintenanceBlocksNewJobs()) {
+            noteRetentionCleanupPaused();
+            return;
+        }
+        if (!retentionCleanupDispatchActive.compareAndSet(false, true)) return;
+        db.cleanupOldRecordsAsync(getRetentionDays(), getRollbackJobRetentionDays())
                 .whenComplete((deleted, throwable) -> {
+                    retentionCleanupDispatchActive.set(false);
+                    if (deleted != null && deleted.pausedForMaintenance()) {
+                        noteRetentionCleanupPaused();
+                        return;
+                    }
                     if (throwable != null) {
                         getLogger().log(Level.WARNING, "FragGuard retention cleanup failed.", throwable);
                         return;
                     }
+                    retentionCleanupPauseNotified.set(false);
                     if (deleted.blockRecordsDeleted() > 0)
                         getLogger().info("Deleted " + deleted.blockRecordsDeleted() + " old block log records.");
                     if (deleted.rollbackJobsDeleted() > 0)
@@ -710,14 +764,20 @@ public final class FragGuardPlugin extends JavaPlugin {
                     if (deleted.batchBudgetReached())
                         getLogger().info("Retention cleanup hit its per-run batch budget; "
                                 + "remaining expired rows, if any, will be handled by the next run.");
-                    // Optional incremental_vacuum is a separate bounded queue
-                    // operation after committed deletion work, never in a cleanup
-                    // transaction or during controlled maintenance.
+                    // Optional reclamation is separately admitted by the database
+                    // gate, so a countdown/async callback cannot bypass the pause.
                     if ((deleted.blockRecordsDeleted() > 0 || deleted.rollbackJobsDeleted() > 0)
-                            && database.incrementalReclaimEnabled()
+                            && db.incrementalReclaimEnabled()
+                            && !db.backgroundMutationsPausedForMaintenance()
                             && !maintenanceBlocksNewJobs()) {
-                        database.incrementalReclaimAfterCleanupAsync().whenComplete((result, failure) -> {
+                        db.incrementalReclaimAfterCleanupAsync().whenComplete((result, failure) -> {
                             if (failure != null) {
+                                if (db.backgroundMutationsPausedForMaintenance()
+                                        || failure instanceof Database.MaintenanceBackgroundPausedException
+                                        || failure.getCause() instanceof Database.MaintenanceBackgroundPausedException) {
+                                    noteRetentionCleanupPaused();
+                                    return;
+                                }
                                 getLogger().log(Level.WARNING,
                                         "Optional bounded incremental SQLite reclamation skipped/failed; "
                                         + "retention cleanup and live logging continue.", failure);
@@ -732,7 +792,13 @@ public final class FragGuardPlugin extends JavaPlugin {
                         });
                     }
                 });
-        Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, 20L * 30L, ticks);
+    }
+
+    private void noteRetentionCleanupPaused() {
+        if (retentionCleanupPauseNotified.compareAndSet(false, true)) {
+            getLogger().info("Retention cleanup PAUSED FOR MAINTENANCE; no background "
+                    + "database deletions or reclamation will be scheduled until safe resume.");
+        }
     }
 
     private void scheduleReclaimableSpaceMonitor() {
