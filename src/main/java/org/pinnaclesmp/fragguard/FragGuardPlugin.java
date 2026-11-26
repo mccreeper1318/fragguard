@@ -10,6 +10,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -575,7 +577,39 @@ public final class FragGuardPlugin extends JavaPlugin {
                         + "writer at maintenance activation", freezeFailure);
                 return;
             }
-            maintenance.activate().whenComplete((active, failure) -> {
+            // #205: persist a tiny, fsynced, operation-bound proof of the
+            // completed #203/#204 barriers BEFORE declaring maintenance ACTIVE.
+            // Never hash multi-GiB history on the Paper thread.
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    MaintenanceSnapshot current = maintenance.snapshot();
+                    if (current.phase() != MaintenancePhase.COUNTDOWN
+                            || !current.operationId().equals(expected.operationId())) {
+                        throw new java.io.IOException("Maintenance cancelled before freeze proof");
+                    }
+                    return FrozenMaintenanceProof.persist(getDataFolder().toPath(),
+                            current, database);
+                } catch (java.io.IOException error) {
+                    throw new CompletionException(error);
+                }
+            }).whenComplete((proof, proofFailure) -> {
+                if (proofFailure != null) {
+                    // An already cancelled operation needs no new activation.
+                    if (maintenance.snapshot().phase() == MaintenancePhase.COUNTDOWN) {
+                        failMaintenanceFreeze("Could not persist durable frozen SQLite proof; "
+                                + "STRICT compaction is blocked.");
+                    }
+                    getLogger().log(Level.SEVERE,
+                            "Frozen SQLite baseline proof was not durable", proofFailure);
+                    return;
+                }
+                if (maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+                        || !maintenance.snapshot().operationId().equals(expected.operationId())) {
+                    return;
+                }
+                getLogger().info("SQLite freeze and retention drain attested for operation "
+                        + proof.operationId() + " (" + proof.diagnostic() + ").");
+                maintenance.activate().whenComplete((active, failure) -> {
                 if (!isEnabled()) return;
                 try {
                     Bukkit.getScheduler().runTask(this, () -> {
@@ -597,6 +631,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                             + "on the main thread; stopping Paper", schedulingFailure);
                     Bukkit.shutdown();
                 }
+                });
             });
         });
     }
