@@ -61,6 +61,9 @@ final class Database {
     private final LinkedHashMap<CoalesceKey, PersistedCoalesceCandidate> persistedCoalesceCandidates =
             new LinkedHashMap<>();
     private final AtomicLong acceptedWriteSequence = new AtomicLong();
+    // Count accepted SQL mutations as well as history events, so a frozen
+    // source proof exposes the last authorized generation of BOTH paths.
+    private final AtomicLong acceptedSqlMutationSequence = new AtomicLong();
     private final AtomicLong completedWrites = new AtomicLong();
     private final AtomicLong droppedWrites = new AtomicLong();
     private final AtomicLong coalescedWrites = new AtomicLong();
@@ -167,6 +170,14 @@ final class Database {
 
     boolean maintenanceFullyFrozen() {
         return maintenanceFreezeRequested && maintenanceFrozen;
+    }
+
+    long acceptedHistoryGeneration() {
+        return acceptedWriteSequence.get();
+    }
+
+    long acceptedSqlMutationGeneration() {
+        return acceptedSqlMutationSequence.get();
     }
 
     long intentionallyUnloggedDuringMaintenance() {
@@ -2568,6 +2579,7 @@ final class Database {
                 warnStorage("FragGuard database operation queue is full (" + operationCapacity + ").", null);
                 return future;
             }
+            if (mutation) acceptedSqlMutationSequence.incrementAndGet();
         }
 
         if (timedQuery) {
