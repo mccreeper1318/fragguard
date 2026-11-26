@@ -53,6 +53,20 @@ final class MaintenanceCoordinator implements AutoCloseable {
         Objects.requireNonNull(audit, "audit");
         Objects.requireNonNull(store, "store");
         MaintenanceSnapshot loaded = store.load();
+        if (loaded.phase() == MaintenancePhase.IDLE) {
+            // A host may have killed Paper after the durable IDLE commit
+            // but before the completed candidate metadata was archived.
+            // Archive only authenticated completed evidence; a failure to
+            // archive must not prevent an otherwise healthy normal startup.
+            try {
+                AutomaticCompactionActivation.archiveCompletedEvidenceIfPresent(
+                        store.directory());
+            } catch (IOException archiveError) {
+                safeLog(audit, "Completed compaction evidence archive not safe: "
+                        + archiveError.getMessage()
+                        + ". Preserve files; a later compaction preflight may be blocked.");
+            }
+        }
         if (loaded.phase() == MaintenancePhase.READY_TO_SWAP) {
             // During a crash between atomic renames, the original source may
             // temporarily be absent. An authenticated #206 journal permits

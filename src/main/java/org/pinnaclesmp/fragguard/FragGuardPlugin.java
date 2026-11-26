@@ -140,6 +140,11 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // Only now, after the installed candidate was validated AND
                 // the actual SQLite writer successfully initialized, can
                 // the durable maintenance gate be cleared.
+                // After validated DB.init but before durable IDLE, persist a
+                // marker permitting archival of the completed candidate's
+                // evidence only (never the original DB or its backup).
+                AutomaticCompactionActivation.recordSuccessfulWriterStartup(
+                        getDataFolder().toPath(), maintenance.snapshot());
                 maintenance.finishVerifiedActivation().get(30, TimeUnit.SECONDS);
                 // The replacement was checked before this writable startup.
                 // ACTIVATING initialized this connection read-only; restore
@@ -152,7 +157,19 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // recovery's exact candidate digests through Database.init().
                 database.refreshWorldNamesAfterActivationAsync()
                         .get(60, TimeUnit.SECONDS);
-                getLogger().info("Verified compacted database activation complete. "
+                // The original backup remains untouched. Move only completed
+                // verification metadata to an archival folder so another
+                // compaction preflight is not blocked by a stale reservation.
+                try {
+                    AutomaticCompactionActivation.archiveCompletedEvidenceIfPresent(
+                            getDataFolder().toPath());
+                } catch (IOException archiveFailure) {
+                    getLogger().log(Level.WARNING, "Activated database is healthy, "
+                            + "but completed candidate evidence could not be archived. "
+                            + "Preserve the files; a future compaction preflight may refuse.",
+                            archiveFailure);
+                }
+                getLogger().info("Verified compacted database activation complete. 
                         + "The preserved original and its sidecars were not deleted.");
             } catch (Exception failure) {
                 getLogger().log(Level.SEVERE, "Could not commit verified activation state; "
