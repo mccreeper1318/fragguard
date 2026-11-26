@@ -60,7 +60,7 @@ class AutomaticMaintenanceWorkflowTest {
                 });
         return new AutomaticMaintenanceWorkflow(root, coordinator, preflight,
                 compaction, verifier, policy, () -> configuredEvidence, () -> 30,
-                Runnable::run, (id, mode) -> stopped.add(id + ":" + mode),
+                () -> true, Runnable::run, (id, mode) -> stopped.add(id + ":" + mode),
                 messages::add);
     }
 

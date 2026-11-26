@@ -203,6 +203,8 @@ public final class FragGuardPlugin extends JavaPlugin {
                 onlineCompaction, candidateVerifier, replacementPolicy,
                 this::automaticPreflightEvidence,
                 () -> getConfig().getInt("maintenance-countdown-seconds", 600),
+                () -> database != null && !database.maintenanceWritesPaused()
+                        && !rollbackJobsQuiescing,
                 task -> Bukkit.getScheduler().runTask(this, task),
                 this::scheduleAutomaticCompactionStop,
                 getLogger()::info);

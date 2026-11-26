@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -35,6 +36,7 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
     private final CompactionReplacementPolicy replacementPolicy;
     private final Supplier<CompactionStoragePreflight.Evidence> evidenceSupplier;
     private final IntSupplier countdownSeconds;
+    private final BooleanSupplier loggingWritable;
     private final Consumer<Runnable> onMain;
     private final BiConsumer<String, MaintenancePolicy> stopPaper;
     private final Consumer<String> audit;
@@ -60,7 +62,8 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
             CompactionStoragePreflight preflight, OnlineDatabaseCompaction compaction,
             CompactionCandidateVerifier verifier, CompactionReplacementPolicy replacementPolicy,
             Supplier<CompactionStoragePreflight.Evidence> evidenceSupplier,
-            IntSupplier countdownSeconds, Consumer<Runnable> onMain,
+            IntSupplier countdownSeconds, BooleanSupplier loggingWritable,
+            Consumer<Runnable> onMain,
             BiConsumer<String, MaintenancePolicy> stopPaper, Consumer<String> audit) {
         this.root = Objects.requireNonNull(root);
         this.state = Objects.requireNonNull(state);
@@ -70,6 +73,7 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
         this.replacementPolicy = Objects.requireNonNull(replacementPolicy);
         this.evidenceSupplier = Objects.requireNonNull(evidenceSupplier);
         this.countdownSeconds = Objects.requireNonNull(countdownSeconds);
+        this.loggingWritable = Objects.requireNonNull(loggingWritable);
         this.onMain = Objects.requireNonNull(onMain);
         this.stopPaper = Objects.requireNonNull(stopPaper);
         this.audit = Objects.requireNonNull(audit);
@@ -82,6 +86,12 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
         Objects.requireNonNull(notifier);
         if (closed) return CompletableFuture.failedFuture(
                 new IllegalStateException("Automatic maintenance is stopped"));
+        if (!loggingWritable.getAsBoolean()) {
+            return CompletableFuture.completedFuture(new StartResult(ResultType.REFUSED,
+                    "FragGuard logging is not writable after earlier maintenance. "
+                            + "Do not begin a new countdown until the SQLite worker "
+                            + "has safely resumed and normal admission is restored.", ""));
+        }
         Plan plan;
         if (acknowledgeUnknown) {
             plan = current.get();
@@ -120,6 +130,10 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                 ? CompletableFuture.completedFuture(null)
                 : CompletableFuture.runAsync(() -> {
                     try {
+                        if (!loggingWritable.getAsBoolean()) {
+                            throw new IOException("SQLite logging became paused during "
+                                    + "preflight; refuse to archive any candidates");
+                        }
                         Path old = AbandonedCandidateQuarantine.archiveIfAbandoned(
                                 root, state.snapshot(), operator);
                         if (old != null) notifyOperator(plan,
@@ -140,7 +154,8 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
             plan.stage = "Inspecting SQLite size, quota and native temp headroom";
             return preflight.run(chosen);
         }).thenCompose(report -> {
-            if (!owned(plan) || !MaintenanceUiActions.canSchedule(state.snapshot())) {
+            if (!owned(plan) || !MaintenanceUiActions.canSchedule(state.snapshot())
+                    || !loggingWritable.getAsBoolean()) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("Maintenance changed during capacity preflight"));
             }
