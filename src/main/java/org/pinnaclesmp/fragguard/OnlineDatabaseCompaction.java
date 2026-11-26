@@ -154,6 +154,12 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
             job.check();
             job.update("reserving", "", 0, 0,
                     "Reserving a new unique candidate; source and WAL/SHM remain intact");
+            // Require the durable, matching #203/#204 freeze proof even if
+            // compaction is invoked directly instead of through /fg.
+            MaintenanceSnapshot frozenState = maintenance.snapshot();
+            FrozenMaintenanceProof.Seal frozen = FrozenMaintenanceProof.read(
+                    sourceFile.getParent(), frozenState);
+            FrozenMaintenanceProof.requireSourceUnchanged(sourceFile.getParent(), frozen);
             reservation = storage.reserve(approved);
             Path candidate = reservation.candidate();
             if (!candidate.getParent().equals(sourceFile.getParent().resolve("compaction-candidates"))
@@ -215,6 +221,12 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
             Result evidence = readCandidateEvidence(candidate, sourceIdentity,
                     invocationMillis, completedMillis);
             job.check();
+            // A non-FragGuard/external SQLite writer may bypass our in-process
+            // query_only gate. Detect that before promoting copied evidence.
+            FrozenMaintenanceProof.requireSourceUnchanged(sourceFile.getParent(), frozen);
+            if (!maintenance.snapshot().operationId().equals(frozen.operationId())) {
+                throw new IOException("Compaction crossed maintenance operation IDs");
+            }
             // SQLite VACUUM INTO does not promise an fsync of its output.
             // Flush the candidate and its evidence before publishing VERIFYING;
             // a power loss must never turn an unflushed file into a ready copy.
@@ -226,7 +238,7 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
             if (operationId.isBlank()) {
                 throw new IOException("Cannot bind candidate evidence to maintenance operation");
             }
-            saveEvidence(evidence, operationId, fileSha256(candidate));
+            saveEvidence(evidence, operationId, fileSha256(candidate), frozen);
             job.check();
             // Persist only a lower-bound timestamp; exact copy identity is in
             // the candidate evidence file for downstream verification (#166).
@@ -362,7 +374,8 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
     }
 
     private static void saveEvidence(Result result, String operationId,
-                                     String candidateSha256) throws IOException {
+                                     String candidateSha256,
+                                     FrozenMaintenanceProof.Seal frozen) throws IOException {
         Path evidence = result.snapshotEvidence();
         Properties values = new Properties();
         values.setProperty("format", "fragguard-vacuum-snapshot-1");
@@ -370,6 +383,9 @@ final class OnlineDatabaseCompaction implements AutoCloseable {
         values.setProperty("maintenance_operation_id", operationId);
         values.setProperty("candidate", result.candidate().getFileName().toString());
         values.setProperty("source_identity_sha256", result.sourceIdentitySha256());
+        values.setProperty("freeze_proof_sha256", frozen.sha256());
+        values.setProperty("freeze_history_generation", Long.toString(frozen.historyGeneration()));
+        values.setProperty("freeze_sql_generation", Long.toString(frozen.sqlGeneration()));
         values.setProperty("sqlite_snapshot_time", "between_invocation_and_completion");
         values.setProperty("invoked_at_millis", Long.toString(result.invocationMillis()));
         values.setProperty("completed_at_millis", Long.toString(result.completedMillis()));
