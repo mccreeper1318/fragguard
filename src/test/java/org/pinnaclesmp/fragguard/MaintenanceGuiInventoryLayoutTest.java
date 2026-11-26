@@ -89,7 +89,7 @@ class MaintenanceGuiInventoryLayoutTest {
             assertTrue(details.get(slots.get(18)).lore.stream().anyMatch(
                     x -> x.contains("NOT guaranteed")));
             assertTrue(details.get(slots.get(18)).lore.stream().anyMatch(
-                    x -> x.contains("automatic activation")));
+                    x -> x.contains("manual compaction")));
 
             slots.clear();
             FragGuardGuiRenderer.maintenanceConfirmation(
