@@ -43,7 +43,7 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
 
     private static final class Plan {
         final UUID operator;
-        final Consumer<String> notice;
+        volatile Consumer<String> notice;
         final AtomicBoolean startedCompaction = new AtomicBoolean();
         volatile boolean awaitingConsent;
         volatile long consentRequestedAt;
@@ -95,6 +95,7 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                         "No current unknown-capacity warning for this operator. "
                                 + "Run /fg maintenance start again.", ""));
             }
+            plan.notice = notifier; // The OP may have reconnected since the warning.
             plan.awaitingConsent = false; // consume confirmation exactly once
         } else {
             // A user who missed the optional consent window may start over
@@ -150,8 +151,8 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                 return CompletableFuture.completedFuture(new StartResult(
                         ResultType.NEEDS_CAPACITY_ACK,
                         "Hosting account quota or SQLite temporary space is unknown. "
-                            + "No maintenance countdown has started. Review /fg diagnostics "
-                            + "preflight and confirm the risk ONCE with "
+                            + "No maintenance countdown has started. For technical details, "
+                            + "you may run /fg diagnostics preflight. Confirm risk ONCE with "
                             + "/fg maintenance start acknowledge (within two minutes). "
                             + "Known capacity shortages can never be bypassed.", ""));
             }
@@ -257,7 +258,11 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
             try {
                 onMain.accept(() -> {
                     if (owned(plan) && plan.operationId.equals(state.snapshot().operationId())) {
-                        stopPaper.accept(plan.operationId, MaintenancePolicy.STRICT);
+                        try {
+                            stopPaper.accept(plan.operationId, MaintenancePolicy.STRICT);
+                        } catch (RuntimeException shutdownFailure) {
+                            fail(plan, shutdownFailure);
+                        }
                     }
                 });
             } catch (RuntimeException unavailable) {
