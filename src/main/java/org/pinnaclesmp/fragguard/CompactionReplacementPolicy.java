@@ -431,7 +431,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
      */
     private StrictProbe runOnlineSnapshotPrecheck(MaintenanceSnapshot state,
                                                   Properties verified) throws Exception {
-        checkpointForPrecheck();
+        FrozenMaintenanceProof.Seal frozen = FrozenMaintenanceProof.read(root, state);
+        if (!frozen.sha256().equals(verified.getProperty("freeze_proof_sha256"))) {
+            throw new IOException("Snapshot approval is not bound to sealed maintenance");
+        }
+        requireFrozenCheckpoint(frozen);
         Connection watcher = DriverManager.getConnection("jdbc:sqlite:"
                 + source.toUri() + "?mode=ro");
         try {
@@ -467,7 +471,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
      */
     private StrictProbe runOnlineStrictPrecheck(MaintenanceSnapshot state,
                                                  Properties verified) throws Exception {
-        checkpointForPrecheck();
+        FrozenMaintenanceProof.Seal frozen = FrozenMaintenanceProof.read(root, state);
+        if (!frozen.sha256().equals(verified.getProperty("freeze_proof_sha256"))) {
+            throw new IOException("STRICT candidate is not bound to frozen operation");
+        }
+        requireFrozenCheckpoint(frozen);
         Connection watcher = DriverManager.getConnection("jdbc:sqlite:"
                 + source.toUri() + "?mode=ro");
         try {
@@ -492,10 +500,10 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                         || !Long.toString(digest.blobBytes()).equals(
                             verified.getProperty(prefix + "blob_bytes"))
                         || !digest.sha256().equals(verified.getProperty(prefix + "sha256"))) {
-                    throw new IOException("Source differs from copied snapshot: "
-                            + entry.getKey() + "; STRICT refused, no data was replaced.");
+                    throw new IOException(strictMismatch(entry.getKey(), digest, verified, frozen));
                 }
             }
+            FrozenMaintenanceProof.requireSourceUnchanged(root, frozen);
             String secondSha = OnlineDatabaseCompaction.fileSha256(source);
             if (!originalSha.equals(secondSha) || !initial.equals(stamp(source))
                     || baseline != readDataVersion(watcher) || walHasFrames()) {
@@ -518,20 +526,29 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         }
     }
 
-    private void checkpointForPrecheck() throws Exception {
-        try (Connection writer = DriverManager.getConnection("jdbc:sqlite:" + source);
-             Statement statement = writer.createStatement()) {
-            statement.execute("PRAGMA busy_timeout = 3000");
-            try (ResultSet rows = statement.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
-                if (!rows.next() || rows.getInt(1) != 0) {
-                    throw new IOException("STRICT online source checkpoint is busy; "
-                            + "retry after other readers close, never force approval");
-                }
-            }
-        }
+    private void requireFrozenCheckpoint(FrozenMaintenanceProof.Seal frozen)
+            throws IOException {
+        // #203 already committed and checkpointed accepted writes, so do not
+        // open a second writable connection against the frozen source.
         if (walHasFrames()) {
-            throw new IOException("STRICT source WAL still contains frames before precheck");
+            throw new IOException("Frozen source WAL acquired frames after checkpoint ("
+                    + frozen.diagnostic() + "); original preserved");
         }
+    }
+
+    private static String strictMismatch(String table,
+            DatabaseDeepDiagnostics.TableDigest sourceDigest,
+            Properties verified, FrozenMaintenanceProof.Seal frozen) {
+        String prefix = table + ".";
+        return "STRICT frozen source differs from candidate: table=" + table
+                + ", sourceRows=" + sourceDigest.rows()
+                + ", candidateRows=" + verified.getProperty(prefix + "rows", "missing")
+                + ", sourceBlobBytes=" + sourceDigest.blobBytes()
+                + ", candidateBlobBytes=" + verified.getProperty(prefix + "blob_bytes", "missing")
+                + ", sourceSha256=" + sourceDigest.sha256()
+                + ", candidateSha256=" + verified.getProperty(prefix + "sha256", "missing")
+                + ", " + frozen.diagnostic()
+                + "; STRICT refused, original and sidecars preserved.";
     }
 
     private Path candidatePath(MaintenanceSnapshot state) {
@@ -599,6 +616,10 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 || !verified.getProperty("candidate_sha256", "").matches("[a-f0-9]{64}")) {
             throw new IOException("Verified candidate evidence no longer matches maintenance");
         }
+        FrozenMaintenanceProof.Seal frozen = FrozenMaintenanceProof.read(root, state);
+        if (!frozen.sha256().equals(verified.getProperty("freeze_proof_sha256"))) {
+            throw new IOException("Stale STRICT/Snapshot candidate freeze evidence");
+        }
         Properties policy = read(policyPath);
         validatePolicy(policy, state, verified, "APPROVED");
         if (state.policy() == MaintenancePolicy.STRICT) {
@@ -663,6 +684,10 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 || number(verified, "invoked_at_millis") != state.snapshotCutoffMillis()
                 || number(verified, "sqlite_schema_version") != Database.SCHEMA_VERSION) {
             throw new IOException("Recorded verified candidate no longer matches maintenance");
+        }
+        FrozenMaintenanceProof.Seal frozen = FrozenMaintenanceProof.read(base, state);
+        if (!frozen.sha256().equals(verified.getProperty("freeze_proof_sha256"))) {
+            throw new IOException("Approved candidate has stale maintenance freeze proof");
         }
         Properties policy = read(approvedFile(dir, state));
         validatePolicy(policy, state, verified, "APPROVED");
@@ -750,6 +775,14 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                 || number(verified, "sqlite_schema_version") != Database.SCHEMA_VERSION) {
             throw new IOException("Verified candidate is not bound to current maintenance operation");
         }
+        FrozenMaintenanceProof.Seal frozen = FrozenMaintenanceProof.read(root, state);
+        if (!frozen.sha256().equals(verified.getProperty("freeze_proof_sha256"))
+                || !Long.toString(frozen.historyGeneration()).equals(
+                        verified.getProperty("freeze_history_generation"))
+                || !Long.toString(frozen.sqlGeneration()).equals(
+                        verified.getProperty("freeze_sql_generation"))) {
+            throw new IOException("Candidate manifest has stale freeze operation or write generation");
+        }
         checkCandidate(state, verified);
         return verified;
     }
@@ -789,6 +822,11 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         props.setProperty("policy", state.policy().name());
         props.setProperty("source_identity_sha256", verified.getProperty("source_identity_sha256"));
         props.setProperty("candidate_sha256", verified.getProperty("candidate_sha256"));
+        props.setProperty("freeze_proof_sha256", verified.getProperty("freeze_proof_sha256"));
+        props.setProperty("freeze_history_generation",
+                verified.getProperty("freeze_history_generation"));
+        props.setProperty("freeze_sql_generation",
+                verified.getProperty("freeze_sql_generation"));
         props.setProperty("verified_manifest_sha256",
                 OnlineDatabaseCompaction.fileSha256(verifiedFile(
                         // The verified filename comes from persisted state only.
@@ -816,6 +854,12 @@ final class CompactionReplacementPolicy implements AutoCloseable {
                         props.getProperty("snapshot_time_kind"))
                 || !verified.getProperty("candidate_sha256").equals(
                         props.getProperty("candidate_sha256"))
+                || !verified.getProperty("freeze_proof_sha256").equals(
+                        props.getProperty("freeze_proof_sha256"))
+                || !verified.getProperty("freeze_history_generation").equals(
+                        props.getProperty("freeze_history_generation"))
+                || !verified.getProperty("freeze_sql_generation").equals(
+                        props.getProperty("freeze_sql_generation"))
                 || !verified.getProperty("source_identity_sha256").equals(
                         props.getProperty("source_identity_sha256"))
                 || !verified.getProperty("invoked_at_millis").equals(
