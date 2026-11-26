@@ -226,9 +226,33 @@ lookups remain usable, but new mutation operations are rejected on the database
 worker as well as by command/job gates. A durable cancellation does **not**
 reopen normal player access until the SQLite worker has made logging writable
 again; if the unfreeze fails, logging/access remain restricted. Existing source,
-WAL/SHM, candidate and manifest are preserved. This issue does not implement
-automatic database file replacement or the improved cleanup lifecycle (#204);
-the latter must be verified before final release.
+WAL/SHM, candidate and manifest are preserved. No automatic database file
+replacement is performed.
+
+### Frozen STRICT baseline and background cleanup (#204, #205)
+
+At the deadline, bounded retention cleanup and optional incremental SQLite
+reclamation stop accepting new work. Accepted SQL batches commit or fail before
+the SQLite write barrier seals the source. A small, fsynced,
+**operation-specific** `maintenance-freeze-<operation-id>.properties` proof
+records the operation ID, original
+SQLite identity and stamp, last admitted history/SQL write generations, and
+that both barriers drained. **ACTIVE is not declared unless this succeeds.**
+
+VACUUM INTO, candidate verification and STRICT approval must all refer to
+that exact operation-bound proof. A different operation, post-freeze direct
+SQLite mutation, mismatched source/candidate rows, BLOB digests or index/schema
+checks **refuses STRICT approval**. The console shows the changed table, both
+row counts and fingerprints, and the last authorized generation. Run
+`/fg maintenance status full` for the read-only freeze details.
+
+**STRICT remains the no-loss default.** Never switch to Snapshot Mode simply
+to bypass a failed STRICT comparison. Snapshot Mode is an exceptional, separately
+acknowledged loss policy. The original, WAL/SHM and candidate are retained on
+failure; no copy is installed automatically. Cleanup resumes in bounded batches
+only after safe cancellation or fully verified activation. During all frozen
+maintenance stages, staff/world edits are intentionally **NOT logged or
+rollbackable**; the Boss Bar and status command warn administrators.
 
 ### Clearer operator chat output (#197)
 

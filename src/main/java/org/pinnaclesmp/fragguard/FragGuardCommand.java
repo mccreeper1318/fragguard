@@ -2109,6 +2109,24 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         ? NamedTextColor.GREEN : NamedTextColor.RED);
         MaintenanceChatOutput.value(player::sendMessage, "Operation",
                 state.operationId().isBlank() ? "none" : state.operationId());
+        if (state.phase() != MaintenancePhase.IDLE
+                && state.phase() != MaintenancePhase.COUNTDOWN
+                && state.phase() != MaintenancePhase.CANCELLED) {
+            try {
+                var freeze = FrozenMaintenanceProof.read(
+                        plugin.getDataFolder().toPath(), state);
+                MaintenanceChatOutput.value(player::sendMessage, "Frozen operation",
+                        freeze.operationId());
+                MaintenanceChatOutput.value(player::sendMessage, "SQL/history generation",
+                        freeze.sqlGeneration() + " / " + freeze.historyGeneration());
+                MaintenanceChatOutput.value(player::sendMessage, "Drain evidence",
+                        "SQLite sealed, retention drained; source proof "
+                                + freeze.sha256().substring(0, 12));
+            } catch (java.io.IOException missing) {
+                MaintenanceChatOutput.danger(player::sendMessage,
+                        "Frozen source proof missing or invalid: do NOT compact or approve.");
+            }
+        }
         if (state.phase() == MaintenancePhase.COUNTDOWN) {
             long seconds = Math.max(0L,
                     (state.countdownEndsAtMillis() - System.currentTimeMillis() + 999L) / 1000L);

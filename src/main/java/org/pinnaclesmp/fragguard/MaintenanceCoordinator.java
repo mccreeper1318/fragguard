@@ -108,6 +108,20 @@ final class MaintenanceCoordinator implements AutoCloseable {
         return advance(MaintenancePhase.ACTIVE, "Maintenance active; regular access is restricted");
     }
 
+    /**
+     * Delayed freeze callbacks must never activate a different countdown.
+     * Compare the operation on the serialized state worker, not only on the
+     * calling thread before queuing this transition.
+     */
+    CompletableFuture<MaintenanceSnapshot> activateCountdownIfCurrent(String operationId) {
+        Objects.requireNonNull(operationId, "operationId");
+        return commit(existing -> existing.phase() == MaintenancePhase.COUNTDOWN
+                && existing.operationId().equals(operationId)
+                ? existing.withPhase(MaintenancePhase.ACTIVE,
+                    "Maintenance active; regular access is restricted")
+                : existing);
+    }
+
     CompletableFuture<MaintenanceSnapshot> beginCompaction(String outputFile) {
         return commit(existing -> existing.withCandidate(outputFile,
                 "Creating a compacted candidate; original database remains active"));
@@ -163,6 +177,16 @@ final class MaintenanceCoordinator implements AutoCloseable {
 
     CompletableFuture<MaintenanceSnapshot> fail(String reason) {
         return advance(MaintenancePhase.FAILED, reason);
+    }
+
+    /** Ignore a failed freeze from a previously cancelled maintenance operation. */
+    CompletableFuture<MaintenanceSnapshot> failCountdownIfCurrent(
+            String operationId, String reason) {
+        Objects.requireNonNull(operationId, "operationId");
+        return commit(existing -> existing.phase() == MaintenancePhase.COUNTDOWN
+                && existing.operationId().equals(operationId)
+                ? existing.withPhase(MaintenancePhase.FAILED, reason)
+                : existing);
     }
 
     CompletableFuture<MaintenanceSnapshot> cancel(String reason) {
@@ -238,6 +262,12 @@ final class MaintenanceCoordinator implements AutoCloseable {
                                     "Maintenance state durability is uncertain; no further transitions are allowed");
                         }
                         MaintenanceSnapshot next = Objects.requireNonNull(update.apply(current));
+                        // Stale asynchronous callbacks must not overwrite the new
+                        // operation's state file or even update its revision.
+                        if (next == current) {
+                            result.complete(current);
+                            return;
+                        }
                         // Never publish in memory until durable write completes.
                         store.save(next);
                         current = next;

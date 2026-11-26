@@ -176,6 +176,14 @@ final class CompactionCandidateVerifier implements AutoCloseable {
                 || status.snapshotCutoffMillis() != result.invocationMillis()) {
             throw new IOException("Compaction source snapshot evidence does not match operation");
         }
+        FrozenMaintenanceProof.Seal frozen = FrozenMaintenanceProof.read(root, status);
+        if (!frozen.sha256().equals(proof.getProperty("freeze_proof_sha256"))
+                || !Long.toString(frozen.historyGeneration()).equals(
+                        proof.getProperty("freeze_history_generation"))
+                || !Long.toString(frozen.sqlGeneration()).equals(
+                        proof.getProperty("freeze_sql_generation"))) {
+            throw new IOException("Candidate copy does not match the frozen operation proof");
+        }
         String expectedSha = proof.getProperty("candidate_sha256", "");
         if (!expectedSha.matches("[a-f0-9]{64}") || Files.size(candidate) != result.candidateBytes()) {
             throw new IOException("Candidate snapshot fingerprint/size is missing or inconsistent");
@@ -289,7 +297,9 @@ final class CompactionCandidateVerifier implements AutoCloseable {
                 "source_identity_sha256", "sqlite_snapshot_time",
                 "invoked_at_millis", "completed_at_millis", "candidate_bytes",
                 "sqlite_schema_version", "included_max_history_id",
-                "included_max_rollback_job_id", "included_max_job_updated_at"}) {
+                "included_max_rollback_job_id", "included_max_job_updated_at",
+                "freeze_proof_sha256", "freeze_history_generation",
+                "freeze_sql_generation"}) {
             out.setProperty(key, proof.getProperty(key));
         }
         out.setProperty("candidate_sha256", sha);

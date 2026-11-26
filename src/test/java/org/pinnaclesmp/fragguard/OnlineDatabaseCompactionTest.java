@@ -107,41 +107,29 @@ class OnlineDatabaseCompactionTest {
     }
 
     @Test
-    void copiedSnapshotIsConsistentWhileLiveWalWriterCanContinue() throws Exception {
+    void externalSqliteWriteAfterFreezeIsRefusedWithoutInstallingCandidate() throws Exception {
         Path source = seedDatabase(1000);
         long before = System.currentTimeMillis() - 1000;
         try (MaintenanceCoordinator coordinator = activeMaintenance(before);
              CompactionStoragePreflight preflight = new CompactionStoragePreflight(folder);
              OnlineDatabaseCompaction worker = new OnlineDatabaseCompaction(folder, coordinator, preflight);
              Connection writer = DriverManager.getConnection("jdbc:sqlite:" + source)) {
-            var approval = approved(preflight);
-            CompletableFuture<OnlineDatabaseCompaction.Result> future = worker.start(approval);
-            // Writes made after VACUUM initiation may or may not be present;
-            // only the candidate's copied rows define the SQLite snapshot.
+            // An external SQLite connection bypasses the plugin's query_only
+            // admission gate. Reject the now-stale source rather than copy an
+            // inconsistent candidate, even when the operator is permitted.
             try (PreparedStatement change = writer.prepareStatement(
                     "INSERT INTO block_changes(id, happened_at, before_data) VALUES(?,?,?)")) {
-                for (int i = 1001; i <= 1020; i++) {
-                    change.setInt(1, i);
-                    change.setLong(2, System.currentTimeMillis());
-                    change.setString(3, "subsequent event " + i);
-                    change.executeUpdate();
-                }
+                change.setInt(1, 1001);
+                change.setLong(2, System.currentTimeMillis());
+                change.setString(3, "external edit after SQLite freeze");
+                change.executeUpdate();
             }
-            var result = future.get(60, TimeUnit.SECONDS);
-            long copiedRows;
-            try (Connection candidate = DriverManager.getConnection(
-                    "jdbc:sqlite:" + result.candidate().toUri() + "?mode=ro");
-                 Statement statement = candidate.createStatement()) {
-                copiedRows = scalar(statement, "SELECT COUNT(*) FROM block_changes");
-                assertEquals(copiedRows, scalar(statement,
-                        "SELECT COUNT(DISTINCT id) FROM block_changes"));
-            }
-            assertTrue(copiedRows >= 1000 && copiedRows <= 1020);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> worker.start(approved(preflight)).get(60, TimeUnit.SECONDS));
             try (Statement statement = writer.createStatement()) {
-                assertEquals(1020, scalar(statement, "SELECT COUNT(*) FROM block_changes"));
+                assertEquals(1001, scalar(statement, "SELECT COUNT(*) FROM block_changes"));
             }
-            assertEquals(MaintenancePhase.VERIFYING, coordinator.snapshot().phase());
-            assertTrue(result.invocationMillis() > before);
+            assertTrue(Files.isRegularFile(source), "Original SQLite source must be preserved");
         }
     }
 
@@ -260,6 +248,7 @@ class OnlineDatabaseCompactionTest {
         MaintenanceCoordinator coordinator = MaintenanceCoordinator.open(folder);
         coordinator.schedule(UUID.randomUUID(), now, now + 400,
                 MaintenancePolicy.STRICT).get(10, TimeUnit.SECONDS);
+        FrozenMaintenanceProof.persistSnapshot(folder, coordinator.snapshot(), 0L, 0L);
         coordinator.activate().get(10, TimeUnit.SECONDS);
         assertEquals(MaintenancePhase.ACTIVE, coordinator.snapshot().phase());
         return coordinator;
