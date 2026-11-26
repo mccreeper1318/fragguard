@@ -119,19 +119,19 @@ class MaintenanceChatOutputTest {
                 .withCutoff(now + 1, "copy")
                 .withPhase(MaintenancePhase.VERIFYING, "checking")
                 .withManifest("fragguard-compact-test.manifest", "verified");
-        List<String> full = CompactionActivation.manualInstructions(directory, state);
+        List<String> full = AutomaticCompactionActivation.operatorInstructions(state);
         List<Component> summary = new ArrayList<>();
         MaintenanceChatOutput.instructions(summary::add, state, full, false, true);
         assertTrue(plain(summary).contains("PREVIEW ONLY"));
         assertTrue(plain(summary).contains("shutdown receipt"));
-        assertTrue(plain(summary).contains("NEVER move or rename"));
+        assertTrue(plain(summary).contains("Do NOT rename, move, or delete"));
         assertTrue(plain(summary).contains("/fg maintenance instructions full"));
 
         List<Component> detail = new ArrayList<>();
         MaintenanceChatOutput.instructions(detail::add, state, full, true, true);
         String displayed = plain(detail);
         for (String step : full) {
-            assertTrue(displayed.contains(step), "Do not omit exact file step: " + step);
+            assertTrue(displayed.contains(step), "Do not omit recovery/host guidance: " + step);
         }
     }
 
