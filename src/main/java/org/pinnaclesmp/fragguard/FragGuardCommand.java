@@ -2072,8 +2072,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 }
                 try {
                     MaintenanceChatOutput.instructions(player::sendMessage, state,
-                            CompactionActivation.manualInstructions(
-                                    plugin.getDataFolder().toPath(), state),
+                            AutomaticCompactionActivation.operatorInstructions(state),
                             args.length == 2, strictPending);
                 } catch (RuntimeException problem) {
                     player.sendMessage(color("&cCould not resolve safe candidate filenames."));
@@ -2094,7 +2093,7 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         player.sendMessage(color("&f/fg maintenance verify &7- Full read-only candidate validation."));
         player.sendMessage(color("&f/fg maintenance approve &7- Prepare STRICT approval at clean shutdown."));
         player.sendMessage(color("&f/fg maintenance approve snapshot-acknowledge &7- Explicitly accept snapshot loss."));
-        player.sendMessage(color("&f/fg maintenance instructions [full] &7- Safety summary or complete file steps."));
+        player.sendMessage(color("&f/fg maintenance instructions [full] &7- Automatic activation and emergency recovery guidance."));
         player.sendMessage(color("&f/fg maintenance cancel &7- Cancel only safe pre-swap stages."));
     }
 
@@ -2177,8 +2176,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 : "&aCandidate integrity manifest: &f" + state.manifestFile()));
         player.sendMessage(Component.text(state.detail(), NamedTextColor.GRAY));
         if (state.phase() == MaintenancePhase.READY_TO_SWAP) {
-            player.sendMessage(color("&eSTOP Paper and confirm its clean-shutdown receipt "
-                    + "before moving files. Use /fg maintenance instructions."));
+            player.sendMessage(color("&eFragGuard will automatically activate the verified DB "
+                    + "on the next safe Paper startup. Do not move SQLite files."));
         } else if (state.phase() == MaintenancePhase.FAILED
                 || state.phase() == MaintenancePhase.ACTIVATING) {
             player.sendMessage(color("&cKeep source, backup, candidate, WAL/SHM and manifests. "
@@ -2399,7 +2398,8 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         MaintenanceChatOutput.danger(player::sendMessage,
                                 "Minecraft worlds are NOT rolled back.");
                         MaintenanceChatOutput.notice(player::sendMessage,
-                                "Stop Paper cleanly and require the shutdown receipt before file changes.");
+                                "FragGuard is stopping Paper cleanly and will activate the database "
+                                + "automatically on its next start. Do NOT move SQLite files.");
                     } else {
                         MaintenanceChatOutput.value(player::sendMessage,
                                 "STRICT precheck", "PASSED (all retained records match)",
@@ -2408,14 +2408,22 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                                 "STRICT policy", "PENDING clean shutdown attestation",
                                 NamedTextColor.YELLOW);
                         MaintenanceChatOutput.notice(player::sendMessage,
-                                "You may now stop Paper cleanly. SQLite must drain writes and checkpoint WAL.");
+                                "FragGuard will stop Paper cleanly, checkpoint SQLite and "
+                                + "activate the candidate automatically on the next startup.");
                         MaintenanceChatOutput.notice(player::sendMessage,
                                 "Any database change after the full precheck invalidates approval.");
                         MaintenanceChatOutput.danger(player::sendMessage,
-                                "NO file moves unless a valid clean-shutdown receipt is created.");
+                                "DO NOT move database files. If your host does not auto-restart, "
+                                + "press its normal Start button once.");
                     }
                     MaintenanceChatOutput.action(player::sendMessage,
                             "Instructions: /fg maintenance instructions");
+                    // The expensive STRICT proof is already complete while
+                    // the server is live; only a bounded clean-stop receipt
+                    // will be issued in onDisable(). Always request a normal
+                    // Paper stop from the main thread, never an external script.
+                    plugin.scheduleAutomaticCompactionStop(decision.operationId(),
+                            decision.policy());
                 }));
     }
 

@@ -54,14 +54,22 @@ final class MaintenanceCoordinator implements AutoCloseable {
         Objects.requireNonNull(store, "store");
         MaintenanceSnapshot loaded = store.load();
         if (loaded.phase() == MaintenancePhase.READY_TO_SWAP) {
-            // First startup, before any writable SQLite initialization.
-            Path candidate = store.directory().resolve("compaction-candidates")
-                    .resolve(loaded.candidateFile());
-            if (java.nio.file.Files.isRegularFile(candidate,
-                    java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                CompactionReplacementPolicy.requireApproved(store.directory(), loaded);
+            // During a crash between atomic renames, the original source may
+            // temporarily be absent. An authenticated #206 journal permits
+            // OFFLINE recovery, but never opens the SQLite writer here.
+            if (AutomaticCompactionActivation.hasJournal(store.directory(), loaded)) {
+                AutomaticCompactionActivation.requireResumable(store.directory(), loaded);
             } else {
-                CompactionActivation.requirePreparedActivation(store.directory(), loaded);
+                Path candidate = store.directory().resolve("compaction-candidates")
+                        .resolve(loaded.candidateFile());
+                if (java.nio.file.Files.isRegularFile(candidate,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    CompactionReplacementPolicy.requireApproved(store.directory(), loaded);
+                } else {
+                    // Compatibility for already-completed manual swaps;
+                    // never treat missing originals as a valid new install.
+                    CompactionActivation.requirePreparedActivation(store.directory(), loaded);
+                }
             }
         } else if (loaded.phase() == MaintenancePhase.ACTIVATING) {
             // A previous startup may have created NEW WAL/SHM or changed the
