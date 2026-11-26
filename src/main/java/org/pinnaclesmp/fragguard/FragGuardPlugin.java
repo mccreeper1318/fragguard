@@ -227,6 +227,45 @@ public final class FragGuardPlugin extends JavaPlugin {
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");
     }
 
+    /** Check the exact approved operation before requesting a normal Paper stop. */
+    static boolean mayStopForApprovedCompaction(String operationId, MaintenancePolicy policy,
+                                                 MaintenanceSnapshot state,
+                                                 boolean strictPrecheckPending) {
+        if (state == null || operationId == null || !operationId.equals(state.operationId())
+                || policy != state.policy()) return false;
+        return (policy == MaintenancePolicy.STRICT
+                    && state.phase() == MaintenancePhase.VERIFYING
+                    && strictPrecheckPending)
+                || (policy == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                    && state.phase() == MaintenancePhase.READY_TO_SWAP);
+    }
+
+    void scheduleAutomaticCompactionStop(String operationId, MaintenancePolicy policy) {
+        // Give OPs a moment to see the success/warning message. This is a
+        // normal Paper shutdown, not a plugin reload or force-kill.
+        try {
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (maintenance == null || replacementPolicy == null
+                        || !mayStopForApprovedCompaction(operationId, policy,
+                                maintenance.snapshot(), replacementPolicy.hasPendingStrict())) {
+                    getLogger().warning("Automatic maintenance shutdown skipped: "
+                            + "approval was cancelled or superseded. No files will be moved.");
+                    return;
+                }
+                getLogger().warning("FragGuard approved database maintenance: stopping "
+                        + "Paper gracefully to checkpoint SQLite and write the activation "
+                        + "receipt. The next ordinary server startup will automatically "
+                        + "back up and install the verified candidate. If this host does "
+                        + "not auto-restart, press Start once in its normal panel.");
+                Bukkit.shutdown();
+            }, 40L);
+        } catch (RuntimeException schedulingFailure) {
+            getLogger().log(Level.SEVERE, "Could not schedule an authorized clean Paper "
+                    + "shutdown. No database activation has been attempted.",
+                    schedulingFailure);
+        }
+    }
+
     /** #198: a requested Paper shutdown must never be mistaken for plugin-only reload. */
     static boolean mustStopPaperOnRestrictedDisable(boolean restricted, boolean paperStopping) {
         return restricted && !paperStopping;

@@ -167,6 +167,24 @@ final class AutomaticCompactionActivation {
         // Database.init() before the persisted maintenance phase may reach IDLE.
     }
 
+    static List<String> operatorInstructions(MaintenanceSnapshot state) {
+        return List.of(
+            "FragGuard backs up and activates the verified SQLite database automatically.",
+            "After approval, Paper stops gracefully. Wait for the clean shutdown receipt in "
+                    + "the server console. FragGuard does not move DB files while Paper runs.",
+            "If your host automatically restarts Paper, FragGuard completes activation "
+                    + "before opening its SQLite writer. If it stays stopped, press Start "
+                    + "ONCE in the hosting panel. No SSH or file manager is needed.",
+            "Do NOT rename, copy, delete or mix fragguard.db, -wal, -shm or the candidate.",
+            "If activation fails, the server stays restricted. Preserve every original, "
+                    + "matching sidecar, candidate and proof. A qualified operator may "
+                    + "inspect the console and use the documented manual recovery fallback.",
+            "STRICT is the default no-loss policy; Snapshot loss is never automatic. "
+                    + "Minecraft worlds are not rolled back. Staff world edits during "
+                    + "frozen maintenance are intentionally unlogged."
+        );
+    }
+
     static void recordVerifiedBeforeDatabaseOpen(Path root, MaintenanceSnapshot state)
             throws IOException {
         Path base = root.toAbsolutePath().normalize();
