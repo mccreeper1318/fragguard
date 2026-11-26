@@ -206,7 +206,7 @@ It never bypasses storage preflight, snapshot policy, or saved database safety.
 - `/fg maintenance status`, `/fg maintenance cancel`, and
   `/fg maintenance instructions`: inspect stage/progress, cancel eligible
   operations without deleting the original, or view the exact stopped-server
-  file-manager steps.
+  automatic host-panel instructions.
 
 ### Maintenance write-freeze barrier (#203)
 
@@ -226,8 +226,8 @@ lookups remain usable, but new mutation operations are rejected on the database
 worker as well as by command/job gates. A durable cancellation does **not**
 reopen normal player access until the SQLite worker has made logging writable
 again; if the unfreeze fails, logging/access remain restricted. Existing source,
-WAL/SHM, candidate and manifest are preserved. No automatic database file
-replacement is performed.
+WAL/SHM, candidate and manifest are preserved. A verified automatic
+replacement is allowed only after a clean shutdown receipt on a later startup.
 
 ### Frozen STRICT baseline and background cleanup (#204, #205)
 
@@ -271,10 +271,10 @@ safety-first summary with an explicit, admin-only full-detail view:
 - `/fg maintenance status`: stage, policy, candidate and what to do next.
   `/fg maintenance status full` includes the exact operation ID, progress,
   filenames, sizes and all recovery warnings.
-- `/fg maintenance instructions`: first-page stop/receipt/backup warnings.
-  `/fg maintenance instructions full` shows **all original numbered
-  file-manager steps and exact filenames**. When STRICT approval is pending,
-  both views are PREVIEW ONLY; neither authorizes a file swap.
+- `/fg maintenance instructions`: host-panel-only activation guide.
+  `/fg maintenance instructions full` explains clean shutdown receipts,
+  verified backups and advanced emergency recovery. While STRICT approval
+  is pending, these are PREVIEW ONLY; never manually move SQLite files.
 
 An unknown quota is never presented as verified free space. A red FAILED state
 never means it is safe to swap files, and Snapshot Mode continues to display
@@ -287,68 +287,62 @@ Recovery-sensitive READY_TO_SWAP/ACTIVATING stages cannot be cancelled through
 the quick maintenance menu. Live-server validation is scheduled for the final
 1.2.2 testing phase.
 
-### Manual compacted-database activation (#168)
+### Automatic compacted-database activation (#206)
 
-**No shell, external utility or custom launch command is required.** A verified
-candidate **must** first have an approved replacement policy (#167). STRICT
-(default) runs its complete source/candidate scan **before Paper is stopped**
-and requires an unchanged SQLite write-version watcher at the **pre-stop
-gate**. The writer must then stop without draining late writes, and a clean
-WAL checkpoint must leave the source/candidate identities unchanged. SQLite
-may itself increment `data_version` on a checkpoint even without history
-changes, so that version is checked *before* checkpointing. The host's short
-stop grace is not used for expensive scans or large file hashes. The next startup still rechecks
-the original/candidate fingerprints and complete activation evidence. Snapshot
-mode likewise computes full source/candidate fingerprints online *before*
-stopping Paper; subsequent changes refuse the receipt, and a restarted process
-cannot reuse an earlier in-memory proof. Snapshot mode still requires exact
-administrator consent acknowledging that **all FragGuard history, undo/rollback
-jobs and retention updates after the SQLite snapshot may be lost**. Minecraft
-worlds are **never** rolled back along with a database.
+FragGuard now handles routine SQLite activation itself. **Do not manually
+rename any SQLite files after a successful compaction.**
 
-**Keep Paper stopped for the entire file-manager operation.** When the plugin
-finishes a clean shutdown, its console prints a *per-operation* original-backup
-filename and writes a non-overwriting `.shutdown.properties` receipt. If no
-clean-shutdown receipt was created, **do not swap any files**. The presence of
-`READY_TO_SWAP` alone is not a clean checkpoint.
+1. Finish normal maintenance and run `/fg maintenance compact`, `verify`,
+   and `approve`. STRICT is the no-loss default and compares complete
+   source/candidate history, indexes, schema, BLOB and rollback/undo digests
+   while Paper remains running under the frozen write barrier. Snapshot
+   Mode remains an exceptional separately acknowledged loss policy.
+2. Once the full online approval succeeds, FragGuard requests a **normal,
+   graceful Paper shutdown**. During shutdown it checks that accepted
+   writes drained and the WAL was checkpointed, then writes a unique
+   `.shutdown.properties` receipt. No full database scan or multi-GiB
+   hash is performed in the host's short shutdown window.
+3. If your hosting panel automatically restarts Paper, no action is needed.
+   **If the server remains stopped, press Start once in the ordinary panel.**
+   FragGuard cannot force the host to restart Paper. No SSH, shell script,
+   additional plugin, or file-manager activity is required.
+4. On startup and **before opening or migrating the SQLite writer**, FragGuard
+   authenticates the approved policy and clean-shutdown receipt. It reserves
+   a unique, preserved original backup, atomically moves the old `fragguard.db`
+   and its exact matching `-wal`/`-shm` sidecars, then installs the verified
+   compacted candidate as `fragguard.db`. A durable operation-specific
+   activation journal tracks completed moves. If a host kills Paper between
+   renames, the next start reconciles the actual files and retries safely.
+5. The compacted copy then passes full SQLite integrity, schema, index,
+   history, BLOB and rollback/undo verification against the approved
+   manifest, while the original backup and sidecars are independently
+   fingerprinted. **ACTIVATING** remains persisted until SQLite initialization
+   also succeeds; only then do logging and ordinary player access resume.
 
-For a candidate named
-`plugins/FragGuard/compaction-candidates/fragguard-compact-EXAMPLE.db`:
+Never automatically switch failed STRICT verification to Snapshot Mode.
+A missing/mismatched receipt, wrong sidecar, unsafe atomic move or corrupted
+history is a **fail-closed condition**. Preserve all recovery files and
+inspect the server console rather than trying ad hoc renames. Minecraft
+worlds are never rolled back, and staff world edits during frozen maintenance
+are intentionally **not recorded by FragGuard**.
 
-1. **Stop Paper completely.** Confirm the clean FragGuard checkpoint and
-   `fragguard-compact-EXAMPLE.shutdown.properties` receipt. Never rename an
-   open SQLite database.
-2. In your host file manager rename
-   `plugins/FragGuard/fragguard.db` to
-   `plugins/FragGuard/fragguard-original-EXAMPLE.db`.
-   **Preserve this original backup. Never overwrite/delete it.**
-3. **If they exist**, rename the *matching* original sidecars alongside it:
-   `fragguard.db-wal` → `fragguard-original-EXAMPLE.db-wal`, and
-   `fragguard.db-shm` → `fragguard-original-EXAMPLE.db-shm`.
-   Do not delete sidecars, discard nonempty WAL data, attach them to the
-   compacted copy, or mix unrelated WAL/SHM files.
-4. **Move/rename**, not copy, the verified
-   `compaction-candidates/fragguard-compact-EXAMPLE.db`
-   to `plugins/FragGuard/fragguard.db`. Keep the `.manifest`,
-   `.policy.properties`, `.snapshot.properties` and `.shutdown.properties`
-   files inside `compaction-candidates/`, unchanged.
-5. Start Paper normally. Before starting live logging, FragGuard checks
-   the original backup's SHA-256 and recorded sidecars, the installed
-   candidate's exact SHA-256/size, operation/policy/consent evidence, and
-   full read-only SQLite integrity, schema, indexes, history and undo digests.
-   It durably records **ACTIVATING** before opening the SQLite writer, so a
-   restart after a partial initialization revalidates the logical history
-   and new candidate WAL/SHM without mistaking them for the original's sidecars.
-   Maintenance clears **only if** SQLite initialization also succeeds.
-   On any mismatch Paper refuses to open FragGuard; stop the server and
-   preserve **all files** for recovery.
+#### Archived backups and exceptional manual recovery
 
-Use the **actual** filename reported by FragGuard; `EXAMPLE` is not a valid
-stand-in. A partial rename, missing original backup, nonempty WAL at shutdown,
-wrong sidecar, corrupted candidate or missing receipt is never treated as a
-successful activation. The original SQLite files remain available for manual
-recovery, subject to schema compatibility: **an older plugin may not be able to
-read a database migrated by a newer release**. Never assume downgrade is safe.
+FragGuard never deletes the last recoverable original, its matching WAL/SHM,
+candidate manifests, or the activation journal. Previously failed or partially
+reserved `compaction-candidates-old` folders remain untouched. Each new
+maintenance run uses its own candidate/backup name to avoid stale reuse.
+
+**No automatic archive cleanup is performed.** To manage quotas, only archive
+old backups *after* the latest activation succeeded, an independent complete
+recovery copy has been verified, and the matching sidecars and manifests are
+included. Do not delete a unique original or failed candidate merely to
+recover disk space. Manual file-manager recovery is reserved for exceptional
+failure and should be done only with the exact operation-specific filenames
+and SHA-256 evidence in the console and receipts. An older plugin might not
+read a database migrated by a newer version; do not assume a downgrade is
+safe.
+
 
 ### Compaction storage and quota preflight (#164)
 
