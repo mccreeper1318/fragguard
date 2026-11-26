@@ -71,6 +71,14 @@ public final class FragGuardPlugin extends JavaPlugin {
         boolean activationVerified = false;
         if (CompactionReplacementPolicy.blocksWriterStartup(maintenance.snapshot())) {
             try {
+                // A successful approved shutdown is automatically activated
+                // here, BEFORE Database.init or any writable SQLite migration.
+                // The backup and each sidecar are independently journaled and
+                // crash-retryable; a missing receipt fails closed.
+                if (maintenance.snapshot().phase() == MaintenancePhase.READY_TO_SWAP) {
+                    AutomaticCompactionActivation.activateBeforeDatabaseOpen(
+                            getDataFolder().toPath(), maintenance.snapshot());
+                }
                 // The first startup requires the ORIGINAL candidate SHA and
                 // zero active sidecars. A crashed prior startup is only allowed
                 // through a persisted ACTIVATING stage and complete logical
@@ -82,22 +90,26 @@ public final class FragGuardPlugin extends JavaPlugin {
                         : CompactionActivation.verifyInstalled(
                                 getDataFolder().toPath(), maintenance.snapshot());
                 if (!resuming) {
+                    AutomaticCompactionActivation.recordVerifiedBeforeDatabaseOpen(
+                            getDataFolder().toPath(), maintenance.snapshot());
                     // Persist this stage before DB.init() can change journal
                     // mode, create new WAL/SHM, or initialize SQLite metadata.
                     maintenance.beginActivation().get(30, TimeUnit.SECONDS);
                 }
                 activationVerified = true;
                 getLogger().info((resuming ? "Recovered" : "Verified")
-                        + " manual SQLite activation of "
+                        + " verified SQLite activation of "
                         + installed.installed().getFileName()
                         + " (preserved backup: " + installed.backup().getFileName()
                         + ", checked records: " + installed.verifiedRows()
                         + ", policy: " + installed.policy() + ").");
             } catch (Exception exception) {
-                getLogger().log(Level.SEVERE, "Cannot start FragGuard: manual compacted "
-                        + "database replacement has not passed provenance, backup, WAL/SHM "
-                        + "and full-history verification. Stop Paper and preserve all DB "
-                        + "and manifest files for recovery.", exception);
+                getLogger().log(Level.SEVERE, "Cannot start FragGuard: automatic compacted "
+                        + "database activation or recovery has not passed its authenticated "
+                        + "shutdown receipt, backup/WAL/SHM and full history/undo checks. "
+                        + "The original and candidate remain preserved. Stop Paper, retain "
+                        + "all evidence and use manual recovery only after inspecting logs.",
+                        exception);
                 Bukkit.shutdown();
                 Bukkit.getPluginManager().disablePlugin(this);
                 return;
@@ -128,6 +140,11 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // Only now, after the installed candidate was validated AND
                 // the actual SQLite writer successfully initialized, can
                 // the durable maintenance gate be cleared.
+                // After validated DB.init but before durable IDLE, persist a
+                // marker permitting archival of the completed candidate's
+                // evidence only (never the original DB or its backup).
+                AutomaticCompactionActivation.recordSuccessfulWriterStartup(
+                        getDataFolder().toPath(), maintenance.snapshot());
                 maintenance.finishVerifiedActivation().get(30, TimeUnit.SECONDS);
                 // The replacement was checked before this writable startup.
                 // ACTIVATING initialized this connection read-only; restore
@@ -140,6 +157,18 @@ public final class FragGuardPlugin extends JavaPlugin {
                 // recovery's exact candidate digests through Database.init().
                 database.refreshWorldNamesAfterActivationAsync()
                         .get(60, TimeUnit.SECONDS);
+                // The original backup remains untouched. Move only completed
+                // verification metadata to an archival folder so another
+                // compaction preflight is not blocked by a stale reservation.
+                try {
+                    AutomaticCompactionActivation.archiveCompletedEvidenceIfPresent(
+                            getDataFolder().toPath());
+                } catch (IOException archiveFailure) {
+                    getLogger().log(Level.WARNING, "Activated database is healthy, "
+                            + "but completed candidate evidence could not be archived. "
+                            + "Preserve the files; a future compaction preflight may refuse.",
+                            archiveFailure);
+                }
                 getLogger().info("Verified compacted database activation complete. "
                         + "The preserved original and its sidecars were not deleted.");
             } catch (Exception failure) {
@@ -213,6 +242,45 @@ public final class FragGuardPlugin extends JavaPlugin {
         scheduleStorageHealthMonitor();
         scheduleReclaimableSpaceMonitor();
         getLogger().info("FragGuard enabled. Block changes are retained for " + getRetentionDays() + " days.");
+    }
+
+    /** Check the exact approved operation before requesting a normal Paper stop. */
+    static boolean mayStopForApprovedCompaction(String operationId, MaintenancePolicy policy,
+                                                 MaintenanceSnapshot state,
+                                                 boolean strictPrecheckPending) {
+        if (state == null || operationId == null || !operationId.equals(state.operationId())
+                || policy != state.policy()) return false;
+        return (policy == MaintenancePolicy.STRICT
+                    && state.phase() == MaintenancePhase.VERIFYING
+                    && strictPrecheckPending)
+                || (policy == MaintenancePolicy.MAINTENANCE_SNAPSHOT
+                    && state.phase() == MaintenancePhase.READY_TO_SWAP);
+    }
+
+    void scheduleAutomaticCompactionStop(String operationId, MaintenancePolicy policy) {
+        // Give OPs a moment to see the success/warning message. This is a
+        // normal Paper shutdown, not a plugin reload or force-kill.
+        try {
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (maintenance == null || replacementPolicy == null
+                        || !mayStopForApprovedCompaction(operationId, policy,
+                                maintenance.snapshot(), replacementPolicy.hasPendingStrict())) {
+                    getLogger().warning("Automatic maintenance shutdown skipped: "
+                            + "approval was cancelled or superseded. No files will be moved.");
+                    return;
+                }
+                getLogger().warning("FragGuard approved database maintenance: stopping "
+                        + "Paper gracefully to checkpoint SQLite and write the activation "
+                        + "receipt. The next ordinary server startup will automatically "
+                        + "back up and install the verified candidate. If this host does "
+                        + "not auto-restart, press Start once in its normal panel.");
+                Bukkit.shutdown();
+            }, 40L);
+        } catch (RuntimeException schedulingFailure) {
+            getLogger().log(Level.SEVERE, "Could not schedule an authorized clean Paper "
+                    + "shutdown. No database activation has been attempted.",
+                    schedulingFailure);
+        }
     }
 
     /** #198: a requested Paper shutdown must never be mistaken for plugin-only reload. */
@@ -406,18 +474,19 @@ public final class FragGuardPlugin extends JavaPlugin {
                                         strictProof);
                                 getLogger().info("Clean SQLite shutdown receipt: "
                                         + receipt.path().getFileName()
-                                        + "; original backup name: "
+                                        + "; reserved recovery backup: "
                                         + receipt.backup().getFileName()
-                                        + ". Only now may the operator perform a manual swap.");
-                                for (String instruction : CompactionActivation.manualInstructions(
-                                        getDataFolder().toPath(), maintenance.snapshot())) {
-                                    getLogger().info(instruction);
-                                }
+                                        + ". FragGuard will automatically save the original "
+                                        + "database and activate the verified compacted copy "
+                                        + "BEFORE opening SQLite on the next Paper startup. "
+                                        + "Do NOT rename or remove any database files. "
+                                        + "If the hosting panel does not automatically restart, "
+                                        + "press its normal Start button once.");
                             }
                         } catch (Exception exception) {
-                            getLogger().log(Level.SEVERE, "Could not seal safe manual SQLite "
+                            getLogger().log(Level.SEVERE, "Could not seal safe automatic SQLite "
                                     + "activation. The original and its WAL/SHM remain in place. "
-                                    + "DO NOT perform a database swap until the issue is resolved.",
+                                    + "DO NOT move database files or restart into an unverified swap.",
                                     exception);
                         }
                     }

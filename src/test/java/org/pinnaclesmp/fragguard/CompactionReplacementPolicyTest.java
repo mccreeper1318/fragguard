@@ -351,7 +351,11 @@ class CompactionReplacementPolicyTest {
         final UUID operator = UUID.randomUUID();
 
         Setup(Path root, MaintenancePolicy kind) throws Exception {
-            source = DatabaseDeepDiagnosticsTest.seededDatabase(root, 6);
+            this(root, kind, 6);
+        }
+
+        Setup(Path root, MaintenancePolicy kind, int historyRows) throws Exception {
+            source = DatabaseDeepDiagnosticsTest.seededDatabase(root, historyRows);
             state = MaintenanceCoordinator.open(root);
             long begin = System.currentTimeMillis() - 5_000;
             state.schedule(operator, begin, begin + 1000, kind)
@@ -365,8 +369,9 @@ class CompactionReplacementPolicyTest {
             var approvedCapacity = CompactionStoragePreflight.evaluate(capacity.measure(),
                     new CompactionStoragePreflight.Evidence(null, null, 256, true));
             assertTrue(approvedCapacity.mayReserve());
-            copy = vacuum.start(approvedCapacity).get(90, TimeUnit.SECONDS);
-            var verified = verifier.verify(copy).get(90, TimeUnit.SECONDS);
+            int timeoutSeconds = historyRows > 100_000 ? 21_600 : 90;
+            copy = vacuum.start(approvedCapacity).get(timeoutSeconds, TimeUnit.SECONDS);
+            var verified = verifier.verify(copy).get(timeoutSeconds, TimeUnit.SECONDS);
             assertEquals(64, verified.candidateSha256().length());
             assertEquals(MaintenancePhase.VERIFYING, state.snapshot().phase());
             assertFalse(state.snapshot().manifestFile().isBlank());

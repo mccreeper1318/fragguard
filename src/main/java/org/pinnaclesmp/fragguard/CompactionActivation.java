@@ -453,7 +453,7 @@ final class CompactionActivation {
         );
     }
 
-    private static void validateReceipt(Path root, MaintenanceSnapshot state,
+    static void validateReceipt(Path root, MaintenanceSnapshot state,
                                         CompactionReplacementPolicy.ApprovedEvidence approval,
                                         Properties receipt) throws IOException {
         if (!FORMAT.equals(receipt.getProperty("format"))
@@ -491,7 +491,7 @@ final class CompactionActivation {
         }
     }
 
-    private static void checkBackupSidecars(Path root, MaintenanceSnapshot state,
+    static void checkBackupSidecars(Path root, MaintenanceSnapshot state,
                                             Properties receipt) throws IOException {
         Path backup = root.resolve(backupName(state));
         for (String suffix : SIDEcars) {
@@ -545,7 +545,7 @@ final class CompactionActivation {
         }
     }
 
-    private static Properties read(Path path) throws IOException {
+    static Properties read(Path path) throws IOException {
         regular(path);
         if (Files.size(path) > MAX_RECEIPT_BYTES) {
             throw new IOException("Activation receipt is unexpectedly large");
