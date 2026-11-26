@@ -48,6 +48,9 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
         volatile Consumer<String> notice;
         final AtomicBoolean startedCompaction = new AtomicBoolean();
         volatile boolean awaitingConsent;
+        // Guarded by the Plan monitor together with cancellation. Once
+        // schedule() is submitted, cancellation must use durable COUNTDOWN.
+        boolean scheduling;
         volatile long consentRequestedAt;
         volatile String operationId = "";
         volatile CompactionStoragePreflight.Evidence acceptedEvidence;
@@ -184,18 +187,29 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("System clock cannot schedule maintenance"));
             }
-            return state.schedule(operator, now, now + seconds * 1_000L,
-                    MaintenancePolicy.STRICT).thenApply(saved -> {
-                        plan.operationId = saved.operationId();
-                        plan.stage = "Countdown: block logging ON; waiting for frozen source";
-                        notifyOperator(plan, "STRICT maintenance countdown started ("
-                                + seconds + " seconds). All block changes continue to be "
-                                + "logged until the countdown ends. Remaining steps run "
-                                + "automatically; do not touch SQLite files.");
-                        return new StartResult(ResultType.COUNTDOWN_STARTED,
-                                "STRICT countdown started. No additional compact, verify "
-                                        + "or approve commands are needed.", saved.operationId());
-                    });
+            // Hand-off to the coordinator's durable state worker and
+            // cancellation must be mutually exclusive. A cancellation after
+            // this point may ONLY succeed through the persisted COUNTDOWN
+            // cancellation path, never by clearing a still-blank operationId.
+            synchronized (plan) {
+                if (!owned(plan)) {
+                    throw new IllegalStateException(
+                            "Preparation cancelled before countdown submission");
+                }
+                plan.scheduling = true;
+                return state.schedule(operator, now, now + seconds * 1_000L,
+                        MaintenancePolicy.STRICT).thenApply(saved -> {
+                            plan.operationId = saved.operationId();
+                            plan.stage = "Countdown: block logging ON; waiting for frozen source";
+                            notifyOperator(plan, "STRICT maintenance countdown started ("
+                                    + seconds + " seconds). All block changes continue to be "
+                                    + "logged until the countdown ends. Remaining steps run "
+                                    + "automatically; do not touch SQLite files.");
+                            return new StartResult(ResultType.COUNTDOWN_STARTED,
+                                    "STRICT countdown started. No additional compact, verify "
+                                            + "or approve commands are needed.", saved.operationId());
+                        });
+            }
         }).handle((result, failure) -> {
             if (failure != null) {
                 if (current.compareAndSet(plan, null)) audit.accept(
@@ -300,12 +314,27 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
     /** Cancel only while the DB is still IDLE, before any countdown was saved. */
     boolean cancelPreparation(UUID operator) {
         Plan plan = current.get();
-        if (plan == null || closed || !plan.operator.equals(operator)
-                || !plan.operationId.isBlank()) return false;
-        boolean cancelled = current.compareAndSet(plan, null);
-        if (cancelled) audit.accept("Pre-countdown storage check cancelled by " + operator
-                + "; no maintenance state or SQLite writes were changed");
-        return cancelled;
+        if (plan == null || closed || !plan.operator.equals(operator)) return false;
+        synchronized (plan) {
+            // A schedule enqueued on the serialized state worker might not
+            // have an operation ID yet. Never report cancelled while that
+            // queued durable COUNTDOWN can still commit.
+            if (!owned(plan) || plan.scheduling || !plan.operationId.isBlank()) {
+                return false;
+            }
+            boolean cancelled = current.compareAndSet(plan, null);
+            if (cancelled) audit.accept("Pre-countdown storage check cancelled by "
+                    + operator + "; no maintenance state or SQLite writes were changed");
+            return cancelled;
+        }
+    }
+
+    boolean countdownScheduling(UUID operator) {
+        Plan plan = current.get();
+        if (plan == null || !plan.operator.equals(operator)) return false;
+        synchronized (plan) {
+            return owned(plan) && plan.scheduling && plan.operationId.isBlank();
+        }
     }
 
     void abandon(String operationId) {
