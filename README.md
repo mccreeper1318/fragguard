@@ -147,13 +147,15 @@ source schema or substitute files.
    acknowledged snapshot replacement policy, and safe activation are required
    before the copy can replace anything.
 
-The source database, WAL/SHM files and existing backups remain unchanged by
-the compaction worker. Operators and permitted background processes may
-continue generating history after SQLite starts its snapshot: **later changes
-may not appear in the candidate**. The required replacement-policy checks
-prevent accidental substitution; explicitly approved snapshot replacement
-may lose history and rollback/undo changes newer than the copied snapshot.
-The Minecraft world would NOT automatically revert.
+The source database, WAL/SHM files and existing backups are not
+replaced by the compaction worker. During ACTIVE maintenance the #203/#204
+write/retention barriers have drained and closed, so retained SQLite history
+stays frozen while the copy and full STRICT verification run. **World edits
+during this interval are intentionally NOT logged or rollbackable**, even
+for OPs; Bukkit world data is never rolled back with SQLite.
+The no-loss STRICT policy refuses any source/candidate difference.
+Exceptional Snapshot Mode still requires separate explicit operator consent
+and never bypasses source-backup/sidecar verification.
 
 Cancellation, shutdown, `SQLITE_FULL`, or interrupted output never promotes
 a partial copy. Any candidate and reservation are preserved for staff review.
