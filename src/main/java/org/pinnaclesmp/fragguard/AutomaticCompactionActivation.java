@@ -10,6 +10,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.UUID;
 import java.util.Objects;
 import java.util.Properties;
 
@@ -25,6 +27,8 @@ import java.util.Properties;
  */
 final class AutomaticCompactionActivation {
     private static final String FORMAT = "fragguard-auto-activation-1";
+    private static final String COMPLETION_FORMAT = "fragguard-auto-completion-1";
+    private static final String COMPLETION_FILENAME = ".fg-auto-activation-complete.properties";
     private static final long MAX_JOURNAL_BYTES = 16 * 1024L;
     private static final List<String> SIDECARS = List.of("-wal", "-shm");
 
@@ -165,6 +169,185 @@ final class AutomaticCompactionActivation {
         advance(base, state, recorded, Step.CANDIDATE_INSTALLED, receipt);
         // The caller MUST run CompactionActivation.verifyInstalled() and then
         // Database.init() before the persisted maintenance phase may reach IDLE.
+    }
+
+    /**
+     * Record a durable completion INTENT only after verified DB.init() but
+     * BEFORE the coordinator's ACTIVATING -> IDLE commit. A crash before IDLE
+     * leaves the entire candidate folder in place for full recovery.
+     */
+    static void recordSuccessfulWriterStartup(Path root, MaintenanceSnapshot state)
+            throws IOException {
+        if (state.phase() != MaintenancePhase.ACTIVATING) {
+            throw new IOException("Completed activation marker requires verified writer startup");
+        }
+        Path dir = root.toAbsolutePath().normalize().resolve("compaction-candidates");
+        if (!hasJournal(root, state)) return; // Legacy manual activation remains compatible.
+        if (readJournal(root, state) != Step.VERIFIED) {
+            throw new IOException("Writer startup lacks a fully verified automatic activation");
+        }
+        Path completed = dir.resolve(COMPLETION_FILENAME);
+        Properties receipt = CompactionActivation.read(CompactionActivation.receiptPath(root, state));
+        Properties props = new Properties();
+        props.setProperty("format", COMPLETION_FORMAT);
+        props.setProperty("operation_id", state.operationId());
+        props.setProperty("candidate", state.candidateFile());
+        props.setProperty("receipt_sha256", OnlineDatabaseCompaction.fileSha256(
+                CompactionActivation.receiptPath(root, state)));
+        if (Files.exists(completed, LinkOption.NOFOLLOW_LINKS)) {
+            validateCompletionMarker(root, props);
+            return; // Repeated ACTIVATING recovery after a host kill is idempotent.
+        }
+        writePropertiesAtomic(completed, props, false);
+    }
+
+    /**
+     * Archive ONLY previously validated, fully activated candidate metadata
+     * after a durable IDLE. No DB or WAL/SHM is moved/deleted here. A finished
+     * candidate's retained marker can otherwise block all future preflights.
+     * Unknown failed candidates are deliberately left in the active slot.
+     */
+    static void archiveCompletedEvidenceIfPresent(Path root) throws IOException {
+        Path base = root.toAbsolutePath().normalize();
+        Path dir = base.resolve("compaction-candidates");
+        if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) return;
+        if (Files.isSymbolicLink(base) || Files.isSymbolicLink(dir)
+                || !Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Unsafe candidate archive directory");
+        }
+        Path completion = dir.resolve(COMPLETION_FILENAME);
+        if (!Files.exists(completion, LinkOption.NOFOLLOW_LINKS)) return;
+        Properties p = readSmallProperties(completion);
+        String id = p.getProperty("operation_id", "");
+        String candidate = p.getProperty("candidate", "");
+        try {
+            if (!UUID.fromString(id).toString().equals(id)) {
+                throw new IllegalArgumentException("Noncanonical operation");
+            }
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("Unknown completion operation; preserve candidate slot", invalid);
+        }
+        if (!candidate.matches("fragguard-compact-[a-zA-Z0-9_-]+\\.db")) {
+            throw new IOException("Invalid archived compaction candidate name");
+        }
+        Path receiptPath = dir.resolve(candidate.replaceFirst("\\.db$", ".shutdown.properties"));
+        if (!Files.isRegularFile(receiptPath, LinkOption.NOFOLLOW_LINKS)
+                || !OnlineDatabaseCompaction.fileSha256(receiptPath).equals(
+                        p.getProperty("receipt_sha256"))) {
+            throw new IOException("Completed activation receipt is missing or changed");
+        }
+        Properties receipt = CompactionActivation.read(receiptPath);
+        if (!COMPLETION_FORMAT.equals(p.getProperty("format"))
+                || !id.equals(receipt.getProperty("maintenance_operation_id"))
+                || !candidate.equals(receipt.getProperty("candidate"))
+                || Files.exists(dir.resolve(candidate), LinkOption.NOFOLLOW_LINKS)
+                || Files.exists(base.resolve("fragguard.db-wal"),
+                        LinkOption.NOFOLLOW_LINKS)
+                        && !Files.isRegularFile(base.resolve("fragguard.db-wal"),
+                                LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Completion marker or archive is unsafe; preserve files");
+        }
+        // All candidate-directory files must belong to the completed
+        // operation. Failed/unverified candidates and unknown reservations
+        // are NEVER automatically moved into a trusted old-archive slot.
+        String prefix = candidate.substring(0, candidate.length() - ".db".length());
+        try (var stream = Files.newDirectoryStream(dir)) {
+            for (Path file : stream) {
+                String name = file.getFileName().toString();
+                if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+                        || !(name.equals(COMPLETION_FILENAME)
+                            || name.equals(".fg-compaction-reservation")
+                            || name.startsWith(prefix + "."))) {
+                    throw new IOException("Unrecognized candidate directory entry: " + name
+                            + "; no automatic archival attempted");
+                }
+            }
+        }
+        Path journal = dir.resolve(prefix + ".automatic-activation.properties");
+        if (!Files.isRegularFile(journal, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Missing completed automatic activation journal");
+        }
+        Properties journalProps = readSmallProperties(journal);
+        if (!FORMAT.equals(journalProps.getProperty("format"))
+                || !id.equals(journalProps.getProperty("maintenance_operation_id"))
+                || !"VERIFIED".equals(journalProps.getProperty("phase"))
+                || !p.getProperty("receipt_sha256").equals(
+                        journalProps.getProperty("shutdown_receipt_sha256"))) {
+            throw new IOException("Activation journal is not verified for archival");
+        }
+
+        Path archiveRoot = base.resolve("compaction-candidates-old");
+        if (!Files.exists(archiveRoot, LinkOption.NOFOLLOW_LINKS)) {
+            Files.createDirectory(archiveRoot);
+            fsyncDirectory(base);
+        }
+        if (Files.isSymbolicLink(archiveRoot)
+                || !Files.isDirectory(archiveRoot, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Unsafe prior-candidate archive root");
+        }
+        Path archived = archiveRoot.resolve("completed-" + id);
+        if (Files.exists(archived, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Completed archive already exists; refuse overwriting");
+        }
+        atomicMove(dir, archived);
+        fsyncDirectory(base);
+        // The next preflight/reservation creates a fresh empty active slot.
+        // Old failed candidate directories in compaction-candidates-old are
+        // neither inspected for activation nor automatically deleted.
+    }
+
+    private static void validateCompletionMarker(Path root, Properties expected)
+            throws IOException {
+        Path file = root.toAbsolutePath().normalize().resolve("compaction-candidates")
+                .resolve(COMPLETION_FILENAME);
+        Properties actual = readSmallProperties(file);
+        for (String key : List.of("format", "operation_id", "candidate", "receipt_sha256")) {
+            if (!expected.getProperty(key).equals(actual.getProperty(key))) {
+                throw new IOException("Completed writer startup proof is inconsistent: " + key);
+            }
+        }
+    }
+
+    private static Properties readSmallProperties(Path file) throws IOException {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(file) || Files.size(file) > MAX_JOURNAL_BYTES) {
+            throw new IOException("Unsafe or missing automatic activation archive marker");
+        }
+        Properties p = new Properties();
+        try (var in = Files.newInputStream(file)) {
+            p.load(in);
+        } catch (IllegalArgumentException corrupt) {
+            throw new IOException("Malformed automatic archive marker", corrupt);
+        }
+        return p;
+    }
+
+    private static void writePropertiesAtomic(Path file, Properties values,
+                                              boolean overwrite) throws IOException {
+        if (!overwrite && Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Cannot overwrite an old completed activation");
+        }
+        Path tmp = Files.createTempFile(file.getParent(), ".fg-auto-complete-", ".tmp");
+        boolean moved = false;
+        try {
+            try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
+                OutputStream out = java.nio.channels.Channels.newOutputStream(channel);
+                values.store(out, "FragGuard verified writer startup and safe archive intent");
+                out.flush();
+                channel.force(true);
+            }
+            try {
+                if (overwrite) Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+                else Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException exception) {
+                throw new IOException("Atomic completion marker unsupported", exception);
+            }
+            moved = true;
+            fsyncDirectory(file.getParent());
+        } finally {
+            if (!moved) Files.deleteIfExists(tmp);
+        }
     }
 
     static List<String> operatorInstructions(MaintenanceSnapshot state) {
