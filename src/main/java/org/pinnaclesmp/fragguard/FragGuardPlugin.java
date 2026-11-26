@@ -726,14 +726,15 @@ public final class FragGuardPlugin extends JavaPlugin {
                         maintenanceAdmissionGate.activationCompleted();
                         getLogger().warning("FragGuard maintenance ACTIVE. BLOCK LOGGING PAUSED. "
                                 + "Staff world edits are intentionally NOT recorded or rollbackable.");
+                        String pausedWarning = getConfig().getString(
+                                "maintenance-paused-admin-message",
+                                "SERVER MAINTENANCE — BLOCK LOGGING PAUSED. "
+                                        + "Staff world edits are not recorded or rollbackable.");
                         Bukkit.getOnlinePlayers().stream()
                                 .filter(player -> player.isOp()
                                         || player.hasPermission("fragguard.admin"))
                                 .forEach(player -> player.sendMessage(Component.text(
-                                        "SERVER MAINTENANCE — BLOCK LOGGING PAUSED. "
-                                        + "World edits during maintenance cannot be looked up "
-                                        + "or rolled back using FragGuard.",
-                                        NamedTextColor.RED)));
+                                        pausedWarning, NamedTextColor.RED)));
                         if (automaticMaintenance != null) {
                             automaticMaintenance.onActivated(active);
                         }

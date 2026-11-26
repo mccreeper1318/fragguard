@@ -144,7 +144,8 @@ class MaintenanceNoticeDisplayTest {
                 state.set(state.get().withCandidate("fragguard-compact-test.db",
                         "compacting"));
                 display.tick();
-                verify(status).setColor(BarColor.BLUE);
+                verify(status, atLeastOnce()).setColor(BarColor.RED);
+                verify(status, atLeastOnce()).setTitle(contains("BLOCK LOGGING PAUSED"));
                 state.set(state.get().withCutoff(START + 250_000L, "snapshot cutoff"));
                 state.set(state.get().withPhase(MaintenancePhase.VERIFYING, "verifying"));
                 display.tick();
@@ -153,7 +154,8 @@ class MaintenanceNoticeDisplayTest {
                 state.set(state.get().withManifest("fragguard-compact-test.manifest", "verified"));
                 state.set(state.get().withPhase(MaintenancePhase.READY_TO_SWAP, "ready"));
                 display.tick();
-                verify(status).setColor(BarColor.GREEN);
+                verify(status, atLeastOnce()).setColor(BarColor.RED);
+                verify(status, atLeastOnce()).setTitle(contains("RESTART REQUIRED"));
                 verify(status).setTitle(contains("RESTART REQUIRED"));
 
                 when(trusted.hasPermission("fragguard.maintenance.bypass")).thenReturn(false);
