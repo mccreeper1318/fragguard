@@ -435,7 +435,7 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         if (!frozen.sha256().equals(verified.getProperty("freeze_proof_sha256"))) {
             throw new IOException("Snapshot approval is not bound to sealed maintenance");
         }
-        requireFrozenCheckpoint(frozen);
+        checkpointForExplicitSnapshotPrecheck();
         Connection watcher = DriverManager.getConnection("jdbc:sqlite:"
                 + source.toUri() + "?mode=ro");
         try {
@@ -475,7 +475,8 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         if (!frozen.sha256().equals(verified.getProperty("freeze_proof_sha256"))) {
             throw new IOException("STRICT candidate is not bound to frozen operation");
         }
-        requireFrozenCheckpoint(frozen);
+        // Do not run a second writable checkpoint on the sealed source.
+        // If external writes occurred, the full scan identifies exact drift.
         Connection watcher = DriverManager.getConnection("jdbc:sqlite:"
                 + source.toUri() + "?mode=ro");
         try {
@@ -526,13 +527,20 @@ final class CompactionReplacementPolicy implements AutoCloseable {
         }
     }
 
-    private void requireFrozenCheckpoint(FrozenMaintenanceProof.Seal frozen)
-            throws IOException {
-        // #203 already committed and checkpointed accepted writes, so do not
-        // open a second writable connection against the frozen source.
+    private void checkpointForExplicitSnapshotPrecheck() throws Exception {
+        // Exceptional, explicitly consented Snapshot mode retains the old
+        // source-backup fingerprint workflow. STRICT never checkpoints here.
+        try (Connection writer = DriverManager.getConnection("jdbc:sqlite:" + source);
+             Statement statement = writer.createStatement()) {
+            statement.execute("PRAGMA busy_timeout = 3000");
+            try (ResultSet rows = statement.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+                if (!rows.next() || rows.getInt(1) != 0) {
+                    throw new IOException("Snapshot source checkpoint is busy; original preserved");
+                }
+            }
+        }
         if (walHasFrames()) {
-            throw new IOException("Frozen source WAL acquired frames after checkpoint ("
-                    + frozen.diagnostic() + "); original preserved");
+            throw new IOException("Snapshot WAL still contains frames before precheck");
         }
     }
 
