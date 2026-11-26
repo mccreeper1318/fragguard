@@ -217,7 +217,8 @@ public final class FragGuardPlugin extends JavaPlugin {
             maintenanceAdmissionGate.start();
             maintenanceNoticeDisplay = new MaintenanceNoticeDisplay(
                     this, maintenance, MaintenanceNoticeSettings.from(getConfig()),
-                    System::currentTimeMillis, this::activateMaintenanceAtDeadline);
+                    System::currentTimeMillis, this::activateMaintenanceAtDeadline,
+                    () -> database != null && database.maintenanceWritesPaused());
             Bukkit.getPluginManager().registerEvents(maintenanceNoticeDisplay, this);
             maintenanceNoticeDisplay.start();
         } catch (RuntimeException exception) {
