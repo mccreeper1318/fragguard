@@ -36,6 +36,12 @@ class AutomaticMaintenanceWorkflowTest {
 
     private AutomaticMaintenanceWorkflow setup(
             CompactionStoragePreflight.Evidence configuredEvidence) {
+        return setup(configuredEvidence, () -> true);
+    }
+
+    private AutomaticMaintenanceWorkflow setup(
+            CompactionStoragePreflight.Evidence configuredEvidence,
+            java.util.function.BooleanSupplier writable) {
         when(coordinator.snapshot()).thenAnswer(ignored -> state.get());
         when(coordinator.schedule(eq(ADMIN), anyLong(), anyLong(), eq(MaintenancePolicy.STRICT)))
                 .thenAnswer(args -> {
@@ -60,7 +66,7 @@ class AutomaticMaintenanceWorkflowTest {
                 });
         return new AutomaticMaintenanceWorkflow(root, coordinator, preflight,
                 compaction, verifier, policy, () -> configuredEvidence, () -> 30,
-                () -> true, Runnable::run, (id, mode) -> stopped.add(id + ":" + mode),
+                writable, Runnable::run, (id, mode) -> stopped.add(id + ":" + mode),
                 messages::add);
     }
 
@@ -104,6 +110,18 @@ class AutomaticMaintenanceWorkflowTest {
             assertTrue(confirmation.getAllValues().get(1).acknowledgeUnknown());
             assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
                     auto.start(ADMIN, messages::add, true).join().type());
+        }
+    }
+
+    @Test
+    void cancelledButStillPausedSqliteCannotStartNewCountdownOrMoveCandidates() {
+        try (var auto = setup(known(), () -> false)) {
+            var refused = auto.start(ADMIN, messages::add, false).join();
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED, refused.type());
+            assertTrue(refused.detail().contains("logging is not writable"));
+            verifyNoInteractions(preflight, compaction, verifier, policy);
+            verify(coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+            assertEquals(MaintenancePhase.IDLE, state.get().phase());
         }
     }
 
