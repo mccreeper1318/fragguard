@@ -228,6 +228,36 @@ class AutomaticMaintenanceWorkflowTest {
     }
 
     @Test
+    void cancellationCannotFalselySucceedAfterCountdownWasQueuedForDurableSave()
+            throws Exception {
+        try (var auto = setup(known())) {
+            CompletableFuture<MaintenanceSnapshot> saving = new CompletableFuture<>();
+            java.util.concurrent.CountDownLatch submitted =
+                    new java.util.concurrent.CountDownLatch(1);
+            doAnswer(args -> {
+                submitted.countDown(); // Worker handoff occurred, durable commit pending.
+                return saving;
+            }).when(coordinator).schedule(eq(ADMIN), anyLong(), anyLong(),
+                    eq(MaintenancePolicy.STRICT));
+            var starting = auto.start(ADMIN, messages::add, false);
+            assertTrue(submitted.await(10, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(auto.countdownScheduling(ADMIN));
+            assertFalse(auto.cancelPreparation(ADMIN),
+                    "Cannot claim pre-countdown cancellation when a durable schedule is queued");
+            MaintenanceSnapshot saved = MaintenanceSnapshot.scheduled(ADMIN,
+                    System.currentTimeMillis(), System.currentTimeMillis() + 60_000L,
+                    MaintenancePolicy.STRICT);
+            state.set(saved);
+            saving.complete(saved);
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.COUNTDOWN_STARTED,
+                    starting.join().type());
+            assertTrue(auto.controlsOperation(saved.operationId()));
+            assertFalse(auto.cancelPreparation(ADMIN));
+            assertEquals(MaintenancePhase.COUNTDOWN, state.get().phase());
+        }
+    }
+
+    @Test
     void failedFreshPreflightDoesNotRunCompactionOrAuthorizeShutdown() {
         try (var auto = setup(known())) {
             auto.start(ADMIN, messages::add, false).join();
