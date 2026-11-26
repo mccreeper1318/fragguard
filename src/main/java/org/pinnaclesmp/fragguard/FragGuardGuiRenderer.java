@@ -99,9 +99,10 @@ final class FragGuardGuiRenderer {
                 "&7Savings excludes active WAL/SHM.",
                 "&7Source/candidate may change after snapshot."));
         inv.setItem(20, item(view.canSchedule() ? Material.EMERALD_BLOCK : Material.GRAY_DYE,
-                "&aSchedule STRICT (default)",
-                "&7Countdown: configured in config.yml.",
-                "&7Only starts when no maintenance is active.",
+                "&aStart Automatic STRICT Maintenance",
+                "&7One action: storage check, countdown, compaction,",
+                "&7full verification, safe stop and startup activation.",
+                "&7Unknown storage quota may need one acknowledgement.",
                 view.canSchedule() ? "&eClick to review" : "&8Not available in current stage"));
         inv.setItem(22, item(view.canSchedule() ? Material.GOLD_BLOCK : Material.GRAY_DYE,
                 "&6Schedule Snapshot Mode",
@@ -111,18 +112,18 @@ final class FragGuardGuiRenderer {
                 view.canSchedule() ? "&eClick for explicit confirmation"
                         : "&8Not available in current stage"));
         inv.setItem(24, item(view.canCompact() ? Material.IRON_PICKAXE : Material.GRAY_DYE,
-                "&bStart Compaction",
-                "&7Requires ACTIVE and an accepted fresh preflight.",
-                "&7Only one candidate can be created.",
+                "&bAdvanced: Start Compaction",
+                "&7Automatic STRICT handles this step itself.",
+                "&7Manual Snapshot/recovery requires fresh preflight.",
                 view.canCompact() ? "&eClick to review" : "&8Not available in current stage"));
         inv.setItem(28, item(view.canVerify() ? Material.BOOK : Material.GRAY_DYE,
-                "&bVerify Candidate",
-                "&7Checks every history and undo record.",
-                "&7Background scan, no known total percentage.",
+                "&bAdvanced: Verify Candidate",
+                "&7Automatic STRICT handles this step itself.",
+                "&7Full background history/BLOB/undo scan, no guessed percent.",
                 view.canVerify() ? "&eClick to run" : "&8Candidate not ready for verification"));
         inv.setItem(30, item(view.canApprove() ? Material.EMERALD : Material.GRAY_DYE,
-                "&aApprove Replacement Policy",
-                "&7Full verification is mandatory.",
+                "&aAdvanced: Replacement Policy",
+                "&7Automatic STRICT performs equality approval itself.",
                 view.policy() == MaintenancePolicy.STRICT
                         ? "&7Full scan online; final unchanged proof at shutdown."
                         : "&cSnapshot Mode: explicit irreversible loss consent.",
