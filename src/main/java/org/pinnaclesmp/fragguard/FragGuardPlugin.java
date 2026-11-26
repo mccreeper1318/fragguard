@@ -169,7 +169,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                             + "Preserve the files; a future compaction preflight may refuse.",
                             archiveFailure);
                 }
-                getLogger().info("Verified compacted database activation complete. 
+                getLogger().info("Verified compacted database activation complete. "
                         + "The preserved original and its sidecars were not deleted.");
             } catch (Exception failure) {
                 getLogger().log(Level.SEVERE, "Could not commit verified activation state; "
