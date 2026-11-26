@@ -63,6 +63,7 @@ class MaintenanceReleaseValidationTest {
             long now = System.currentTimeMillis() - 5_000;
             coordinator.schedule(operator, now, now + 1_000, MaintenancePolicy.STRICT)
                     .get(15, TimeUnit.SECONDS);
+            FrozenMaintenanceProof.persistSnapshot(root, coordinator.snapshot(), 0L, 0L);
             coordinator.activate().get(15, TimeUnit.SECONDS);
             assertTrue(coordinator.blocksNewJobs());
 
@@ -193,6 +194,7 @@ class MaintenanceReleaseValidationTest {
             long now = System.currentTimeMillis() - 5_000;
             coordinator.schedule(operator, now, now + 1_000, MaintenancePolicy.STRICT)
                     .get(15, TimeUnit.SECONDS);
+            FrozenMaintenanceProof.persistSnapshot(root, coordinator.snapshot(), 0L, 0L);
             coordinator.activate().get(15, TimeUnit.SECONDS);
             var capacity = CompactionStoragePreflight.evaluate(preflight.measure(),
                     new CompactionStoragePreflight.Evidence(null, null, 256, true));

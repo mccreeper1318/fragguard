@@ -27,6 +27,7 @@
 - Updated Gradle wrapper to 9.9.2 (#175, #193, #202).
 
 ### Fixed
+- Made STRICT compaction bind candidate and approval proofs to a durable, drained, operation-specific SQLite freeze; preserved full equality checks with detailed divergence diagnostics (#205).
 - Fixed compaction approval timing by moving STRICT validation and Snapshot file hashes before shutdown, with clean-stop and late-write protections (#198).
 - Fixed cancelled database scans blocking future diagnostics (#176).
 - Fixed completed database scans briefly blocking immediate follow-up diagnostics (#176).

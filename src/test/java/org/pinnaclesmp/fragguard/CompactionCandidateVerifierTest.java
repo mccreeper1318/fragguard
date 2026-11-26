@@ -188,6 +188,7 @@ class CompactionCandidateVerifierTest {
             long begin = System.currentTimeMillis() - 5_000;
             coordinator.schedule(UUID.randomUUID(), begin, begin + 1_000,
                     MaintenancePolicy.STRICT).get(10, TimeUnit.SECONDS);
+            FrozenMaintenanceProof.persistSnapshot(root, coordinator.snapshot(), 0L, 0L);
             coordinator.activate().get(10, TimeUnit.SECONDS);
             preflight = new CompactionStoragePreflight(root);
             vacuum = new OnlineDatabaseCompaction(root, coordinator, preflight);

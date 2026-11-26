@@ -327,6 +327,7 @@ class CompactionReplacementPolicyTest {
             long begin = System.currentTimeMillis() - 5_000;
             state.schedule(operator, begin, begin + 1000, kind)
                     .get(10, TimeUnit.SECONDS);
+            FrozenMaintenanceProof.persistSnapshot(root, state.snapshot(), 0L, 0L);
             state.activate().get(10, TimeUnit.SECONDS);
             capacity = new CompactionStoragePreflight(root);
             vacuum = new OnlineDatabaseCompaction(root, state, capacity);
