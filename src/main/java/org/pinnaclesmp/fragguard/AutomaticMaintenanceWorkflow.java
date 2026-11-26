@@ -87,12 +87,23 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
             plan = current.get();
             if (plan == null || !plan.operator.equals(operator) || !plan.awaitingConsent
                     || System.currentTimeMillis() - plan.consentRequestedAt > CONSENT_MILLIS) {
+                if (plan != null && plan.operator.equals(operator) && plan.awaitingConsent
+                        && System.currentTimeMillis() - plan.consentRequestedAt > CONSENT_MILLIS) {
+                    current.compareAndSet(plan, null); // Expired consent cannot block retries.
+                }
                 return CompletableFuture.completedFuture(new StartResult(ResultType.REFUSED,
                         "No current unknown-capacity warning for this operator. "
                                 + "Run /fg maintenance start again.", ""));
             }
             plan.awaitingConsent = false; // consume confirmation exactly once
         } else {
+            // A user who missed the optional consent window may start over
+            // without restarting Paper or manually editing a maintenance file.
+            Plan waiting = current.get();
+            if (waiting != null && waiting.awaitingConsent
+                    && System.currentTimeMillis() - waiting.consentRequestedAt > CONSENT_MILLIS) {
+                current.compareAndSet(waiting, null);
+            }
             if (!MaintenanceUiActions.canSchedule(state.snapshot())) {
                 return CompletableFuture.completedFuture(new StartResult(ResultType.REFUSED,
                         "Another maintenance operation is active. Review status or cancel safely.", ""));
