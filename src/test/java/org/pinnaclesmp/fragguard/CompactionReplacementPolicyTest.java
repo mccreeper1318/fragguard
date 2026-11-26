@@ -191,6 +191,35 @@ class CompactionReplacementPolicyTest {
     }
 
     @Test
+    void strictMismatchReportsSourceCandidateRowsDigestAndFrozenGeneration() throws Exception {
+        try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
+            // Simulate an unauthorized SQLite connection changing the source
+            // AFTER the verified copy. Do not drop the full logical comparison.
+            try (Connection source = DriverManager.getConnection("jdbc:sqlite:" + setup.source);
+                 Statement sql = source.createStatement()) {
+                sql.execute("INSERT INTO block_changes "
+                        + "(happened_at,actor_uuid,actor_name,world,world_uuid,x,y,z,"
+                        + "chunk_x,chunk_z,action,before_data,after_data) "
+                        + "VALUES(999999,'actor','actor','world','uuid',32,64,0,2,0,"
+                        + "'PLACE','minecraft:air','minecraft:stone')");
+            }
+            ExecutionException refused = assertThrows(ExecutionException.class,
+                    () -> setup.policy.prepare(setup.operator, "")
+                            .get(90, TimeUnit.SECONDS));
+            String message = refused.getCause().getMessage();
+            assertTrue(message.contains("table=block_changes"), message);
+            assertTrue(message.contains("sourceRows="), message);
+            assertTrue(message.contains("candidateRows="), message);
+            assertTrue(message.contains("sourceSha256="), message);
+            assertTrue(message.contains("candidateSha256="), message);
+            assertTrue(message.contains("lastAuthorizedSqlGeneration="), message);
+            assertTrue(message.contains("cleanupDrained=true"), message);
+            assertEquals(MaintenancePhase.VERIFYING, setup.state.snapshot().phase());
+            assertTrue(Files.exists(setup.source), "No automatic source replacement on mismatch");
+        }
+    }
+
+    @Test
     void strictModeRejectsHistoryInsertedAfterSnapshot() throws Exception {
         try (Setup setup = new Setup(root, MaintenancePolicy.STRICT)) {
             setup.policy.prepare(setup.operator, "").get(30, TimeUnit.SECONDS);
