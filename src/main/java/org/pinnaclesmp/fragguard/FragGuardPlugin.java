@@ -583,7 +583,9 @@ public final class FragGuardPlugin extends JavaPlugin {
             CompletableFuture.supplyAsync(() -> {
                 try {
                     MaintenanceSnapshot current = maintenance.snapshot();
-                    if (current.phase() != MaintenancePhase.COUNTDOWN
+                    if (maintenanceAdmissionGate == null
+                            || maintenanceAdmissionGate.cancellationInProgress()
+                            || current.phase() != MaintenancePhase.COUNTDOWN
                             || !current.operationId().equals(expected.operationId())) {
                         throw new java.io.IOException("Maintenance cancelled before freeze proof");
                     }
@@ -603,7 +605,9 @@ public final class FragGuardPlugin extends JavaPlugin {
                             "Frozen SQLite baseline proof was not durable", proofFailure);
                     return;
                 }
-                if (maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
+                if (maintenanceAdmissionGate == null
+                        || maintenanceAdmissionGate.cancellationInProgress()
+                        || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
                         || !maintenance.snapshot().operationId().equals(expected.operationId())) {
                     return;
                 }
