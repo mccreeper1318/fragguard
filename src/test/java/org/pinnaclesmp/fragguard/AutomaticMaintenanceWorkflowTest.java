@@ -196,7 +196,7 @@ class AutomaticMaintenanceWorkflowTest {
         try (var auto = setup(known())) {
             CompletableFuture<CompactionStoragePreflight.Report> outstanding =
                     new CompletableFuture<>();
-            when(preflight.run(any())).thenReturn(outstanding);
+            doReturn(outstanding).when(preflight).run(any());
             CompletableFuture<AutomaticMaintenanceWorkflow.StartResult> task =
                     auto.start(ADMIN, messages::add, false);
             assertTrue(auto.cancelPreparation(ADMIN));
@@ -216,9 +216,10 @@ class AutomaticMaintenanceWorkflowTest {
             MaintenanceSnapshot active = state.get().withPhase(
                     MaintenancePhase.ACTIVE, "fully frozen");
             state.set(active);
-            when(preflight.run(any())).thenReturn(CompletableFuture.completedFuture(
+            doReturn(CompletableFuture.completedFuture(
                     CompactionStoragePreflight.evaluate(measure(),
-                            new CompactionStoragePreflight.Evidence(0L, 0L, 256, true))));
+                            new CompactionStoragePreflight.Evidence(0L, 0L, 256, true))))
+                    .when(preflight).run(any());
             auto.onActivated(active);
             verifyNoInteractions(compaction, verifier, policy);
             verify(coordinator).failCurrentWorkIfOperation(eq(active.operationId()), anyString());
