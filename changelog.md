@@ -3,7 +3,7 @@
 ## 26.3-1.2.2
 
 ### Added
-- Added automatic verified SQLite backup and activation on restart, with crash-safe sidecar journal and no routine manual file moves (#206).
+- Added automatic verified SQLite backup and restart-time activation, with crash-safe sidecar journal and preserved completed-candidate archives (#206).
 - Added end-to-end maintenance release tests, isolated large-history validation guidance and owner sign-off checklist (#172).
 - Added opt-in bounded SQLite incremental page reclamation for compatible databases, with safe new-database configuration and no existing-database conversion (#171).
 - Added opt-in read-only SQLite free-list monitoring with admin-only compaction advice, WAL/growth context, configurable thresholds and cooldown (#170).

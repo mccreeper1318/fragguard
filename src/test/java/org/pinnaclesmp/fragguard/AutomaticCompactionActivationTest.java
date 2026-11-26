@@ -65,8 +65,9 @@ class AutomaticCompactionActivationTest {
     void idledServerCompletesMetadataArchivalAfterInterruptedRestart() throws Exception {
         Path folder = root.resolve("archive-after-kill");
         String operationId;
+        Path originalBackup;
         try (var job = prepared(folder, MaintenancePolicy.STRICT, 6)) {
-            receipt(job);
+            originalBackup = receipt(job).backup();
             var state = job.state.snapshot();
             operationId = state.operationId();
             AutomaticCompactionActivation.activateBeforeDatabaseOpen(folder, state);
@@ -85,9 +86,9 @@ class AutomaticCompactionActivationTest {
             assertTrue(Files.isRegularFile(folder.resolve("compaction-candidates-old")
                     .resolve("completed-" + operationId)
                     .resolve(".fg-auto-activation-complete.properties")));
-            assertTrue(Files.isRegularFile(folder.resolve(
-                    "fragguard-original-" + operationId + ".db"))
-                    || Files.isRegularFile(folder.resolve("fragguard.db")));
+            assertTrue(Files.isRegularFile(originalBackup),
+                    "Completed archival must not touch the original recovery backup");
+            assertTrue(Files.isRegularFile(folder.resolve("fragguard.db")));
         }
     }
 

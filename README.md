@@ -331,9 +331,14 @@ are intentionally **not recorded by FragGuard**.
 #### Archived backups and exceptional manual recovery
 
 FragGuard never deletes the last recoverable original, its matching WAL/SHM,
-candidate manifests, or the activation journal. Previously failed or partially
-reserved `compaction-candidates-old` folders remain untouched. Each new
-maintenance run uses its own candidate/backup name to avoid stale reuse.
+candidate manifests, or the activation journal. After SQLite writer startup
+and the durable IDLE stage succeed, FragGuard **atomically archives only the
+completed operation's candidate metadata and reservation** into
+`compaction-candidates-old/completed-<operation-id>`. It never deletes archived
+evidence. A host kill between IDLE and archival is reconciled on the next
+start. Unknown, failed, or unverified candidates are left untouched and block
+new compaction until inspected. Each new maintenance run uses a unique
+candidate/backup name; a safe archive clears the active slot for future runs.
 
 **No automatic archive cleanup is performed.** To manage quotas, only archive
 old backups *after* the latest activation succeeded, an independent complete
