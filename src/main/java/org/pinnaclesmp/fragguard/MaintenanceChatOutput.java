@@ -174,7 +174,8 @@ final class MaintenanceChatOutput {
             }
             case FAILED -> {
                 danger(send, "Maintenance failed: logging/admission may remain restricted. "
-                        + "Preserve all original, candidate, WAL/SHM and manifest files.");
+                        + "Do NOT swap files. Preserve original, candidate, WAL/SHM "
+                        + "and manifest evidence.");
                 notice(send, "Inspect /fg maintenance status full. If compaction and "
                         + "verification workers have stopped, /fg maintenance cancel "
                         + "safely unfreezes writes before reopening admissions.");
