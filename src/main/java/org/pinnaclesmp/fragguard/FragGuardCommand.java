@@ -2076,6 +2076,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                             + "No history freeze or SQLite replacement started."));
                     return;
                 }
+                if (automatic != null && automatic.countdownScheduling(player.getUniqueId())) {
+                    player.sendMessage(color("&eThe countdown is being saved. "
+                            + "Retry /fg maintenance cancel when status shows COUNTDOWN; "
+                            + "no cancellation has been confirmed yet."));
+                    return;
+                }
                 cancelMaintenance(player, state, coordinator, compaction);
             }
             case "compact" -> {
