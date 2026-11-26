@@ -132,6 +132,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     if (automatic != null) sender.sendMessage(automatic.status());
                     return true;
                 }
+                if ("cancel".equals(action) && args.length == 2) {
+                    AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                    sender.sendMessage(automatic != null
+                            && automatic.cancelPreparation(CONSOLE_MAINTENANCE_OPERATOR)
+                            ? "Pre-countdown automatic maintenance cancelled safely."
+                            : "No console pre-countdown maintenance to cancel. "
+                                    + "In-progress stages require an in-game administrator.");
+                    return true;
+                }
                 if ("start".equals(action)
                         && (args.length == 2
                             || args.length == 3 && (args[2].equalsIgnoreCase("strict")
@@ -2058,7 +2067,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                             }
                         }));
             }
-            case "cancel" -> cancelMaintenance(player, state, coordinator, compaction);
+            case "cancel" -> {
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && (state.phase() == MaintenancePhase.IDLE
+                        || state.phase() == MaintenancePhase.CANCELLED)
+                        && automatic.cancelPreparation(player.getUniqueId())) {
+                    player.sendMessage(color("&aPre-countdown storage check cancelled. "
+                            + "No history freeze or SQLite replacement started."));
+                    return;
+                }
+                cancelMaintenance(player, state, coordinator, compaction);
+            }
             case "compact" -> {
                 if (args.length != 1) { maintenanceUsage(player); return; }
                 AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();

@@ -278,7 +278,19 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
 
     boolean controlsOperation(String operationId) {
         Plan plan = current.get();
-        return plan != null && !closed && plan.operationId.equals(operationId);
+        return plan != null && !closed && !plan.operationId.isBlank()
+                && plan.operationId.equals(operationId);
+    }
+
+    /** Cancel only while the DB is still IDLE, before any countdown was saved. */
+    boolean cancelPreparation(UUID operator) {
+        Plan plan = current.get();
+        if (plan == null || closed || !plan.operator.equals(operator)
+                || !plan.operationId.isBlank()) return false;
+        boolean cancelled = current.compareAndSet(plan, null);
+        if (cancelled) audit.accept("Pre-countdown storage check cancelled by " + operator
+                + "; no maintenance state or SQLite writes were changed");
+        return cancelled;
     }
 
     void abandon(String operationId) {

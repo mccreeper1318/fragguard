@@ -192,6 +192,24 @@ class AutomaticMaintenanceWorkflowTest {
     }
 
     @Test
+    void operatorMayCancelPreCountdownWhileCapacityCheckIsPending() {
+        try (var auto = setup(known())) {
+            CompletableFuture<CompactionStoragePreflight.Report> outstanding =
+                    new CompletableFuture<>();
+            when(preflight.run(any())).thenReturn(outstanding);
+            CompletableFuture<AutomaticMaintenanceWorkflow.StartResult> task =
+                    auto.start(ADMIN, messages::add, false);
+            assertTrue(auto.cancelPreparation(ADMIN));
+            assertFalse(auto.cancelPreparation(ADMIN));
+            outstanding.complete(CompactionStoragePreflight.evaluate(measure(), known()));
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
+                    task.join().type());
+            verify(coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+            verifyNoInteractions(compaction, verifier, policy);
+        }
+    }
+
+    @Test
     void failedFreshPreflightDoesNotRunCompactionOrAuthorizeShutdown() {
         try (var auto = setup(known())) {
             auto.start(ADMIN, messages::add, false).join();
