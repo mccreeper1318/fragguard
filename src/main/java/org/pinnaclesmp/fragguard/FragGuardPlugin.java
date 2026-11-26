@@ -481,7 +481,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                         return; // A concurrent cancellation won; do not re-freeze.
                     }
                     if (failure != null) {
-                        failMaintenanceFreeze("Background retention/reclamation could not drain "
+                        failMaintenanceFreeze(expired, "Background retention/reclamation could not drain "
                                 + "before the SQLite freeze. No compaction may begin.");
                         getLogger().log(Level.SEVERE,
                                 "Maintenance background-mutation drain failed", failure);
@@ -505,12 +505,12 @@ public final class FragGuardPlugin extends JavaPlugin {
         if (current.phase() != MaintenancePhase.COUNTDOWN
                 || !current.operationId().equals(expected.operationId())) return;
         if (System.nanoTime() - deadlineNanos >= 0) {
-            failMaintenanceFreeze("Previously accepted rollback/undo jobs did not finish "
+            failMaintenanceFreeze(expected, "Previously accepted rollback/undo jobs did not finish "
                     + "within five minutes. No database freeze or compaction occurred.");
             return;
         }
         if (commandExecutor == null || database == null) {
-            failMaintenanceFreeze("Database or rollback executor became unavailable "
+            failMaintenanceFreeze(expected, "Database or rollback executor became unavailable "
                     + "while waiting to freeze; source remains unchanged.");
             return;
         }
@@ -530,7 +530,7 @@ public final class FragGuardPlugin extends JavaPlugin {
                             || maintenance.snapshot().phase() != MaintenancePhase.COUNTDOWN
                             || !maintenance.snapshot().operationId().equals(expected.operationId())) return;
                     if (failure != null) {
-                        failMaintenanceFreeze("Could not confirm that existing rollback/undo "
+                        failMaintenanceFreeze(expected, "Could not confirm that existing rollback/undo "
                                 + "jobs finished. No database freeze or compaction occurred.");
                         getLogger().log(Level.SEVERE, "Rollback drain probe failed", failure);
                         return;
@@ -571,7 +571,7 @@ public final class FragGuardPlugin extends JavaPlugin {
         // WAL and set query_only before persisting ACTIVE.
         database.freezeForMaintenanceAsync().whenComplete((unused, freezeFailure) -> {
             if (freezeFailure != null) {
-                failMaintenanceFreeze("Database write freeze failed; preserve source and "
+                failMaintenanceFreeze(expected, "Database write freeze failed; preserve source and "
                         + "review SQLite storage. No candidate may be created.");
                 getLogger().log(Level.SEVERE, "FragGuard could not seal the SQLite "
                         + "writer at maintenance activation", freezeFailure);
@@ -597,12 +597,15 @@ public final class FragGuardPlugin extends JavaPlugin {
             }).whenComplete((proof, proofFailure) -> {
                 if (proofFailure != null) {
                     // An already cancelled operation needs no new activation.
-                    if (maintenance.snapshot().phase() == MaintenancePhase.COUNTDOWN) {
-                        failMaintenanceFreeze("Could not persist durable frozen SQLite proof; "
-                                + "STRICT compaction is blocked.");
-                    }
+                    // A cancelled operation may have been replaced by another
+                    // COUNTDOWN while the common-pool proof task was pending.
+                    if (!sameCountdown(expected)) return;
+                    failMaintenanceFreeze(expected,
+                            "Could not persist durable frozen SQLite proof; "
+                                    + "STRICT compaction is blocked.");
                     getLogger().log(Level.SEVERE,
-                            "Frozen SQLite baseline proof was not durable", proofFailure);
+                            "Frozen SQLite baseline proof was not durable for operation "
+                                    + expected.operationId(), proofFailure);
                     return;
                 }
                 if (maintenanceAdmissionGate == null
@@ -613,13 +616,24 @@ public final class FragGuardPlugin extends JavaPlugin {
                 }
                 getLogger().info("SQLite freeze and retention drain attested for operation "
                         + proof.operationId() + " (" + proof.diagnostic() + ").");
-                maintenance.activate().whenComplete((active, failure) -> {
+                maintenance.activateCountdownIfCurrent(expected.operationId())
+                        .whenComplete((active, failure) -> {
                 if (!isEnabled()) return;
                 try {
                     Bukkit.getScheduler().runTask(this, () -> {
-                        if (maintenanceAdmissionGate == null) return;
+                        if (maintenanceAdmissionGate == null || maintenance == null
+                                || !expected.operationId().equals(
+                                        maintenance.snapshot().operationId())) {
+                            return; // Another maintenance operation owns admissions.
+                        }
+                        if (active != null
+                                && !expected.operationId().equals(active.operationId())) {
+                            return; // Superseded activation cannot affect new operation.
+                        }
                         if (failure != null || active == null
                                 || active.phase() != MaintenancePhase.ACTIVE) {
+                            // The originating countdown was cancelled, not failed.
+                            if (maintenance.snapshot().phase() == MaintenancePhase.CANCELLED) return;
                             getLogger().log(Level.SEVERE, "Could not persist maintenance "
                                     + "activation; admissions remain closed", failure);
                             maintenanceAdmissionGate.activationFailed();
@@ -640,18 +654,42 @@ public final class FragGuardPlugin extends JavaPlugin {
         });
     }
 
-    private void failMaintenanceFreeze(String reason) {
-        getLogger().severe(reason);
-        if (maintenance != null && maintenance.snapshot().phase() == MaintenancePhase.COUNTDOWN) {
-            maintenance.fail(reason);
-        }
-        try {
-            Bukkit.getScheduler().runTask(this, () -> {
-                if (maintenanceAdmissionGate != null) maintenanceAdmissionGate.activationFailed();
-            });
-        } catch (RuntimeException schedulingFailure) {
-            Bukkit.shutdown();
-        }
+    private boolean sameCountdown(MaintenanceSnapshot expected) {
+        MaintenanceCoordinator coordinator = maintenance;
+        if (coordinator == null || expected == null) return false;
+        MaintenanceSnapshot current = coordinator.snapshot();
+        return current.phase() == MaintenancePhase.COUNTDOWN
+                && current.operationId().equals(expected.operationId());
+    }
+
+    /** A stale completion cannot fail or kick players in a later countdown. */
+    private void failMaintenanceFreeze(MaintenanceSnapshot expected, String reason) {
+        if (!sameCountdown(expected)) return;
+        // The operator may cancel/schedule another countdown after our check.
+        // This transition is conditional INSIDE the state worker.
+        maintenance.failCountdownIfCurrent(expected.operationId(), reason)
+                .whenComplete((failed, error) -> {
+                    if (maintenance == null || failed == null
+                            || !maintenance.snapshot().operationId()
+                                    .equals(expected.operationId())) {
+                        return;
+                    }
+                    if (error == null && failed.phase() != MaintenancePhase.FAILED) {
+                        return; // Cancellation committed before the failure.
+                    }
+                    getLogger().log(Level.SEVERE, reason, error);
+                    try {
+                        Bukkit.getScheduler().runTask(this, () -> {
+                            if (maintenanceAdmissionGate != null && maintenance != null
+                                    && expected.operationId().equals(
+                                            maintenance.snapshot().operationId())) {
+                                maintenanceAdmissionGate.activationFailed();
+                            }
+                        });
+                    } catch (RuntimeException schedulingFailure) {
+                        Bukkit.shutdown(); // Do not expose a frozen ungated server.
+                    }
+                });
     }
 
     /** Ensure normal players remain gated until SQLite is writable again. */
