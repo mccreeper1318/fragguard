@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Properties;
+import java.util.UUID;
 
 /**
  * #205: small durable, operation-bound proof of the completed #203/#204
@@ -18,7 +19,10 @@ import java.util.Properties;
  * frozen operation. The logical history/BLOB comparison is still mandatory.
  */
 final class FrozenMaintenanceProof {
-    private static final String FILE = "maintenance-freeze.properties";
+    // One immutable proof per maintenance operation. A cancelled async proof
+    // task cannot overwrite the file for a newer scheduled operation.
+    private static final String FILE_PREFIX = "maintenance-freeze-";
+    private static final String FILE_SUFFIX = ".properties";
     private static final String FORMAT = "fragguard-frozen-source-1";
 
     record Seal(String operationId, String sourceIdentity, long fileBytes,
@@ -33,8 +37,18 @@ final class FrozenMaintenanceProof {
 
     private FrozenMaintenanceProof() { }
 
-    static Path file(Path root) {
-        return root.toAbsolutePath().normalize().resolve(FILE);
+    static Path file(Path root, MaintenanceSnapshot state) throws IOException {
+        String operationId = state.operationId();
+        try {
+            if (!UUID.fromString(operationId).toString().equals(operationId)) {
+                throw new IllegalArgumentException("Noncanonical maintenance operation ID");
+            }
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("Cannot select a proof file without a valid operation ID",
+                    invalid);
+        }
+        return root.toAbsolutePath().normalize()
+                .resolve(FILE_PREFIX + operationId + FILE_SUFFIX);
     }
 
     /** Called only after the ordered SQLite worker has completed its query_only seal. */
@@ -66,23 +80,10 @@ final class FrozenMaintenanceProof {
                 || !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Unsafe or absent frozen SQLite source");
         }
-        if (Files.exists(file(rootPath), LinkOption.NOFOLLOW_LINKS)) {
-            try {
-                Properties old = load(file(rootPath));
-                if (!FORMAT.equals(old.getProperty("format"))
-                        || !old.getProperty("maintenance_operation_id", "").matches(
-                                "[a-fA-F0-9-]{36}")
-                        || !old.getProperty("source_identity_sha256", "").matches(
-                                "[a-f0-9]{64}")) {
-                    throw new IOException("Previous frozen proof is corrupt; refuse replacement");
-                }
-                if (state.operationId().equals(old.getProperty("maintenance_operation_id"))) {
-                    throw new IOException("This maintenance operation already has a freeze proof");
-                }
-            } catch (IOException unreadableOld) {
-                // Never replace a corrupt proof: first resolve/recover it.
-                throw unreadableOld;
-            }
+        Path dest = file(rootPath, state);
+        if (Files.exists(dest, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Freeze proof already exists for this maintenance operation; "
+                    + "never overwrite existing or corrupted evidence");
         }
         Properties p = new Properties();
         p.setProperty("format", FORMAT);
@@ -96,7 +97,6 @@ final class FrozenMaintenanceProof {
         p.setProperty("sealed_at_millis", Long.toString(System.currentTimeMillis()));
         p.setProperty("sqlite_writer_sealed", "true");
         p.setProperty("background_cleanup_drained", "true");
-        Path dest = file(rootPath);
         Path tmp = Files.createTempFile(rootPath, ".fg-freeze-", ".tmp");
         boolean moved = false;
         try {
@@ -106,6 +106,12 @@ final class FrozenMaintenanceProof {
                 out.flush();
                 channel.force(true);
             }
+            // Reserve THIS operation's path exclusively after fsync. Only the
+            // reservation owner may atomically replace its empty placeholder.
+            // If a crash occurs between createFile and rename, this operation
+            // has an invalid/empty proof and fails closed. A different
+            // operation has a DIFFERENT path and is never touched.
+            Files.createFile(dest);
             try {
                 Files.move(tmp, dest, StandardCopyOption.ATOMIC_MOVE,
                         StandardCopyOption.REPLACE_EXISTING);
@@ -123,7 +129,7 @@ final class FrozenMaintenanceProof {
     }
 
     static Seal read(Path root, MaintenanceSnapshot state) throws IOException {
-        Path path = file(root);
+        Path path = file(root, state);
         if (Files.isSymbolicLink(path) || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Missing durable #203/#204 freeze proof; STRICT compaction refused");
         }

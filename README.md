@@ -233,8 +233,9 @@ replacement is performed.
 
 At the deadline, bounded retention cleanup and optional incremental SQLite
 reclamation stop accepting new work. Accepted SQL batches commit or fail before
-the SQLite write barrier seals the source. A small, fsynced
-`maintenance-freeze.properties` proof records the operation ID, original
+the SQLite write barrier seals the source. A small, fsynced,
+**operation-specific** `maintenance-freeze-<operation-id>.properties` proof
+records the operation ID, original
 SQLite identity and stamp, last admitted history/SQL write generations, and
 that both barriers drained. **ACTIVE is not declared unless this succeeds.**
 
