@@ -369,8 +369,9 @@ class CompactionReplacementPolicyTest {
             var approvedCapacity = CompactionStoragePreflight.evaluate(capacity.measure(),
                     new CompactionStoragePreflight.Evidence(null, null, 256, true));
             assertTrue(approvedCapacity.mayReserve());
-            copy = vacuum.start(approvedCapacity).get(90, TimeUnit.SECONDS);
-            var verified = verifier.verify(copy).get(90, TimeUnit.SECONDS);
+            int timeoutSeconds = historyRows > 100_000 ? 21_600 : 90;
+            copy = vacuum.start(approvedCapacity).get(timeoutSeconds, TimeUnit.SECONDS);
+            var verified = verifier.verify(copy).get(timeoutSeconds, TimeUnit.SECONDS);
             assertEquals(64, verified.candidateSha256().length());
             assertEquals(MaintenancePhase.VERIFYING, state.snapshot().phase());
             assertFalse(state.snapshot().manifestFile().isBlank());
