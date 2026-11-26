@@ -70,7 +70,7 @@ class MaintenanceGuiInventoryLayoutTest {
                 assertNotNull(slots.get(slot), "Missing maintenance control at slot " + slot);
             }
             assertTrue(details.get(slots.get(14)).name.contains("Compaction Preview"));
-            assertTrue(details.get(slots.get(30)).name.contains("Approve Replacement"));
+            assertTrue(details.get(slots.get(30)).name.contains("Advanced: Replacement Policy"));
             assertTrue(details.get(slots.get(32)).name.contains("Automatic Activation"));
             assertTrue(details.get(slots.get(22)).lore.stream().anyMatch(
                     x -> x.contains("PERMANENTLY LOSE")));
