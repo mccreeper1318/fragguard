@@ -172,9 +172,18 @@ final class MaintenanceChatOutput {
                 danger(send, "Do not rename or touch SQLite files.");
                 action(send, "Guide: /fg maintenance instructions");
             }
-            case ACTIVATING, FAILED -> {
-                danger(send, "Preserve source, backup, candidate, WAL/SHM and manifests. Do NOT swap files.");
-                notice(send, "Investigate failure; review status full before any cancel or recovery.");
+            case FAILED -> {
+                danger(send, "Maintenance failed: logging/admission may remain restricted. "
+                        + "Preserve all original, candidate, WAL/SHM and manifest files.");
+                notice(send, "Inspect /fg maintenance status full. If compaction and "
+                        + "verification workers have stopped, /fg maintenance cancel "
+                        + "safely unfreezes writes before reopening admissions.");
+            }
+            case ACTIVATING -> {
+                danger(send, "Restart-time activation is not yet verified. "
+                        + "Preserve original backup, matching WAL/SHM and all manifests.");
+                notice(send, "Use the normal host Start button if Paper is stopped. "
+                        + "Do not delete or rename SQLite files.");
             }
         }
         if (state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT
