@@ -258,6 +258,34 @@ class AutomaticMaintenanceWorkflowTest {
     }
 
     @Test
+    void persistedCountdownCancellationAbandonsPlanBeforeScheduleCallbackPublishesId()
+            throws Exception {
+        try (var auto = setup(known())) {
+            CompletableFuture<MaintenanceSnapshot> saving = new CompletableFuture<>();
+            java.util.concurrent.CountDownLatch submitted =
+                    new java.util.concurrent.CountDownLatch(1);
+            doAnswer(args -> {
+                submitted.countDown();
+                return saving;
+            }).when(coordinator).schedule(eq(ADMIN), anyLong(), anyLong(),
+                    eq(MaintenancePolicy.STRICT));
+            var starting = auto.start(ADMIN, messages::add, false);
+            assertTrue(submitted.await(10, java.util.concurrent.TimeUnit.SECONDS));
+            MaintenanceSnapshot persisted = MaintenanceSnapshot.scheduled(ADMIN,
+                    System.currentTimeMillis(), System.currentTimeMillis() + 60_000L,
+                    MaintenancePolicy.STRICT);
+            state.set(persisted); // Durable worker committed; callback still pending.
+            auto.abandon(persisted.operationId()); // Proper COUNTDOWN cancellation begins.
+            saving.complete(persisted);
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
+                    starting.join().type(), "Stale callback must not report started");
+            assertFalse(auto.controlsOperation(persisted.operationId()));
+            verifyNoInteractions(compaction, verifier, policy);
+            assertTrue(stopped.isEmpty());
+        }
+    }
+
+    @Test
     void failedFreshPreflightDoesNotRunCompactionOrAuthorizeShutdown() {
         try (var auto = setup(known())) {
             auto.start(ADMIN, messages::add, false).join();
