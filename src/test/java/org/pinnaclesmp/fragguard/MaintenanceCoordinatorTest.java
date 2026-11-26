@@ -61,6 +61,70 @@ class MaintenanceCoordinatorTest {
     }
 
     @Test
+    void staleFreezeFailureCannotFailReplacementCountdownOrRewriteItsState() throws Exception {
+        try (var coordinator = MaintenanceCoordinator.open(directory)) {
+            MaintenanceSnapshot first = coordinator.schedule(ADMIN, NOW, NOW + 600_000L,
+                    MaintenancePolicy.STRICT).join();
+            coordinator.cancel("Original countdown safely cancelled").join();
+            MaintenanceSnapshot replacement = coordinator.schedule(ADMIN,
+                    NOW + 700_000L, NOW + 1_300_000L, MaintenancePolicy.STRICT).join();
+            assertNotEquals(first.operationId(), replacement.operationId());
+            String stateBefore = Files.readString(
+                    directory.resolve("maintenance-state.properties"));
+
+            MaintenanceSnapshot ignored = coordinator.failCountdownIfCurrent(
+                    first.operationId(), "Stale freeze-proof failure").join();
+            assertEquals(replacement, ignored);
+            assertEquals(replacement, coordinator.snapshot());
+            assertEquals(stateBefore, Files.readString(
+                    directory.resolve("maintenance-state.properties")),
+                    "Stale callbacks must not re-save unrelated maintenance metadata");
+            assertFalse(coordinator.blocksNewJobs(),
+                    "A new countdown must not inherit the previous freeze failure");
+        }
+    }
+
+    @Test
+    void staleFreezeSuccessCannotActivateReplacementCountdown() throws Exception {
+        try (var coordinator = MaintenanceCoordinator.open(directory)) {
+            MaintenanceSnapshot first = coordinator.schedule(ADMIN, NOW, NOW + 600_000L,
+                    MaintenancePolicy.STRICT).join();
+            coordinator.cancel("Previous maintenance ended").join();
+            MaintenanceSnapshot next = coordinator.schedule(ADMIN,
+                    NOW + 700_000L, NOW + 1_300_000L, MaintenancePolicy.STRICT).join();
+
+            MaintenanceSnapshot ignored = coordinator.activateCountdownIfCurrent(
+                    first.operationId()).join();
+            assertEquals(next, ignored);
+            assertEquals(next, coordinator.snapshot());
+            assertEquals(next, new MaintenanceStateStore(directory).load());
+            assertFalse(coordinator.blocksNewJobs());
+
+            MaintenanceSnapshot active = coordinator.activateCountdownIfCurrent(
+                    next.operationId()).join();
+            assertEquals(MaintenancePhase.ACTIVE, active.phase());
+            assertEquals(next.operationId(), active.operationId());
+            assertTrue(coordinator.blocksNewJobs());
+        }
+    }
+
+    @Test
+    void currentFreezeFailureStillFailsClosedWithDurableState() throws Exception {
+        try (var coordinator = MaintenanceCoordinator.open(directory)) {
+            MaintenanceSnapshot original = coordinator.schedule(ADMIN, NOW, NOW + 600_000L,
+                    MaintenancePolicy.STRICT).join();
+            MaintenanceSnapshot failed = coordinator.failCountdownIfCurrent(
+                    original.operationId(), "Current freeze proof could not be saved").join();
+            assertEquals(MaintenancePhase.FAILED, failed.phase());
+            assertEquals(original.operationId(), failed.operationId());
+            assertEquals(failed, new MaintenanceStateStore(directory).load());
+            assertTrue(coordinator.blocksNewJobs());
+            assertEquals(failed, coordinator.failCountdownIfCurrent(
+                    original.operationId(), "Late failed task retry").join());
+        }
+    }
+
+    @Test
     void interruptedCountdownCancelsRatherThanKickingAfterRestart() throws Exception {
         try (var maintenance = MaintenanceCoordinator.open(directory)) {
             maintenance.schedule(ADMIN, NOW, NOW + 600_000L, MaintenancePolicy.STRICT).join();
