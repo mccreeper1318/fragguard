@@ -50,6 +50,22 @@ class MaintenanceCommandIntegrationTest {
     }
 
     @Test
+    void manualSnapshotCannotBypassPendingAutomaticStrictPreflight() {
+        var test = setup(true);
+        AutomaticMaintenanceWorkflow controller = mock(AutomaticMaintenanceWorkflow.class);
+        when(controller.blocksManualStart()).thenReturn(true);
+        when(test.plugin.getAutomaticMaintenance()).thenReturn(controller);
+
+        // Snapshot has explicit loss consent, but it cannot race with an
+        // asynchronous automatic STRICT preflight that still owns admission.
+        execute(test, "start", "snapshot", "acknowledge");
+        verify(controller).blocksManualStart();
+        verify(test.coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+        verify(test.player, atLeastOnce())
+                .sendMessage(any(net.kyori.adventure.text.Component.class));
+    }
+
+    @Test
     void snapshotReplacementPolicyNeedsIndependentSecondConsent() {
         var test = setup(true);
         MaintenanceSnapshot state = MaintenanceSnapshot.scheduled(ADMIN, NOW, NOW + 600_000,
