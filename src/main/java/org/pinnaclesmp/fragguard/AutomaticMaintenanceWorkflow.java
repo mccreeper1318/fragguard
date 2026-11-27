@@ -6,6 +6,9 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -27,6 +30,12 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
     enum ResultType { COUNTDOWN_STARTED, NEEDS_CAPACITY_ACK, REFUSED }
     record StartResult(ResultType type, String detail, String operationId) { }
 
+    @FunctionalInterface
+    interface CandidateArchiver {
+        Path archive(Path root, MaintenanceSnapshot state, UUID operator)
+                throws IOException;
+    }
+
     private static final long CONSENT_MILLIS = 120_000L;
     private final Path root;
     private final MaintenanceCoordinator state;
@@ -40,6 +49,13 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
     private final Consumer<Runnable> onMain;
     private final BiConsumer<String, MaintenancePolicy> stopPaper;
     private final Consumer<String> audit;
+    private final CandidateArchiver candidateArchiver;
+    private final Executor archiveExecutor;
+    // The same lock surrounds both the ownership check + filesystem rename
+    // and cancellation of the pre-countdown plan. tryLock on the main thread
+    // never waits for slow storage I/O. It also serializes obsolete queued
+    // archive tasks against later attempts in this plugin instance.
+    private final ReentrantLock archiveMutationLock = new ReentrantLock();
     private final AtomicReference<Plan> current = new AtomicReference<>();
     private volatile boolean closed;
 
@@ -68,6 +84,21 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
             IntSupplier countdownSeconds, BooleanSupplier loggingWritable,
             Consumer<Runnable> onMain,
             BiConsumer<String, MaintenancePolicy> stopPaper, Consumer<String> audit) {
+        this(root, state, preflight, compaction, verifier, replacementPolicy,
+                evidenceSupplier, countdownSeconds, loggingWritable, onMain,
+                stopPaper, audit, AbandonedCandidateQuarantine::archiveIfAbandoned,
+                ForkJoinPool.commonPool());
+    }
+
+    /** Allows deterministic tests to hold a queued or in-flight archive. */
+    AutomaticMaintenanceWorkflow(Path root, MaintenanceCoordinator state,
+            CompactionStoragePreflight preflight, OnlineDatabaseCompaction compaction,
+            CompactionCandidateVerifier verifier, CompactionReplacementPolicy replacementPolicy,
+            Supplier<CompactionStoragePreflight.Evidence> evidenceSupplier,
+            IntSupplier countdownSeconds, BooleanSupplier loggingWritable,
+            Consumer<Runnable> onMain,
+            BiConsumer<String, MaintenancePolicy> stopPaper, Consumer<String> audit,
+            CandidateArchiver candidateArchiver, Executor archiveExecutor) {
         this.root = Objects.requireNonNull(root);
         this.state = Objects.requireNonNull(state);
         this.preflight = Objects.requireNonNull(preflight);
@@ -80,6 +111,8 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
         this.onMain = Objects.requireNonNull(onMain);
         this.stopPaper = Objects.requireNonNull(stopPaper);
         this.audit = Objects.requireNonNull(audit);
+        this.candidateArchiver = Objects.requireNonNull(candidateArchiver);
+        this.archiveExecutor = Objects.requireNonNull(archiveExecutor);
     }
 
     /** Start or confirm a single initial unknown-capacity warning. */
@@ -132,20 +165,28 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
         CompletableFuture<Void> archive = acknowledgeUnknown
                 ? CompletableFuture.completedFuture(null)
                 : CompletableFuture.runAsync(() -> {
+                    // Never let a cancelled, queued archive move another
+                    // operation's candidate directory. Hold the gate across
+                    // ownership validation AND the final filesystem rename.
+                    archiveMutationLock.lock();
                     try {
-                        if (!loggingWritable.getAsBoolean()) {
-                            throw new IOException("SQLite logging became paused during "
-                                    + "preflight; refuse to archive any candidates");
+                        if (!owned(plan)) return; // Cancel won before task began.
+                        MaintenanceSnapshot snapshot = state.snapshot();
+                        if (!MaintenanceUiActions.canSchedule(snapshot)
+                                || !loggingWritable.getAsBoolean()) {
+                            throw new IOException("Maintenance state/logging changed "
+                                    + "during candidate quarantine; files preserved");
                         }
-                        Path old = AbandonedCandidateQuarantine.archiveIfAbandoned(
-                                root, state.snapshot(), operator);
+                        Path old = candidateArchiver.archive(root, snapshot, operator);
                         if (old != null) notifyOperator(plan,
                                 "Archived an abandoned candidate without deleting it: "
                                         + old.getFileName());
                     } catch (IOException exception) {
                         throw new CompletionException(exception);
+                    } finally {
+                        archiveMutationLock.unlock();
                     }
-                });
+                }, archiveExecutor);
 
         return archive.thenCompose(ignored -> {
             if (!owned(plan)) return CompletableFuture.failedFuture(
@@ -320,18 +361,33 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
     boolean cancelPreparation(UUID operator) {
         Plan plan = current.get();
         if (plan == null || closed || !plan.operator.equals(operator)) return false;
-        synchronized (plan) {
-            // A schedule enqueued on the serialized state worker might not
-            // have an operation ID yet. Never report cancelled while that
-            // queued durable COUNTDOWN can still commit.
-            if (!owned(plan) || plan.scheduling || !plan.operationId.isBlank()) {
-                return false;
+        // Paper's main thread must not wait for directory fsync/rename. If a
+        // rename is underway, keep the existing plan owned until it finishes,
+        // instead of falsely reporting cancellation or admitting a new plan.
+        if (!archiveMutationLock.tryLock()) return false;
+        try {
+            synchronized (plan) {
+                // A schedule enqueued on the serialized state worker might
+                // not yet have an operation ID. Never report cancellation
+                // while that queued durable COUNTDOWN can still commit.
+                if (!owned(plan) || plan.scheduling || !plan.operationId.isBlank()) {
+                    return false;
+                }
+                boolean cancelled = current.compareAndSet(plan, null);
+                if (cancelled) audit.accept("Pre-countdown storage check cancelled by "
+                        + operator + "; no maintenance state or SQLite writes were changed");
+                return cancelled;
             }
-            boolean cancelled = current.compareAndSet(plan, null);
-            if (cancelled) audit.accept("Pre-countdown storage check cancelled by "
-                    + operator + "; no maintenance state or SQLite writes were changed");
-            return cancelled;
+        } finally {
+            archiveMutationLock.unlock();
         }
+    }
+
+    /** Explains a refused cancel without treating a moving candidate as idle. */
+    boolean quarantineInProgress(UUID operator) {
+        Plan plan = current.get();
+        return plan != null && !closed && plan.operator.equals(operator)
+                && archiveMutationLock.isLocked();
     }
 
     boolean countdownScheduling(UUID operator) {
