@@ -62,7 +62,7 @@ class MaintenanceCommandIntegrationTest {
         verify(controller).blocksManualStart();
         verify(test.coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
         verify(test.player, atLeastOnce())
-                .sendMessage(any(net.kyori.adventure.text.Component.class));
+                .sendMessage(contains("automatic maintenance check or candidate archive"));
     }
 
     @Test

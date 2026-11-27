@@ -58,9 +58,7 @@ class AutomaticMaintenanceWorkflowTest {
             java.util.function.BooleanSupplier writable,
             AutomaticMaintenanceWorkflow.CandidateArchiver archiver, Executor archiveExecutor) {
         when(coordinator.snapshot()).thenAnswer(ignored -> state.get());
-        when(coordinator.scheduleIfUnchanged(eq(ADMIN), anyLong(), anyLong(),
-                eq(MaintenancePolicy.STRICT), any(MaintenanceSnapshot.class)))
-                .thenAnswer(args -> {
+        doAnswer(args -> {
                     MaintenanceSnapshot expected = args.getArgument(4);
                     if (!state.get().equals(expected)) {
                         return CompletableFuture.failedFuture(
@@ -71,12 +69,13 @@ class AutomaticMaintenanceWorkflowTest {
                             MaintenancePolicy.STRICT);
                     state.set(fresh);
                     return CompletableFuture.completedFuture(fresh);
-                });
-        when(preflight.run(any())).thenAnswer(args ->
+                }).when(coordinator).scheduleIfUnchanged(eq(ADMIN), anyLong(), anyLong(),
+                        eq(MaintenancePolicy.STRICT), any(MaintenanceSnapshot.class));
+        doAnswer(args ->
                 CompletableFuture.completedFuture(
-                        CompactionStoragePreflight.evaluate(measure(), args.getArgument(0))));
-        when(coordinator.failCurrentWorkIfOperation(anyString(), anyString()))
-                .thenAnswer(args -> {
+                        CompactionStoragePreflight.evaluate(measure(), args.getArgument(0))))
+                .when(preflight).run(any());
+        doAnswer(args -> {
                     MaintenanceSnapshot prior = state.get();
                     if (prior.phase() == MaintenancePhase.ACTIVE
                             || prior.phase() == MaintenancePhase.COMPACTING
@@ -84,7 +83,7 @@ class AutomaticMaintenanceWorkflowTest {
                         state.set(prior.withPhase(MaintenancePhase.FAILED, args.getArgument(1)));
                     }
                     return CompletableFuture.completedFuture(state.get());
-                });
+                }).when(coordinator).failCurrentWorkIfOperation(anyString(), anyString());
         return new AutomaticMaintenanceWorkflow(root, coordinator, preflight,
                 compaction, verifier, policy, () -> configuredEvidence, () -> 30,
                 writable, Runnable::run, (id, mode) -> stopped.add(id + ":" + mode),
