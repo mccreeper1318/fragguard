@@ -3,6 +3,7 @@
 ## 26.3-1.2.2
 
 ### Added
+- Added one-command automatic STRICT maintenance with preflight consent, paused-logging warnings and safe abandoned-candidate quarantine (#207).
 - Added automatic verified SQLite backup and restart-time activation, with crash-safe sidecar journal and preserved completed-candidate archives (#206).
 - Added end-to-end maintenance release tests, isolated large-history validation guidance and owner sign-off checklist (#172).
 - Added opt-in bounded SQLite incremental page reclamation for compatible databases, with safe new-database configuration and no existing-database conversion (#171).

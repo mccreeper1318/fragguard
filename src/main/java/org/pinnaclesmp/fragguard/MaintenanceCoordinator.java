@@ -126,6 +126,28 @@ final class MaintenanceCoordinator implements AutoCloseable {
         });
     }
 
+    /**
+     * #207: an async preflight may schedule STRICT only if no manual or
+     * automatic maintenance transition has intervened since it started.
+     * Compare the durable generation INSIDE the serialized state worker:
+     * IDLE -> COUNTDOWN -> CANCELLED is not the same as the original IDLE,
+     * even though CANCELLED can normally schedule another operation.
+     */
+    CompletableFuture<MaintenanceSnapshot> scheduleIfUnchanged(
+            UUID operator, long now, long deadline, MaintenancePolicy policy,
+            MaintenanceSnapshot expected) {
+        Objects.requireNonNull(expected, "expected");
+        return commit(existing -> {
+            if (!existing.equals(expected)
+                    || (existing.phase() != MaintenancePhase.IDLE
+                        && existing.phase() != MaintenancePhase.CANCELLED)) {
+                throw new IllegalStateException(
+                        "Maintenance changed after preflight began; rerun the start command");
+            }
+            return MaintenanceSnapshot.scheduled(operator, now, deadline, policy);
+        });
+    }
+
     CompletableFuture<MaintenanceSnapshot> activate() {
         return advance(MaintenancePhase.ACTIVE, "Maintenance active; regular access is restricted");
     }
@@ -199,6 +221,22 @@ final class MaintenanceCoordinator implements AutoCloseable {
 
     CompletableFuture<MaintenanceSnapshot> fail(String reason) {
         return advance(MaintenancePhase.FAILED, reason);
+    }
+
+    /**
+     * #207: asynchronous VACUUM/verification/STRICT callbacks may not fail
+     * another operation or a cancelled/ready-for-startup maintenance state.
+     * Compare the operation and phase inside the serialized durable worker.
+     */
+    CompletableFuture<MaintenanceSnapshot> failCurrentWorkIfOperation(
+            String operationId, String reason) {
+        Objects.requireNonNull(operationId, "operationId");
+        return commit(existing -> existing.operationId().equals(operationId)
+                && (existing.phase() == MaintenancePhase.ACTIVE
+                    || existing.phase() == MaintenancePhase.COMPACTING
+                    || existing.phase() == MaintenancePhase.VERIFYING)
+                ? existing.withPhase(MaintenancePhase.FAILED, reason)
+                : existing);
     }
 
     /** Ignore a failed freeze from a previously cancelled maintenance operation. */

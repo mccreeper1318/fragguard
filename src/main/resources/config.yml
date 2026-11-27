@@ -1,10 +1,14 @@
 # Player notifications for upcoming FragGuard database maintenance.
-# A trusted OP can schedule the countdown through /fg maintenance start.
-# These settings do NOT automatically start maintenance or run compaction.
+# A trusted OP (or the server console) can run the complete no-loss STRICT
+# workflow using /fg maintenance start. All remaining phases run automatically.
+# Unknown account/quota/temp capacity still requires one explicit acknowledgment.
+# Snapshot Mode is an advanced separate, deliberately lossy workflow.
 maintenance-countdown-seconds: 600
 # Chat warnings in seconds remaining (duplicates and out-of-range values ignored).
 maintenance-warning-seconds: [600, 300, 180, 60, 30, 10]
-# Configurable Minecraft Boss Bars: supported colors include YELLOW, RED, BLUE, GREEN.
+# Countdown colors remain configurable. While logging is truly paused the
+# persistent staff Boss Bar is always RED, regardless of stage color settings.
+# The stage-specific text is appended to the mandatory red paused warning.
 maintenance-countdown-bossbar-enabled: true
 maintenance-staff-bossbar-enabled: true
 maintenance-countdown-bossbar-color: YELLOW
@@ -20,6 +24,8 @@ maintenance-failed-bossbar-title: "&cMAINTENANCE ERROR - STAFF REVIEW REQUIRED"
 # %time% displays actual remaining mm:ss; traditional & color formatting works.
 maintenance-warning-message: "&eServer maintenance begins in &f%time%&e. Please finish up."
 maintenance-start-message: "&cServer maintenance has started."
+# Plain-text admin-only announcement on the verified SQLite write freeze.
+maintenance-paused-admin-message: "SERVER MAINTENANCE — BLOCK LOGGING PAUSED. World edits now are NOT recorded and cannot be rolled back using FragGuard."
 maintenance-postponed-message: "&eMaintenance could not start safely and has been cancelled."
 # Message when a regular player is kicked at maintenance activation, with & color formatting.
 maintenance-kick-message: "&cMaintenance has started. Please return when the server reopens."

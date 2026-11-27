@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
 
 /**
@@ -38,6 +39,7 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
     private final MaintenanceNoticeSettings settings;
     private final LongSupplier now;
     private final Consumer<MaintenanceSnapshot> onDeadline;
+    private final BooleanSupplier loggingPaused;
     private BukkitTask task;
     private BossBar countdownBar;
     private BossBar staffBar;
@@ -50,11 +52,19 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
     MaintenanceNoticeDisplay(JavaPlugin plugin, MaintenanceCoordinator coordinator,
                              MaintenanceNoticeSettings settings, LongSupplier now,
                              Consumer<MaintenanceSnapshot> onDeadline) {
+        this(plugin, coordinator, settings, now, onDeadline, () -> true);
+    }
+
+    MaintenanceNoticeDisplay(JavaPlugin plugin, MaintenanceCoordinator coordinator,
+                             MaintenanceNoticeSettings settings, LongSupplier now,
+                             Consumer<MaintenanceSnapshot> onDeadline,
+                             BooleanSupplier loggingPaused) {
         this.plugin = Objects.requireNonNull(plugin);
         this.coordinator = Objects.requireNonNull(coordinator);
         this.settings = Objects.requireNonNull(settings);
         this.now = Objects.requireNonNull(now);
         this.onDeadline = Objects.requireNonNull(onDeadline);
+        this.loggingPaused = Objects.requireNonNull(loggingPaused);
     }
 
     void start() {
@@ -84,7 +94,7 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
                         && snapshot.phase() == MaintenancePhase.ACTIVE) {
                     broadcast(settings.startedMessage());
                 }
-                renderStaff(snapshot.phase());
+                renderStaff(snapshot.phase(), loggingPaused.getAsBoolean());
             }
             case CANCELLED, IDLE -> clearBars();
         }
@@ -104,7 +114,7 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
             countdownBar.addPlayer(player);
         } else if (staffStage(snapshot.phase()) && settings.staffBarEnabled() && bypass(player)) {
             ensureStaffBar();
-            updateStaffBar(snapshot.phase());
+            updateStaffBar(snapshot.phase(), loggingPaused.getAsBoolean());
             staffBar.addPlayer(player);
         }
     }
@@ -146,14 +156,14 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
         }
     }
 
-    private void renderStaff(MaintenancePhase phase) {
+    private void renderStaff(MaintenancePhase phase, boolean paused) {
         if (countdownBar != null) countdownBar.removeAll();
         if (!settings.staffBarEnabled()) {
             if (staffBar != null) staffBar.removeAll();
             return;
         }
         ensureStaffBar();
-        updateStaffBar(phase);
+        updateStaffBar(phase, paused);
         List<? extends Player> allowed = Bukkit.getOnlinePlayers().stream()
                 .filter(MaintenanceNoticeDisplay::bypass)
                 .toList();
@@ -179,12 +189,10 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
                 settings.countdownTitle(), frame.displayTime())));
     }
 
-    private void updateStaffBar(MaintenancePhase phase) {
-        BarColor color = switch (phase) {
-            case COMPACTING, VERIFYING -> settings.compactingColor();
-            case READY_TO_SWAP, ACTIVATING -> settings.readyColor();
-            default -> settings.activeColor();
-        };
+    private void updateStaffBar(MaintenancePhase phase, boolean paused) {
+        // #207: never use blue/green while intentionally suppressing SQLite
+        // writes. A failed countdown freeze may NOT have paused logging;
+        // do not claim an unverified freeze completed.
         String title = switch (phase) {
             case COMPACTING -> settings.compactingTitle();
             case VERIFYING -> settings.verifyingTitle();
@@ -192,14 +200,11 @@ final class MaintenanceNoticeDisplay implements Listener, AutoCloseable {
             case FAILED -> settings.failedTitle();
             default -> settings.activeTitle();
         };
-        staffBar.setColor(color);
-        // A status Boss Bar is not a progress meter: never show an invented
-        // percentage for a long-running VACUUM/verification operation.
-        staffBar.setProgress(1.0);
-        // #203: only the countdown records normal history. Staff continue
-        // using the world during ACTIVE, but those edits are NOT recorded.
-        // Keep this explicit through compaction/verification/failure.
-        staffBar.setTitle(legacy(title + " - BLOCK LOGGING PAUSED"));
+        staffBar.setColor(paused ? BarColor.RED : settings.activeColor());
+        staffBar.setProgress(1.0); // Stage indicator, not invented progress.
+        staffBar.setTitle(legacy(paused
+                ? "&cSERVER MAINTENANCE — BLOCK LOGGING PAUSED | " + title
+                : "&cSERVER MAINTENANCE — CHECK LOGGING STATUS | " + title));
     }
 
     private static void syncViewers(BossBar bar, Collection<? extends Player> expected) {

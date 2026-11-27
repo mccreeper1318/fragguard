@@ -127,13 +127,13 @@ SQLite/WAL snapshot. It does not use FragGuard's normal database write worker,
 make an intermediate full-size input duplicate, truncate the source, change the
 source schema or substitute files.
 
-1. Run `/fg diagnostics preflight` and review space, hosting quota and
-   native SQLite temp warnings. Use `/fg diagnostics preflight acknowledge`
-   if you deliberately accept *unknown* headroom (never a known shortage).
-2. During **ACTIVE** maintenance only, run `/fg maintenance compact` within
-   25 seconds of an accepted preflight. Use `/fg maintenance status` to
-   monitor progress or `/fg maintenance cancel` to request interruption.
-   This command cannot bypass the active maintenance admission gate.
+For **advanced manual operation only**, run `/fg diagnostics preflight`
+and inspect available capacity; acknowledge unknown headroom explicitly
+(never a known shortage). During ACTIVE maintenance, `/fg maintenance compact`
+still requires a fresh accepted preflight within 25 seconds. **Normal STRICT
+maintenance handles this fresh inspection and all steps automatically** after
+`/fg maintenance start`. Use `/fg maintenance status` for progress or
+`/fg maintenance cancel` for a safe interruption.
 3. FragGuard reserves a uniquely named `compaction-candidates/fragguard-compact-*.db`
    and runs SQLite `VACUUM INTO`. A separate `.snapshot.properties`
    file records **unverified** candidate metadata (source identity digest,
@@ -162,6 +162,58 @@ a partial copy. Any candidate and reservation are preserved for staff review.
 The next boot automatically treats an interrupted COMPACTING/VERIFYING
 maintenance state as failed, not as a verified replacement.
 
+### One-command no-loss database maintenance (#207)
+
+**Default:** Run `/fg maintenance start` as an OP with `fragguard.admin`,
+or confirm **Start Automatic STRICT Maintenance** once in the Database
+Maintenance GUI. The server console can also run `/fg maintenance start`.
+No extra preflight/compact/verify/approve commands or file-manager actions
+are needed for a successful STRICT run.
+
+1. FragGuard checks the original database, existing candidate folder, disk
+   headroom, hosting-account free space and native SQLite temp evidence
+   **before the countdown**. A known shortage or unsafe path refuses the
+   operation. If account/temp headroom cannot be measured, the operator must
+   explicitly run `/fg maintenance start acknowledge` once within two minutes.
+   That confirmation repeats the preflight and NEVER overrides known shortages.
+2. The configurable countdown and decreasing yellow Boss Bar run normally;
+   **block logging remains ON** until the deadline.
+3. The server restricts player admission, drains accepted mutations and
+   rollback/undo work, then seals the SQLite source. An always-red staff Boss Bar
+   reads **SERVER MAINTENANCE — BLOCK LOGGING PAUSED**. A configurable admin
+   announcement explains that world edits during frozen maintenance are
+   intentionally unlogged and cannot be rolled back by FragGuard. The
+   `/fg maintenance status [full]` commands report phase, pause start and
+   optional intentionally-unlogged event count.
+4. The plugin performs a **fresh** capacity inspection at ACTIVE and hands it
+   immediately to VACUUM INTO, without a player racing a 25-second preflight
+   window. It creates, verifies and fingerprints the candidate, including
+   schema/index integrity and every history/BLOB/undo record, then automatically
+   runs the full no-loss STRICT source comparison. Any failure stops advancement
+   and **keeps the original database**, with logging/admission restricted until
+   safe cancellation or verified completion. No unverified PASS or guessed
+   percentage is displayed.
+5. On success, FragGuard requests a graceful Paper stop, writes its short
+   clean-checkpoint receipt and activates the verified candidate on the next
+   startup using #206. If the hosting panel does not restart automatically,
+   press **Start once**. The old database with matching WAL/SHM is preserved.
+   Logging and normal admission resume only after the new SQLite writer and
+   all verified history/undo checks succeed.
+
+An old, abandoned candidate directory is **atomically quarantined intact**
+under `compaction-candidates-old/abandoned-<operator-id>-<unique-id>` *only*
+before a fresh run, never during active maintenance. Unsafe nested files,
+symlinks, archive-limit exhaustion, corrupted source or storage shortage
+refuse automatic advancement rather than deleting or trusting uncertain data.
+Previous backups and failed candidates are never automatically deleted.
+The archive count is bounded; quota-conscious owners should independently
+archive verified old copies when needed.
+
+Snapshot Mode remains an explicit, potentially lossy **advanced** workflow
+with separate opt-in and final loss acknowledgment. FragGuard never silently
+uses Snapshot after STRICT refusal. Advanced diagnostics and manual commands
+remain available for staff recovery, but are not required for a normal run.
+
 ### Database Maintenance commands and GUI (#169)
 
 Open **/fg** and select **Database Maintenance**, or use **/fg maintenance**
@@ -176,17 +228,21 @@ actions through the **same validated commands**, uses confirmation screens
 for changes, and closes before submitting an action to prevent duplicate clicks.
 It never bypasses storage preflight, snapshot policy, or saved database safety.
 
-- `/fg maintenance start` or `/fg maintenance start strict`: schedule the
-  configured countdown (default STRICT); players are warned before admissions
-  close and maintenance becomes ACTIVE.
+- `/fg maintenance start` or `/fg maintenance start strict`: automatically
+  run STRICT capacity checks, the countdown, freeze, compaction, complete
+  verification, equality precheck and safe restart activation. No repeated
+  commands on the normal path. The console also supports this action.
+- `/fg maintenance start acknowledge`: a one-time consent for unknown
+  account/SQLite temp headroom, only after reviewing the pre-countdown
+  warning. This never overrides a known shortage.
 - `/fg maintenance start snapshot acknowledge`: explicitly opt in to a
   potentially lossy copy, but **does not approve replacement**.
 - `/fg maintenance preview` or `/fg diagnostics preflight`: read-only
   capacity estimate; unknown headroom requires separate acknowledgment.
-- `/fg maintenance compact`: when ACTIVE and a fresh preflight has passed,
-  produce one compacted snapshot without changing the original.
-- `/fg maintenance verify`: run a full asynchronous candidate scan using the
-  original copy-time evidence from the **same running process**.
+- `/fg maintenance compact` (advanced/manual): when ACTIVE and a fresh
+  preflight has passed, produce one compacted snapshot without changing the original.
+- `/fg maintenance verify` (advanced/manual): full async candidate scan
+  using the copy-time evidence from the **same running process**.
 - `/fg maintenance approve`: after verified STRICT mode, start a full
   **asynchronous source-versus-candidate comparison while Paper is running**.
   Do **not** stop Paper until chat explicitly reports `STRICT precheck: PASSED`.
@@ -294,11 +350,12 @@ the quick maintenance menu. Live-server validation is scheduled for the final
 FragGuard now handles routine SQLite activation itself. **Do not manually
 rename any SQLite files after a successful compaction.**
 
-1. Finish normal maintenance and run `/fg maintenance compact`, `verify`,
-   and `approve`. STRICT is the no-loss default and compares complete
-   source/candidate history, indexes, schema, BLOB and rollback/undo digests
-   while Paper remains running under the frozen write barrier. Snapshot
-   Mode remains an exceptional separately acknowledged loss policy.
+1. Run `/fg maintenance start` and, only if headroom cannot be verified,
+   explicitly acknowledge that uncertainty once. FragGuard automatically
+   produces the candidate and compares complete source/candidate history,
+   indexes, schema, BLOB and rollback/undo digests while Paper remains
+   running under the frozen write barrier. Snapshot Mode remains an
+   exceptional separately acknowledged loss policy.
 2. Once the full online approval succeeds, FragGuard requests a **normal,
    graceful Paper shutdown**. During shutdown it checks that accepted
    writes drained and the WAL was checkpointed, then writes a unique

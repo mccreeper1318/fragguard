@@ -118,7 +118,48 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(color("&cFragGuard commands must be run in-game because they use your current location."));
+            // The console is privileged but has no location: only the safe,
+            // location-independent STRICT automation/status commands work.
+            if (sender instanceof org.bukkit.command.ConsoleCommandSender
+                    && args.length >= 2 && args[0].equalsIgnoreCase("maintenance")) {
+                String action = args[1].toLowerCase(Locale.ROOT);
+                if ("status".equals(action)) {
+                    MaintenanceCoordinator maintenance = plugin.getMaintenanceCoordinator();
+                    sender.sendMessage(maintenance == null ? "FragGuard unavailable"
+                            : "Maintenance: " + maintenance.snapshot().phase()
+                                    + " — " + maintenance.snapshot().detail());
+                    AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                    if (automatic != null) sender.sendMessage(automatic.status());
+                    return true;
+                }
+                if ("cancel".equals(action) && args.length == 2) {
+                    AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                    if (automatic != null
+                            && automatic.cancelPreparation(CONSOLE_MAINTENANCE_OPERATOR)) {
+                        sender.sendMessage("Pre-countdown automatic maintenance cancelled safely.");
+                    } else if (automatic != null
+                            && automatic.quarantineInProgress(CONSOLE_MAINTENANCE_OPERATOR)) {
+                        sender.sendMessage("Candidate evidence is currently being archived. "
+                                + "Cancellation is NOT confirmed; retry after archiving finishes.");
+                    } else {
+                        sender.sendMessage("No cancellable console preparation. "
+                                + "In-progress stages require an in-game administrator.");
+                    }
+                    return true;
+                }
+                if ("start".equals(action)
+                        && (args.length == 2
+                            || args.length == 3 && (args[2].equalsIgnoreCase("strict")
+                                || args[2].equalsIgnoreCase("acknowledge")))) {
+                    requestAutomaticMaintenance(CONSOLE_MAINTENANCE_OPERATOR,
+                            sender::sendMessage,
+                            args.length == 3 && args[2].equalsIgnoreCase("acknowledge"));
+                    return true;
+                }
+            }
+            sender.sendMessage(color("&cThis FragGuard command requires an in-game OP. "
+                    + "Console supports only /fg maintenance start [acknowledge] "
+                    + "and /fg maintenance status."));
             return true;
         }
 
@@ -1888,6 +1929,9 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }));
     }
 
+    private static final UUID CONSOLE_MAINTENANCE_OPERATOR =
+            UUID.fromString("6da19f8f-e679-4bb1-8e54-9917dcf7c51f");
+
     private volatile OnlineDatabaseCompaction.Result latestCompaction;
     private final java.util.concurrent.atomic.AtomicBoolean maintenanceTransitionPending =
             new java.util.concurrent.atomic.AtomicBoolean();
@@ -1918,6 +1962,11 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 } else {
                     MaintenanceChatOutput.statusSummary(player::sendMessage, state);
                 }
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && automatic.controlsOperation(state.operationId())) {
+                    MaintenanceChatOutput.value(player::sendMessage,
+                            "Automatic workflow", automatic.status());
+                }
                 if (database.maintenanceWritesPaused()) {
                     MaintenanceChatOutput.danger(player::sendMessage,
                             "BLOCK LOGGING PAUSED: world edits now are NOT recorded or rollbackable.");
@@ -1939,6 +1988,29 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 handleCapacityPreflight(player, false);
             }
             case "start" -> {
+                // The normal STRICT path is now one action. Snapshot remains
+                // an advanced separately consented MANUAL workflow.
+                boolean autoStrict = args.length == 1
+                        || args.length == 2 && (args[1].equalsIgnoreCase("strict")
+                            || args[1].equalsIgnoreCase("acknowledge"))
+                        || args.length == 3 && args[1].equalsIgnoreCase("strict")
+                            && args[2].equalsIgnoreCase("acknowledge");
+                if (autoStrict) {
+                    if (!plugin.maintenanceControlsReady()) {
+                        player.sendMessage(color("&cMaintenance protections are unavailable."));
+                        return;
+                    }
+                    boolean consent = args[args.length - 1].equalsIgnoreCase("acknowledge");
+                    requestAutomaticMaintenance(player.getUniqueId(),
+                            message -> {
+                                if (player.isOnline() && player.isOp()
+                                        && player.hasPermission("fragguard.admin")) {
+                                    player.sendMessage(Component.text(message,
+                                            NamedTextColor.YELLOW));
+                                }
+                            }, consent);
+                    return;
+                }
                 if (args.length > 3) { maintenanceUsage(player); return; }
                 String mode = args.length >= 2 ? args[1] : "strict";
                 MaintenancePolicy policy;
@@ -1958,6 +2030,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 }
                 if (policy == MaintenancePolicy.STRICT
                         && args.length == 3) { maintenanceUsage(player); return; }
+                // Manual Snapshot must not race an uncommitted automatic
+                // STRICT preflight. Both paths would otherwise see IDLE and
+                // independently enqueue a valid COUNTDOWN.
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && automatic.blocksManualStart()) {
+                    player.sendMessage(color("&eAn automatic maintenance check or candidate "
+                            + "archive is already in progress. Cancel or finish that "
+                            + "preparation before starting an advanced Snapshot run."));
+                    return;
+                }
                 if (!MaintenanceUiActions.canSchedule(state)) {
                     player.sendMessage(color("&cExisting maintenance must finish or be safely cancelled first."));
                     return;
@@ -2001,13 +2083,47 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                             }
                         }));
             }
-            case "cancel" -> cancelMaintenance(player, state, coordinator, compaction);
+            case "cancel" -> {
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && (state.phase() == MaintenancePhase.IDLE
+                        || state.phase() == MaintenancePhase.CANCELLED)
+                        && automatic.cancelPreparation(player.getUniqueId())) {
+                    player.sendMessage(color("&aPre-countdown storage check cancelled. "
+                            + "No history freeze or SQLite replacement started."));
+                    return;
+                }
+                if (automatic != null
+                        && automatic.quarantineInProgress(player.getUniqueId())) {
+                    player.sendMessage(color("&eFragGuard is archiving old candidate evidence. "
+                            + "Nothing has been cancelled yet; retry when the archive finishes."));
+                    return;
+                }
+                if (automatic != null && automatic.countdownScheduling(player.getUniqueId())) {
+                    player.sendMessage(color("&eThe countdown is being saved. "
+                            + "Retry /fg maintenance cancel when status shows COUNTDOWN; "
+                            + "no cancellation has been confirmed yet."));
+                    return;
+                }
+                cancelMaintenance(player, state, coordinator, compaction);
+            }
             case "compact" -> {
                 if (args.length != 1) { maintenanceUsage(player); return; }
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && automatic.controlsOperation(state.operationId())) {
+                    player.sendMessage(color("&eAutomatic STRICT compaction is already handled; "
+                            + "use /fg maintenance status."));
+                    return;
+                }
                 startMaintenanceCompaction(player, state, compaction);
             }
             case "verify" -> {
                 if (args.length != 1) { maintenanceUsage(player); return; }
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && automatic.controlsOperation(state.operationId())) {
+                    player.sendMessage(color("&eFull verification is running automatically; "
+                            + "use /fg maintenance status."));
+                    return;
+                }
                 if (!MaintenanceUiActions.canVerify(state)) {
                     player.sendMessage(color("&cA compaction candidate in VERIFYING without "
                             + "a verified manifest is required."));
@@ -2056,7 +2172,15 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                     }
                 }));
             }
-            case "approve" -> approveMaintenancePolicy(player, args, state);
+            case "approve" -> {
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && automatic.controlsOperation(state.operationId())) {
+                    player.sendMessage(color("&eSTRICT approval is automatic; "
+                            + "use /fg maintenance status."));
+                    return;
+                }
+                approveMaintenancePolicy(player, args, state);
+            }
             case "instructions" -> {
                 if (args.length > 2 || (args.length == 2 && !args[1].equalsIgnoreCase("full"))) {
                     maintenanceUsage(player);
@@ -2082,10 +2206,35 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
         }
     }
 
+    private void requestAutomaticMaintenance(UUID operator, java.util.function.Consumer<String> notify,
+                                             boolean acknowledge) {
+        AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+        if (automatic == null || !plugin.maintenanceControlsReady()) {
+            notify.accept("Automatic maintenance is unavailable or the admission gate is offline.");
+            return;
+        }
+        automatic.start(operator, notify, acknowledge)
+                .whenComplete((result, error) -> onServerThread(() -> {
+                    if (error != null || result == null) {
+                        notify.accept("Could not safely initiate STRICT maintenance; "
+                                + "no unverified SQLite replacement is allowed.");
+                        plugin.getLogger().log(Level.WARNING,
+                                "Automatic maintenance could not start", error);
+                        return;
+                    }
+                    notify.accept(result.detail());
+                    if (result.type() == AutomaticMaintenanceWorkflow.ResultType.NEEDS_CAPACITY_ACK) {
+                        notify.accept("Only one explicit acknowledgment is needed: "
+                                + "/fg maintenance start acknowledge");
+                    }
+                }));
+    }
+
     private void maintenanceUsage(Player player) {
         player.sendMessage(color("&bMaintenance commands:"));
         player.sendMessage(color("&f/fg maintenance &7- Open in-game database maintenance menu."));
-        player.sendMessage(color("&f/fg maintenance start [strict] &7- Start configured countdown (default STRICT)."));
+        player.sendMessage(color("&f/fg maintenance start [strict] &7- Automatically complete SAFE STRICT maintenance."));
+        player.sendMessage(color("&f/fg maintenance start acknowledge &7- One-time unknown-space consent before countdown."));
         player.sendMessage(color("&f/fg maintenance start snapshot acknowledge &7- Opt in to snapshot scheduling."));
         player.sendMessage(color("&f/fg maintenance status [full] &7- Summary or complete evidence."));
         player.sendMessage(color("&f/fg maintenance preview &7- Read-only storage preflight."));

@@ -2,8 +2,8 @@ package org.pinnaclesmp.fragguard;
 
 /** Fixed trusted GUI actions: no user-supplied command fragments or bypass tokens. */
 enum MaintenanceConfirmAction {
-    START_STRICT("start strict", "Schedule STRICT maintenance",
-            "STRICT checks full source equality online before shutdown, then verifies no later writes and a clean SQLite checkpoint during shutdown. Wait for precheck PASS before stopping Paper."),
+    START_STRICT("start strict", "Start automatic STRICT maintenance",
+            "ONE action starts automatic storage preflight, player countdown, frozen logging, compaction, complete verification, safe shutdown and restart activation. Unknown account/temp quota may require ONE separate acknowledgement. Never move SQLite files."),
     START_SNAPSHOT("start snapshot acknowledge", "Opt in to Snapshot maintenance",
             "DATA LOSS: History, undo/rollback and retention updates after the real SQLite snapshot may be lost. Worlds are NOT rolled back. Approval later requires a second confirmation."),
     COMPACT("compact", "Start SQLite compaction",

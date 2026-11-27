@@ -37,6 +37,34 @@ class MaintenanceCoordinatorTest {
     }
 
     @Test
+    void automaticPreflightCannotScheduleAfterSeparateOperationWasCancelled() throws Exception {
+        try (var maintenance = MaintenanceCoordinator.open(directory)) {
+            MaintenanceSnapshot expected = maintenance.snapshot();
+            MaintenanceSnapshot manual = maintenance.schedule(ADMIN, NOW,
+                    NOW + 600_000L, MaintenancePolicy.MAINTENANCE_SNAPSHOT).join();
+            MaintenanceSnapshot cancelled = maintenance.cancel(
+                    "Different manual operation cancelled successfully").join();
+            assertEquals(MaintenancePhase.CANCELLED, cancelled.phase());
+            assertNotEquals(expected, cancelled);
+            assertEquals(manual.operationId(), cancelled.operationId());
+            assertThrows(CompletionException.class, () ->
+                    maintenance.scheduleIfUnchanged(ADMIN, NOW + 700_000L,
+                            NOW + 1_300_000L, MaintenancePolicy.STRICT, expected).join());
+            assertEquals(cancelled, maintenance.snapshot());
+            assertEquals(cancelled, new MaintenanceStateStore(directory).load(),
+                    "Stale auto preflight must not overwrite a successful cancellation");
+
+            // An explicitly new start with the latest cancelled generation
+            // is still legal; only the stale older callback is refused.
+            MaintenanceSnapshot newer = maintenance.scheduleIfUnchanged(ADMIN,
+                    NOW + 700_000L, NOW + 1_300_000L,
+                    MaintenancePolicy.STRICT, cancelled).join();
+            assertEquals(MaintenancePhase.COUNTDOWN, newer.phase());
+            assertNotEquals(manual.operationId(), newer.operationId());
+        }
+    }
+
+    @Test
     void cannotSkipStagesOrPromoteCandidateWithoutCutoffAndManifest() throws Exception {
         try (var maintenance = MaintenanceCoordinator.open(directory)) {
             assertThrows(CompletionException.class, () -> maintenance.activate().join());

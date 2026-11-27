@@ -30,6 +30,7 @@ public final class FragGuardPlugin extends JavaPlugin {
     private OnlineDatabaseCompaction onlineCompaction;
     private CompactionCandidateVerifier candidateVerifier;
     private CompactionReplacementPolicy replacementPolicy;
+    private AutomaticMaintenanceWorkflow automaticMaintenance;
     private FragGuardCommand commandExecutor;
     private FragGuardGui gui;
     private BlockChangeListener changeListener;
@@ -197,6 +198,16 @@ public final class FragGuardPlugin extends JavaPlugin {
                 getDataFolder().toPath(), maintenance, compactionPreflight);
         candidateVerifier = new CompactionCandidateVerifier(getDataFolder().toPath(), maintenance);
         replacementPolicy = new CompactionReplacementPolicy(getDataFolder().toPath(), maintenance);
+        automaticMaintenance = new AutomaticMaintenanceWorkflow(
+                getDataFolder().toPath(), maintenance, compactionPreflight,
+                onlineCompaction, candidateVerifier, replacementPolicy,
+                this::automaticPreflightEvidence,
+                () -> getConfig().getInt("maintenance-countdown-seconds", 600),
+                () -> database != null && !database.maintenanceWritesPaused()
+                        && !rollbackJobsQuiescing,
+                task -> Bukkit.getScheduler().runTask(this, task),
+                this::scheduleAutomaticCompactionStop,
+                getLogger()::info);
         try {
             maintenanceAdmissionGate = new MaintenanceAdmissionGate(this, maintenance,
                     System::currentTimeMillis,
@@ -208,7 +219,8 @@ public final class FragGuardPlugin extends JavaPlugin {
             maintenanceAdmissionGate.start();
             maintenanceNoticeDisplay = new MaintenanceNoticeDisplay(
                     this, maintenance, MaintenanceNoticeSettings.from(getConfig()),
-                    System::currentTimeMillis, this::activateMaintenanceAtDeadline);
+                    System::currentTimeMillis, this::activateMaintenanceAtDeadline,
+                    () -> database != null && database.maintenanceWritesPaused());
             Bukkit.getPluginManager().registerEvents(maintenanceNoticeDisplay, this);
             maintenanceNoticeDisplay.start();
         } catch (RuntimeException exception) {
@@ -290,6 +302,10 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (automaticMaintenance != null) {
+            automaticMaintenance.close(); // Abandon async callbacks before workers stop.
+            automaticMaintenance = null;
+        }
         if (maintenanceAdmissionGate != null) {
             boolean wasRestricted = maintenanceAdmissionGate.restricted();
             maintenanceAdmissionGate.close();
@@ -710,8 +726,20 @@ public final class FragGuardPlugin extends JavaPlugin {
                         }
                         if (maintenanceNoticeDisplay != null) maintenanceNoticeDisplay.tick();
                         maintenanceAdmissionGate.activationCompleted();
-                        getLogger().warning("FragGuard maintenance ACTIVE. Block logging is "
-                                + "PAUSED. World edits during maintenance cannot be rolled back.");
+                        getLogger().warning("FragGuard maintenance ACTIVE. BLOCK LOGGING PAUSED. "
+                                + "Staff world edits are intentionally NOT recorded or rollbackable.");
+                        String pausedWarning = getConfig().getString(
+                                "maintenance-paused-admin-message",
+                                "SERVER MAINTENANCE — BLOCK LOGGING PAUSED. "
+                                        + "Staff world edits are not recorded or rollbackable.");
+                        Bukkit.getOnlinePlayers().stream()
+                                .filter(player -> player.isOp()
+                                        || player.hasPermission("fragguard.admin"))
+                                .forEach(player -> player.sendMessage(Component.text(
+                                        pausedWarning, NamedTextColor.RED)));
+                        if (automaticMaintenance != null) {
+                            automaticMaintenance.onActivated(active);
+                        }
                     });
                 } catch (RuntimeException schedulingFailure) {
                     getLogger().log(Level.SEVERE, "Could not complete maintenance activation "
@@ -763,6 +791,12 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     /** Ensure normal players remain gated until SQLite is writable again. */
     void beginMaintenanceCancellation() {
+        // Only abort the automatic workflow AFTER the command successfully
+        // acquires its cancellation transition gate. A rejected/busy cancel
+        // request must not silently disable an otherwise valid automation.
+        if (automaticMaintenance != null && maintenance != null) {
+            automaticMaintenance.abandon(maintenance.snapshot().operationId());
+        }
         if (maintenanceAdmissionGate != null) {
             maintenanceAdmissionGate.beginCancellation(
                     database != null && database.maintenanceWritesPaused());
@@ -845,6 +879,24 @@ public final class FragGuardPlugin extends JavaPlugin {
 
     CompactionReplacementPolicy getReplacementPolicy() {
         return replacementPolicy;
+    }
+
+    AutomaticMaintenanceWorkflow getAutomaticMaintenance() {
+        return automaticMaintenance;
+    }
+
+    private CompactionStoragePreflight.Evidence automaticPreflightEvidence() {
+        long accountMiB = getConfig().getLong("maintenance-compaction-account-free-mib", -1L);
+        long tempMiB = getConfig().getLong("maintenance-compaction-sqlite-temp-free-mib", -1L);
+        long safetyMiB = getConfig().getLong("maintenance-compaction-safety-mib", 256L);
+        if (accountMiB < -1L || tempMiB < -1L || safetyMiB < 0L) {
+            throw new IllegalArgumentException("Invalid maintenance storage evidence "
+                    + "configuration: known free space must be >= 0, unknown = -1");
+        }
+        return new CompactionStoragePreflight.Evidence(
+                accountMiB < 0L ? null : MigrationStoragePolicy.mibToBytes(accountMiB),
+                tempMiB < 0L ? null : MigrationStoragePolicy.mibToBytes(tempMiB),
+                safetyMiB, false);
     }
 
     boolean maintenanceBlocksNewJobs() {

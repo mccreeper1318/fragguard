@@ -152,22 +152,39 @@ final class MaintenanceChatOutput {
                 state.manifestFile().isBlank() ? NamedTextColor.YELLOW : NamedTextColor.GREEN);
         section(send, "Next step");
         switch (state.phase()) {
-            case IDLE, CANCELLED -> action(send, "Schedule maintenance with /fg maintenance start strict");
-            case COUNTDOWN -> notice(send, "Countdown active; normal players will be removed at expiry");
-            case ACTIVE -> action(send, "Check /fg diagnostics preflight before compaction");
-            case COMPACTING -> notice(send, "Copy in progress; do not move SQLite files");
-            case VERIFYING -> action(send, state.manifestFile().isBlank()
-                    ? "Run /fg maintenance verify after copying completes"
-                    : "Review replacement policy before /fg maintenance approve");
+            case IDLE, CANCELLED -> action(send, "Run /fg maintenance start — automatic STRICT workflow");
+            case COUNTDOWN -> notice(send, "Countdown: logging ON. At expiry regular "
+                    + "players leave and the SQLite freeze begins.");
+            case ACTIVE -> notice(send, state.policy() == MaintenancePolicy.STRICT
+                    ? "BLOCK LOGGING PAUSED — automatic fresh preflight and compaction"
+                    : "BLOCK LOGGING PAUSED — advanced Snapshot compaction");
+            case COMPACTING -> notice(send, "BLOCK LOGGING PAUSED — copying SQLite "
+                    + "candidate; no reliable percentage available");
+            case VERIFYING -> notice(send, state.policy() == MaintenancePolicy.STRICT
+                    ? (state.manifestFile().isBlank()
+                        ? "BLOCK LOGGING PAUSED — full integrity/history verification"
+                        : "BLOCK LOGGING PAUSED — automatic final STRICT equality check")
+                    : "BLOCK LOGGING PAUSED — Snapshot needs separate explicit "
+                            + "irreversible-loss approval");
             case READY_TO_SWAP -> {
                 notice(send, "FragGuard activates the verified copy automatically "
                         + "when Paper next starts after a clean shutdown.");
                 danger(send, "Do not rename or touch SQLite files.");
                 action(send, "Guide: /fg maintenance instructions");
             }
-            case ACTIVATING, FAILED -> {
-                danger(send, "Preserve source, backup, candidate, WAL/SHM and manifests. Do NOT swap files.");
-                notice(send, "Investigate failure; review status full before any cancel or recovery.");
+            case FAILED -> {
+                danger(send, "Maintenance failed: logging/admission may remain restricted. "
+                        + "Do NOT swap files. Preserve original, candidate, WAL/SHM "
+                        + "and manifest evidence.");
+                notice(send, "Inspect /fg maintenance status full. If compaction and "
+                        + "verification workers have stopped, /fg maintenance cancel "
+                        + "safely unfreezes writes before reopening admissions.");
+            }
+            case ACTIVATING -> {
+                danger(send, "Restart-time activation is not yet verified. "
+                        + "Preserve original backup, matching WAL/SHM and all manifests.");
+                notice(send, "Use the normal host Start button if Paper is stopped. "
+                        + "Do not delete or rename SQLite files.");
             }
         }
         if (state.policy() == MaintenancePolicy.MAINTENANCE_SNAPSHOT

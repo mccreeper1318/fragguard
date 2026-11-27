@@ -26,16 +26,20 @@ class MaintenanceCommandIntegrationTest {
     }
 
     @Test
-    void doubleStartCannotQueueTwoDurableCountDowns() {
+    void defaultStartUsesAutomaticWorkflowNotDirectCountdownScheduling() {
         var test = setup(true);
-        CompletableFuture<MaintenanceSnapshot> future = new CompletableFuture<>();
-        when(test.coordinator.schedule(any(UUID.class), anyLong(), anyLong(), eq(MaintenancePolicy.STRICT)))
-                .thenReturn(future);
-        execute(test,"start");
-        execute(test,"start");
-        verify(test.coordinator, times(1)).schedule(eq(ADMIN), anyLong(), anyLong(),
-                eq(MaintenancePolicy.STRICT));
-        assertFalse(future.isDone());
+        AutomaticMaintenanceWorkflow controller = mock(AutomaticMaintenanceWorkflow.class);
+        when(test.plugin.getAutomaticMaintenance()).thenReturn(controller);
+        CompletableFuture<AutomaticMaintenanceWorkflow.StartResult> pending =
+                new CompletableFuture<>();
+        when(controller.start(eq(ADMIN), any(), eq(false))).thenReturn(pending);
+        execute(test, "start");
+        execute(test, "start");
+        verify(controller, times(2)).start(eq(ADMIN), any(), eq(false));
+        // Duplicate requests are refused atomically in the controller; this
+        // command handler must never bypass its capacity/operation admission.
+        verify(test.coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+        assertFalse(pending.isDone());
     }
 
     @Test
@@ -43,6 +47,22 @@ class MaintenanceCommandIntegrationTest {
         var test = setup(true);
         execute(test, "start", "snapshot");
         verify(test.coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void manualSnapshotCannotBypassPendingAutomaticStrictPreflight() {
+        var test = setup(true);
+        AutomaticMaintenanceWorkflow controller = mock(AutomaticMaintenanceWorkflow.class);
+        when(controller.blocksManualStart()).thenReturn(true);
+        when(test.plugin.getAutomaticMaintenance()).thenReturn(controller);
+
+        // Snapshot has explicit loss consent, but it cannot race with an
+        // asynchronous automatic STRICT preflight that still owns admission.
+        execute(test, "start", "snapshot", "acknowledge");
+        verify(controller).blocksManualStart();
+        verify(test.coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+        verify(test.player, atLeastOnce())
+                .sendMessage(contains("automatic maintenance check or candidate archive"));
     }
 
     @Test
