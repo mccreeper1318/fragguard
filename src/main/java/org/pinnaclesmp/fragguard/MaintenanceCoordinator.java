@@ -126,6 +126,28 @@ final class MaintenanceCoordinator implements AutoCloseable {
         });
     }
 
+    /**
+     * #207: an async preflight may schedule STRICT only if no manual or
+     * automatic maintenance transition has intervened since it started.
+     * Compare the durable generation INSIDE the serialized state worker:
+     * IDLE -> COUNTDOWN -> CANCELLED is not the same as the original IDLE,
+     * even though CANCELLED can normally schedule another operation.
+     */
+    CompletableFuture<MaintenanceSnapshot> scheduleIfUnchanged(
+            UUID operator, long now, long deadline, MaintenancePolicy policy,
+            MaintenanceSnapshot expected) {
+        Objects.requireNonNull(expected, "expected");
+        return commit(existing -> {
+            if (!existing.equals(expected)
+                    || (existing.phase() != MaintenancePhase.IDLE
+                        && existing.phase() != MaintenancePhase.CANCELLED)) {
+                throw new IllegalStateException(
+                        "Maintenance changed after preflight began; rerun the start command");
+            }
+            return MaintenanceSnapshot.scheduled(operator, now, deadline, policy);
+        });
+    }
+
     CompletableFuture<MaintenanceSnapshot> activate() {
         return advance(MaintenancePhase.ACTIVE, "Maintenance active; regular access is restricted");
     }
