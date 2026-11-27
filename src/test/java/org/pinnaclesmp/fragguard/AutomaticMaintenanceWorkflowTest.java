@@ -313,13 +313,20 @@ class AutomaticMaintenanceWorkflowTest {
     }
 
     @Test
-    void operatorMayCancelPreCountdownWhileCapacityCheckIsPending() {
+    void operatorMayCancelPreCountdownWhileCapacityCheckIsPending() throws Exception {
         try (var auto = setup(known())) {
             CompletableFuture<CompactionStoragePreflight.Report> outstanding =
                     new CompletableFuture<>();
-            doReturn(outstanding).when(preflight).run(any());
+            CountDownLatch enteredPreflight = new CountDownLatch(1);
+            doAnswer(args -> {
+                // This callback runs only after the archive mutex is
+                // released. Test the preflight-cancel path deterministically.
+                enteredPreflight.countDown();
+                return outstanding;
+            }).when(preflight).run(any());
             CompletableFuture<AutomaticMaintenanceWorkflow.StartResult> task =
                     auto.start(ADMIN, messages::add, false);
+            assertTrue(enteredPreflight.await(10, TimeUnit.SECONDS));
             assertTrue(auto.cancelPreparation(ADMIN));
             assertFalse(auto.cancelPreparation(ADMIN));
             outstanding.complete(CompactionStoragePreflight.evaluate(measure(), known()));
