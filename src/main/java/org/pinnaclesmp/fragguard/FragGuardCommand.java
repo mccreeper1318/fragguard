@@ -2030,6 +2030,16 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 }
                 if (policy == MaintenancePolicy.STRICT
                         && args.length == 3) { maintenanceUsage(player); return; }
+                // Manual Snapshot must not race an uncommitted automatic
+                // STRICT preflight. Both paths would otherwise see IDLE and
+                // independently enqueue a valid COUNTDOWN.
+                AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
+                if (automatic != null && automatic.blocksManualStart()) {
+                    player.sendMessage(color("&eAn automatic maintenance check or candidate "
+                            + "archive is already in progress. Cancel or finish that "
+                            + "preparation before starting an advanced Snapshot run."));
+                    return;
+                }
                 if (!MaintenanceUiActions.canSchedule(state)) {
                     player.sendMessage(color("&cExisting maintenance must finish or be safely cancelled first."));
                     return;
