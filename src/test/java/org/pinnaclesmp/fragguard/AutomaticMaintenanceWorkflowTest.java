@@ -11,6 +11,13 @@ import java.util.List;
 import java.util.UUID;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.io.IOException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -42,6 +49,14 @@ class AutomaticMaintenanceWorkflowTest {
     private AutomaticMaintenanceWorkflow setup(
             CompactionStoragePreflight.Evidence configuredEvidence,
             java.util.function.BooleanSupplier writable) {
+        return setup(configuredEvidence, writable,
+                AbandonedCandidateQuarantine::archiveIfAbandoned, ForkJoinPool.commonPool());
+    }
+
+    private AutomaticMaintenanceWorkflow setup(
+            CompactionStoragePreflight.Evidence configuredEvidence,
+            java.util.function.BooleanSupplier writable,
+            AutomaticMaintenanceWorkflow.CandidateArchiver archiver, Executor archiveExecutor) {
         when(coordinator.snapshot()).thenAnswer(ignored -> state.get());
         when(coordinator.schedule(eq(ADMIN), anyLong(), anyLong(), eq(MaintenancePolicy.STRICT)))
                 .thenAnswer(args -> {
@@ -67,7 +82,7 @@ class AutomaticMaintenanceWorkflowTest {
         return new AutomaticMaintenanceWorkflow(root, coordinator, preflight,
                 compaction, verifier, policy, () -> configuredEvidence, () -> 30,
                 writable, Runnable::run, (id, mode) -> stopped.add(id + ":" + mode),
-                messages::add);
+                messages::add, archiver, archiveExecutor);
     }
 
     @Test
@@ -205,6 +220,94 @@ class AutomaticMaintenanceWorkflowTest {
             verifyNoInteractions(verifier, policy);
             assertTrue(stopped.isEmpty());
             verify(coordinator, never()).failCurrentWorkIfOperation(anyString(), anyString());
+            assertEquals(MaintenancePhase.COUNTDOWN, state.get().phase());
+        }
+    }
+
+    @Test
+    void queuedCancelledQuarantineCannotMoveArtifactsOfReplacementPlan()
+            throws Exception {
+        Path active = Files.createDirectory(root.resolve("compaction-candidates"));
+        Files.writeString(active.resolve("fragguard-compact-old.db"), "old evidence");
+        List<Runnable> queued = new CopyOnWriteArrayList<>();
+        AtomicInteger archiveCalls = new AtomicInteger();
+        AutomaticMaintenanceWorkflow.CandidateArchiver archiver = (folder, snapshot, operator) -> {
+            archiveCalls.incrementAndGet();
+            return AbandonedCandidateQuarantine.archiveIfAbandoned(folder, snapshot, operator);
+        };
+        try (var auto = setup(known(), () -> true, archiver, queued::add)) {
+            var first = auto.start(ADMIN, messages::add, false);
+            assertEquals(1, queued.size(), "Archive task was queued but not executed");
+            assertTrue(auto.cancelPreparation(ADMIN));
+            // A later invocation may already have produced distinct artifacts
+            // in this same directory by the time the old task is scheduled.
+            Files.writeString(active.resolve("fragguard-compact-later.db"),
+                    "new attempt must not be moved by old task");
+            var next = auto.start(ADMIN, messages::add, false);
+            assertEquals(2, queued.size());
+
+            queued.get(0).run();
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED, first.join().type());
+            assertEquals(0, archiveCalls.get(),
+                    "A cancelled archive must not call any filesystem mutation");
+            assertEquals("new attempt must not be moved by old task",
+                    Files.readString(active.resolve("fragguard-compact-later.db")));
+            assertTrue(Files.exists(active.resolve("fragguard-compact-old.db")));
+
+            queued.get(1).run();
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.COUNTDOWN_STARTED,
+                    next.join().type());
+            assertEquals(1, archiveCalls.get(),
+                    "Only the replacement plan may archive its candidate directory");
+            assertFalse(Files.exists(active));
+            Path archiveRoot = root.resolve("compaction-candidates-old");
+            try (var listing = Files.list(archiveRoot)) {
+                Path retained = listing.findFirst().orElseThrow();
+                assertEquals("new attempt must not be moved by old task",
+                        Files.readString(retained.resolve("fragguard-compact-later.db")));
+            }
+        }
+    }
+
+    @Test
+    void runningQuarantinePreventsCancellationAndRetryUntilMoveCompletes()
+            throws Exception {
+        Path active = Files.createDirectory(root.resolve("compaction-candidates"));
+        Files.writeString(active.resolve("fragguard-compact-old.db"), "preserve me");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        AutomaticMaintenanceWorkflow.CandidateArchiver held = (folder, snapshot, operator) -> {
+            calls.incrementAndGet();
+            entered.countDown();
+            try {
+                if (!resume.await(10, TimeUnit.SECONDS)) {
+                    throw new IOException("Timed out in held quarantine test");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted archive test", interrupted);
+            }
+            return AbandonedCandidateQuarantine.archiveIfAbandoned(folder, snapshot, operator);
+        };
+        try (var auto = setup(known(), () -> true, held, ForkJoinPool.commonPool())) {
+            var first = auto.start(ADMIN, messages::add, false);
+            try {
+                assertTrue(entered.await(10, TimeUnit.SECONDS));
+                assertTrue(auto.quarantineInProgress(ADMIN));
+                assertFalse(auto.cancelPreparation(ADMIN),
+                        "Cancellation must not free the plan during a candidate rename");
+                assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
+                        auto.start(ADMIN, messages::add, false).join().type(),
+                        "A new plan cannot start while old archive mutation is in flight");
+                assertTrue(Files.isRegularFile(active.resolve("fragguard-compact-old.db")));
+            } finally {
+                resume.countDown();
+            }
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.COUNTDOWN_STARTED,
+                    first.get(20, TimeUnit.SECONDS).type());
+            assertEquals(1, calls.get());
+            assertFalse(Files.exists(active));
             assertEquals(MaintenancePhase.COUNTDOWN, state.get().phase());
         }
     }
