@@ -4,6 +4,63 @@ FragGuard is a Paper plugin that records world-changing block history in SQLite,
 
 History is retained for 30 days by default. The `26.3-1.2.0` inventory GUI condenses related events for easier browsing without deleting, rewriting, or hiding the underlying raw history. Large investigations are database-backed and paged, so the operator can browse far more than 5,000 matching events without loading the complete result set into one GUI session.
 
+## Database maintenance (26.3-1.2.2 — pending release validation)
+
+FragGuard includes built-in tools to inspect SQLite storage, manage database size, and safely compact retained history. The normal maintenance process is **automatic and designed to preserve all recorded history and rollback/undo data**. It operates on a verified copy and keeps the original database available for recovery.
+
+### Running maintenance
+
+Open **Database Maintenance** from the `/fg` menu, or run:
+
+```text
+/fg maintenance start
+```
+
+This starts the default **STRICT (no-loss)** maintenance workflow. The server console can start it as well. FragGuard handles the steps automatically:
+
+1. **Check space and safety.** FragGuard checks the source, existing candidates, disk space and available hosting quota/SQLite temporary-space evidence. Known shortages or unsafe files stop the operation. If quota or native temporary space is unknown, confirm the warning once with `/fg maintenance start acknowledge`; this never overrides a known shortage.
+2. **Warn players.** A configurable countdown displays a shrinking **yellow Boss Bar** and chat reminders. Block logging continues normally until maintenance activates.
+3. **Pause recording safely.** FragGuard restricts ordinary player access, finishes accepted SQLite writes and rollback/undo work, and pauses cleanup before freezing the source database. Staff see a persistent **red Boss Bar** reading `BLOCK LOGGING PAUSED`. Minecraft world changes can still happen, but **changes made while logging is paused are not recorded and cannot later be rolled back by FragGuard**.
+4. **Compact and verify.** FragGuard creates a smaller SQLite candidate using `VACUUM INTO`, then checks database integrity, schema, indexes, full block history, block-entity data, and rollback/undo records. STRICT maintenance refuses any difference that could lose saved data.
+5. **Restart safely.** Once verification passes, FragGuard requests a graceful Paper shutdown. On the next startup it preserves the original database and matching WAL/SHM files, installs and verifies the compacted copy, and resumes logging and normal access only after successful recovery. If your host does not automatically restart the server, use its usual **Start** button.
+
+For a normal successful run, **no manual `compact`, `verify`, `approve` or file-manager steps are required**.
+
+### Monitoring and diagnostics
+
+Use `/fg diagnostics` or the **Database Diagnostics** menu to view database and WAL/SHM sizes, schema details, estimated reusable space, storage health and retention settings. Additional optional commands include:
+
+| Command | Purpose |
+| --- | --- |
+| `/fg diagnostics counts` | Count stored history and rollback records. |
+| `/fg diagnostics check` | Run a lightweight SQLite integrity check. |
+| `/fg diagnostics deep` | Perform a full read-only history, schema and BLOB integrity scan. |
+| `/fg diagnostics progress` / `cancel` | Check or cancel a running deep scan. |
+| `/fg maintenance status` | View the maintenance stage and next action; add `full` for detailed diagnostics. |
+| `/fg maintenance cancel` | Request cancellation when the current stage can be safely interrupted. |
+
+Scans run asynchronously and may take longer on large databases. Deep scan results are saved as redacted reports under `plugins/FragGuard/diagnostic-reports/`. Neither diagnostics nor storage recommendations replace the maintenance safety checks.
+
+FragGuard can also optionally monitor reusable SQLite pages and WAL growth, notifying administrators when configurable thresholds are reached. **Monitoring is disabled by default** and never starts maintenance by itself.
+
+### Optional storage reclamation
+
+Retention cleanup normally removes expired history in bounded batches according to the configured retention period (**30 days by default**). Cleanup and optional reclamation are paused during frozen maintenance, then resume only after a verified restart or safe cancellation.
+
+For new databases, an optional configuration can enable SQLite's incremental auto-vacuum format. If the database already uses that format, FragGuard can optionally reclaim a small number of unused pages after successful cleanup. Both options are disabled by default. **Existing databases are never converted automatically**, and incremental reclamation does not guarantee a particular reduction in file size.
+
+See `config.yml` for `database-reclaimable-monitor-enabled`, `database-new-auto-vacuum-incremental`, `database-incremental-reclaim-enabled` and their related settings.
+
+### Access, recovery and advanced options
+
+Maintenance controls and detailed diagnostics require an **OP with `fragguard.admin`**. During active maintenance, only OPs and players allowed by `fragguard.maintenance.bypass` may remain or reconnect; administrative command permission alone does not grant bypass access.
+
+FragGuard preserves the original database, verified backup, recovery metadata and failed candidate evidence rather than silently deleting or replacing uncertain files. Abandoned candidates can be safely archived before a new attempt. If verification, shutdown or startup recovery fails, maintenance stays restricted until a safe recovery or cancellation completes. **Do not manually rename or delete SQLite database, WAL or SHM files to force a restart.**
+
+The default STRICT mode never falls back to **Snapshot Mode**. Snapshot Mode is an exceptional, potentially lossy advanced workflow that requires separate explicit acknowledgements. Advanced manual maintenance commands remain available for troubleshooting and recovery, but are not part of the normal process.
+
+**Release status:** The 26.3-1.2.2 maintenance update still requires live Paper-server and large-database validation plus explicit owner sign-off. See the [release validation plan](docs/26.3-1.2.2-release-validation.md) and [owner sign-off checklist](docs/26.3-1.2.2-owner-signoff-record.md). The [Modrinth release draft](docs/26.3-1.2.2-modrinth-draft.md) must not be published before approval.
+
 ## What it tracks
 
 - Player block placement and destruction
@@ -42,13 +99,16 @@ Only server operators with `fragguard.admin` can use FragGuard administration co
 /fg rollback confirm <token>
 /fg undo <job-id>
 /fg status
+/fg diagnostics
+/fg diagnostics counts
+/fg diagnostics check
 ```
 
 `/fg` and `/fragguard` with no arguments open the in-game GUI. Existing subcommands remain available.
 
 ## In-game GUI
 
-The GUI uses ordinary server-side Minecraft inventories and requires no client mod or resource pack. The main menu provides access to history lookup, rollback setup/confirmation, undoable rollback jobs, storage status, and command help.
+The GUI uses ordinary server-side Minecraft inventories and requires no client mod or resource pack. The main menu provides access to history lookup, rollback setup/confirmation, undoable rollback jobs, storage status, database diagnostics, and command help.
 
 ### GUI lookup setup
 
@@ -548,7 +608,7 @@ them, and no world blocks or entities change.
 
 Requires Java 25. The Gradle 9.8.1 wrapper is committed to the repository and its downloaded distribution is verified by SHA-256.
 
-The current development version is `26.3-1.2.1`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
+The current development version is `26.3-1.2.2`. Development targets Paper API `26.3.build.241-stable`, with `api-version: '26.3'`.
 
 ```bash
 ./gradlew build
@@ -557,7 +617,7 @@ The current development version is `26.3-1.2.1`. Development targets Paper API `
 The plugin JAR is produced under:
 
 ```text
-build/libs/FragGuard-26.3-1.2.1.jar
+build/libs/FragGuard-26.3-1.2.2.jar
 ```
 
 Put the JAR in the server's `plugins` folder and restart Paper.

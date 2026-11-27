@@ -50,6 +50,207 @@ class DatabaseTest {
     }
 
     @Test
+    void maintenanceFreezeDrainsAcceptedEventsThenSuppressesNewHistoryWithoutStorageErrors()
+            throws Exception {
+        database = startDatabase();
+        long now = System.currentTimeMillis();
+        // Same-tick queued events must be committed BEFORE the freeze seal.
+        for (int x = 1; x <= 9; x++) {
+            database.insertAsync(change(now, 100L, x, 64, 2,
+                    "minecraft:stone", "minecraft:air"));
+        }
+        assertFalse(database.maintenanceWritesPaused());
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.maintenanceWritesPaused());
+        assertTrue(database.maintenanceFullyFrozen());
+        assertTrue(database.loggingPausedAtMillis() > 0L);
+        assertEquals(0, database.health().queuedWrites());
+        assertEquals(0, database.inFlightWrites());
+        try (Connection conn = openDatabase(); Statement st = conn.createStatement();
+             ResultSet rows = st.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(9L, rows.getLong(1), "All writes accepted before freeze are durable");
+        }
+
+        database.insertAsync(change(now + 1, 101L, 10, 64, 2,
+                "minecraft:stone", "minecraft:air"));
+        database.insertAsync(change(now + 1, 101L, 11, 64, 2,
+                "minecraft:stone", "minecraft:air"));
+        assertEquals(2L, database.intentionallyUnloggedDuringMaintenance());
+        assertEquals(0L, database.health().droppedWrites(),
+                "Intentional logging pauses are not a SQLite storage failure");
+        assertTrue(database.health().storageAvailable());
+        assertThrows(CompletionException.class, () -> database.insertRequiredAsync(List.of(
+                change(now + 1, 101L, 12, 64, 2,
+                        "minecraft:stone", "minecraft:air"))).join());
+        assertTrue(database.cleanupOldRecordsAsync(30, 30).join().pausedForMaintenance(),
+                "Scheduled cleanup must skip maintenance without reporting a storage failure");
+        assertEquals(9, database.lookupAsync("world", 0, 0, 200, 1, 20, 30)
+                .join().totalRows(),
+                "Read-only history lookups must remain available during the pause");
+
+        database.resumeWritesAfterCancellationAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertFalse(database.maintenanceWritesPaused());
+        assertFalse(database.maintenanceFullyFrozen());
+        assertEquals(0L, database.loggingPausedAtMillis());
+        database.insertRequiredAsync(List.of(change(now + 2, 102L, 13, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        try (Connection conn = openDatabase(); Statement st = conn.createStatement();
+             ResultSet rows = st.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(10L, rows.getLong(1),
+                    "After safe cancellation, new logging must resume without replaying suppressed events");
+        }
+    }
+
+    @Test
+    void maintenanceFreezeIsIdempotentAndReadOnlySqliteSealRejectsWritesFromPluginWorker()
+            throws Exception {
+        database = startDatabase();
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertThrows(CompletionException.class, () -> database.insertRequiredAsync(List.of(
+                change(System.currentTimeMillis(), 104L, 22, 64, 2,
+                        "minecraft:stone", "minecraft:air"))).join());
+        assertTrue(database.health().storageAvailable());
+        database.resumeWritesAfterCancellationAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        database.resumeWritesAfterCancellationAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.health().storageAvailable());
+    }
+
+    @Test
+    void frozenDatabaseStopsAndCheckpointsCleanlyWithoutLoggingFurtherEvents()
+            throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(),
+                105L, 1, 64, 4, "minecraft:stone", "minecraft:air"))).join();
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.maintenanceFullyFrozen());
+        database.shutdown();
+        assertTrue(database.workerStopped(),
+                "Worker must stop cleanly even with PRAGMA query_only enabled");
+        assertTrue(database.walCheckpointCompleted(),
+                "Maintenance shutdown still requires a complete WAL checkpoint");
+        assertTrue(database.health().storageAvailable());
+        try (Connection db = openDatabase(); Statement stmt = db.createStatement();
+             ResultSet rows = stmt.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(1L, rows.getLong(1));
+        }
+    }
+
+    @Test
+    void backgroundDrainKeepsBlockLoggingOnUntilFullFreezeAndDefersRetention() throws Exception {
+        database = startDatabase();
+        long expired = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
+        database.insertRequiredAsync(List.of(
+                change(expired, 102L, 40, 64, 2, "minecraft:stone", "minecraft:air"),
+                change(expired, 102L, 41, 64, 2, "minecraft:stone", "minecraft:air")
+        )).join();
+
+        database.pauseBackgroundMutationsForMaintenanceAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.backgroundMutationsPausedForMaintenance());
+        assertFalse(database.maintenanceWritesPaused(),
+                "Background drain must not stop world logging before the SQL freeze");
+        assertTrue(database.cleanupOldRecordsAsync(30, 30).join().pausedForMaintenance());
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(),
+                103L, 42, 64, 2, "minecraft:stone", "minecraft:air"))).join();
+        try (Connection conn = openDatabase(); Statement st = conn.createStatement();
+             ResultSet rows = st.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(3L, rows.getLong(1));
+        }
+        assertTrue(database.health().storageAvailable());
+        database.resumeWritesAfterCancellationAsync().join();
+        assertFalse(database.backgroundMutationsPausedForMaintenance());
+        var after = database.cleanupOldRecordsAsync(30, 30).join();
+        assertFalse(after.pausedForMaintenance());
+        assertEquals(2L, after.blockRecordsDeleted());
+        assertEquals(1, database.lookupAsync("world", 0, 0, 500, 1, 20, 30)
+                .join().totalRows());
+    }
+
+    @Test
+    void cleanupInFlightStopsAtCommittedBatchBoundaryBeforeMaintenanceFreeze() throws Exception {
+        database = startDatabase();
+        long expired = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
+        java.util.ArrayList<BlockChange> old = new java.util.ArrayList<>();
+        for (int x = 1; x <= 700; x++) {
+            old.add(change(expired, 200L, x, 64, 2,
+                    "minecraft:stone", "minecraft:air"));
+        }
+        database.insertRequiredAsync(old).join();
+        var ongoing = database.cleanupOldRecordsAsync(30, 30);
+        database.pauseBackgroundMutationsForMaintenanceAsync()
+                .get(20, java.util.concurrent.TimeUnit.SECONDS);
+        var result = ongoing.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(result.batchesProcessed() <= 2000,
+                "One pass must remain within its configured batch cap");
+        assertTrue(database.backgroundMutationsPausedForMaintenance());
+
+        long frozenCount;
+        try (Connection conn = openDatabase(); Statement st = conn.createStatement();
+             ResultSet rows = st.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            frozenCount = rows.getLong(1);
+        }
+        assertTrue(database.cleanupOldRecordsAsync(30, 30).join().pausedForMaintenance());
+        assertTrue(database.cleanupOldRecordsAsync(30, 30).join().pausedForMaintenance());
+        database.freezeForMaintenanceAsync().get(20, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.maintenanceFullyFrozen());
+        assertTrue(database.health().storageAvailable());
+        try (Connection conn = openDatabase(); Statement st = conn.createStatement();
+             ResultSet rows = st.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertTrue(rows.next());
+            assertEquals(frozenCount, rows.getLong(1),
+                    "No scheduled, retry or callback deletion may commit behind the freeze");
+        }
+        database.resumeWritesAfterCancellationAsync()
+                .get(20, java.util.concurrent.TimeUnit.SECONDS);
+        var catchUp = database.cleanupOldRecordsAsync(30, 30).join();
+        assertFalse(catchUp.pausedForMaintenance());
+        assertEquals(frozenCount, catchUp.blockRecordsDeleted(),
+                "The remaining expired rows must be removed by bounded batches after cancellation");
+    }
+
+    @Test
+    void incrementalReclamationCannotBypassMaintenancePauseAndResumesSafely() throws Exception {
+        database = startDatabase("world", 0L, 0L, true, true);
+        assertTrue(database.incrementalReclaimEnabled());
+        database.pauseBackgroundMutationsForMaintenanceAsync()
+                .get(15, java.util.concurrent.TimeUnit.SECONDS);
+        CompletionException paused = assertThrows(CompletionException.class,
+                () -> database.incrementalReclaimAfterCleanupAsync().join());
+        assertTrue(paused.getCause() instanceof Database.MaintenanceBackgroundPausedException);
+        assertTrue(database.health().storageAvailable());
+        database.freezeForMaintenanceAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.cleanupOldRecordsAsync(30, 30).join().pausedForMaintenance());
+        database.resumeWritesAfterCancellationAsync().get(15, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(database.incrementalReclaimAfterCleanupAsync().join().compatible());
+    }
+
+    @Test
+    void pausedCleanupSurvivesCleanShutdownWithoutReplayingDeletionsOnReload() throws Exception {
+        database = startDatabase();
+        long expired = System.currentTimeMillis() - java.util.concurrent.TimeUnit.DAYS.toMillis(60);
+        database.insertRequiredAsync(List.of(change(expired, 105L, 1, 64, 4,
+                "minecraft:stone", "minecraft:air"))).join();
+        database.pauseBackgroundMutationsForMaintenanceAsync().join();
+        database.freezeForMaintenanceAsync().join();
+        assertTrue(database.cleanupOldRecordsAsync(30, 30).join().pausedForMaintenance());
+        database.shutdown();
+        assertTrue(database.workerStopped());
+        assertTrue(database.walCheckpointCompleted());
+        database = startDatabase(); // Mocked IDLE state after verified activation/cancel.
+        assertFalse(database.backgroundMutationsPausedForMaintenance());
+        assertEquals(1L, database.cleanupOldRecordsAsync(30, 30).join().blockRecordsDeleted());
+    }
+
+    @Test
     void initializesVersionedSchemaAndPersistsStableActionIdentifiers() throws Exception {
         database = startDatabase();
         database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
@@ -73,6 +274,48 @@ class DatabaseTest {
         assertEquals(ChangeAction.BREAK, ChangeAction.fromStorageId("BREAK"));
         assertEquals(ChangeAction.BREAK, ChangeAction.fromStorageId("block.break"));
         assertEquals(ChangeAction.UNKNOWN, ChangeAction.fromStorageId("future.block.action"));
+    }
+
+    @Test
+    void newDatabaseAutoVacuumCanBeEnabledWithoutChangingSchemaOrLogging() throws Exception {
+        database = startDatabase("world", 0L, 0L, true, true);
+        try (Connection connection = openDatabase()) {
+            assertEquals(IncrementalSqliteReclamation.INCREMENTAL,
+                    IncrementalSqliteReclamation.readMode(connection));
+        }
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        assertTrue(database.incrementalReclaimAfterCleanupAsync().join().compatible());
+        database.shutdown();
+        database = startDatabase("world", 0L, 0L, false, false);
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertEquals(IncrementalSqliteReclamation.INCREMENTAL,
+                    IncrementalSqliteReclamation.readMode(connection));
+            assertTrue(rows.next());
+            assertEquals(1, rows.getLong(1));
+        }
+        assertTrue(database.health().storageAvailable());
+    }
+
+    @Test
+    void existingDatabaseIsNeverConvertedWhenNewDatabaseOptionIsEnabled() throws Exception {
+        database = startDatabase();
+        database.insertRequiredAsync(List.of(change(System.currentTimeMillis(), 100L, 2, 64, 2,
+                "minecraft:stone", "minecraft:air"))).join();
+        database.shutdown();
+        database = startDatabase("world", 0L, 0L, true, true);
+        try (Connection connection = openDatabase(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM block_changes")) {
+            assertEquals(IncrementalSqliteReclamation.NONE,
+                    IncrementalSqliteReclamation.readMode(connection));
+            assertTrue(rows.next());
+            assertEquals(1L, rows.getLong(1));
+        }
+        var skipped = database.incrementalReclaimAfterCleanupAsync().join();
+        assertFalse(skipped.compatible());
+        assertEquals(0, skipped.requestedPages());
+        assertTrue(database.health().storageAvailable());
     }
 
     @Test
@@ -1481,6 +1724,13 @@ class DatabaseTest {
 
     private Database startDatabase(String worldName, long knownAccountFreeMiB,
                                    long knownSqliteTempFreeMiB) throws Exception {
+        return startDatabase(worldName, knownAccountFreeMiB, knownSqliteTempFreeMiB,
+                false, false);
+    }
+
+    private Database startDatabase(String worldName, long knownAccountFreeMiB,
+                                   long knownSqliteTempFreeMiB, boolean configureNewIncremental,
+                                   boolean enableIncrementalReclaim) throws Exception {
         JavaPlugin plugin = mock(JavaPlugin.class);
         Server server = mock(Server.class);
         World world = mock(World.class);
@@ -1489,6 +1739,9 @@ class DatabaseTest {
         configuration.set("database-write-batch-size", 16);
         configuration.set("database-retention-cleanup-batch-size", 4);
         configuration.set("database-query-timeout-seconds", 5);
+        configuration.set("database-new-auto-vacuum-incremental", configureNewIncremental);
+        configuration.set("database-incremental-reclaim-enabled", enableIncrementalReclaim);
+        configuration.set("database-incremental-reclaim-pages-per-pass", 3);
         if (knownAccountFreeMiB > 0L) {
             configuration.set("database-migration-account-free-mib", knownAccountFreeMiB);
         }

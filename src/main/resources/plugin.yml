@@ -7,9 +7,12 @@ api-version: '26.3'
 commands:
   fg:
     description: FragGuard block logging, lookup, and rollback commands.
-    usage: /fg <lookup|rollback|undo|status|help>
+    usage: /fg <lookup|rollback|undo|status|diagnostics|maintenance|help>
     aliases: [fragguard]
 permissions:
   fragguard.admin:
     description: Allows use of all FragGuard commands.
+    default: op
+  fragguard.maintenance.bypass:
+    description: Allows OPs and authorized staff to remain online or reconnect during maintenance.
     default: op

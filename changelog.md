@@ -1,5 +1,43 @@
 # FG Changelog
 
+## 26.3-1.2.2
+
+
+### Added
+- Added one-command STRICT SQLite release validation and owner evidence checklist (#208).
+- Added one-command automatic STRICT maintenance with preflight consent, paused-logging warnings and safe abandoned-candidate quarantine (#207).
+- Added automatic verified SQLite backup and restart-time activation, with crash-safe sidecar journal and preserved completed-candidate archives (#206).
+- Added end-to-end maintenance release tests, isolated large-history validation guidance and owner sign-off checklist (#172).
+- Added opt-in bounded SQLite incremental page reclamation for compatible databases, with safe new-database configuration and no existing-database conversion (#171).
+- Added opt-in read-only SQLite free-list monitoring with admin-only compaction advice, WAL/growth context, configurable thresholds and cooldown (#170).
+- Added in-game Database Maintenance menu and administrator commands for scheduling, diagnostics, compaction, verification and policy approval (#169).
+- Added original/WAL backup checks, clean-shutdown receipts and verified startup recovery, with manual activation retained for emergency use (#168).
+- Added strict final-source comparison and explicit, persisted snapshot-loss consent before compacted database replacement (#167).
+- Added full compacted-database integrity, history/undo fingerprint verification and fail-closed candidate manifests (#166).
+- Added persistent database maintenance states with safe cancellation and restart recovery (#159).
+- Blocked new rollback and undo jobs during active maintenance (#159).
+- Added read-only database overview, record counts, and quick integrity checks (#162).
+- Added storage/quota preflight, explicit unknown-capacity acknowledgement, and safe candidate reservations (#164).
+- Added online asynchronous VACUUM INTO candidates with cancellation, snapshot evidence and a verification gate (#165).
+- Added cancellable deep SQLite checks and full-history SHA-256 validation reports (#163).
+- Added maintenance countdown Boss Bar, chat reminders, and staff status indicators (#160).
+- Restricted logins and kicked non-bypass players during maintenance, with configurable messages and OP/staff bypass (#161).
+
+- Improved maintenance and diagnostics chat readability with clear warnings, concise summaries and full-detail commands (#197).
+### Changed
+- Paused and drained retention cleanup and optional SQLite reclamation during maintenance; bounded cleanup resumes after safe cancellation or verified activation (#204).
+- Paused new block-history and rollback/undo writes at maintenance activation after draining accepted SQLite work; countdown logging stays active and cancellation resumes safely (#203).
+- Updated Java setup action to 6.3.0 (#174, #201).
+- Updated Gradle wrapper to 9.9.2 (#175, #193, #202).
+
+### Fixed
+- Made STRICT compaction bind candidate and approval proofs to a durable, drained, operation-specific SQLite freeze; preserved full equality checks with detailed divergence diagnostics (#205).
+- Fixed compaction approval timing by moving STRICT validation and Snapshot file hashes before shutdown, with clean-stop and late-write protections (#198).
+- Fixed cancelled database scans blocking future diagnostics (#176).
+- Fixed completed database scans briefly blocking immediate follow-up diagnostics (#176).
+- Made maintenance state updates durable across host crashes (#173).
+- Kept maintenance rollback protection active during server shutdown (#173).
+
 ## 26.3-1.2.1 Hotfix 1
 
 ### Fixed
@@ -40,7 +78,6 @@
 - Added player-scoped lookup and rollback GUI screens with history-based selection, paging, filters, and safe previews (#104).
 
 ### Fixed
-
 
 - Fixed Gradle 10 resource-processing warning (#86).
 - Fixed Shadow JAR service merging (#87).

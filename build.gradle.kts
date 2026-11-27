@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "org.pinnaclesmp"
-version = "26.3-1.2.1-h.1"
+version = "26.3-1.2.2"
 
 // Capture the version during configuration; resource copying must not access Task.project.
 val pluginVersion = version.toString()
@@ -42,9 +42,22 @@ tasks {
 
     test {
         useJUnitPlatform()
+        // #172: The isolated compaction scale fixture reads this setting from
+        // the test JVM. Declare it as an input so changing the fixture size
+        // invalidates Gradle's UP-TO-DATE and build-cache test results.
+        val compactionValidationRows = providers.environmentVariable("FG_COMPACTION_VALIDATION_ROWS")
+            .orElse("3000")
+        inputs.property("fgCompactionValidationRows", compactionValidationRows)
+        environment("FG_COMPACTION_VALIDATION_ROWS", compactionValidationRows.get())
         // sqlite-jdbc uses JNI. Explicit access allows tests to pass even when
         // future Java releases deny unapproved native access by default.
         jvmArgs("--enable-native-access=ALL-UNNAMED", "--illegal-native-access=deny")
+        // Print the full exception for failures in safety-critical SQLite
+        // activation tests; otherwise CI only reports the test source line.
+        testLogging {
+            events("failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
     }
 
     processResources {
