@@ -348,6 +348,97 @@ class AutomaticMaintenanceWorkflowTest {
     }
 
     @Test
+    void manualScheduleThenCancelInvalidatesPendingAutomaticPreflight() throws Exception {
+        try (var auto = setup(known())) {
+            CompletableFuture<CompactionStoragePreflight.Report> waiting =
+                    new CompletableFuture<>();
+            CountDownLatch reachedPreflight = new CountDownLatch(1);
+            doAnswer(args -> {
+                reachedPreflight.countDown();
+                return waiting;
+            }).when(preflight).run(any());
+            var automatic = auto.start(ADMIN, messages::add, false);
+            assertTrue(reachedPreflight.await(10, TimeUnit.SECONDS));
+
+            // A different/manual operation transitions IDLE -> COUNTDOWN ->
+            // CANCELLED while an older automatic capacity report is pending.
+            MaintenanceSnapshot manual = MaintenanceSnapshot.scheduled(ADMIN,
+                    System.currentTimeMillis(), System.currentTimeMillis() + 60_000L,
+                    MaintenancePolicy.MAINTENANCE_SNAPSHOT);
+            state.set(manual.withPhase(MaintenancePhase.CANCELLED, "manual cancelled"));
+            waiting.complete(CompactionStoragePreflight.evaluate(measure(), known()));
+
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
+                    automatic.get(10, TimeUnit.SECONDS).type());
+            verify(coordinator, never()).scheduleIfUnchanged(any(), anyLong(),
+                    anyLong(), any(), any(MaintenanceSnapshot.class));
+            assertEquals(MaintenancePolicy.MAINTENANCE_SNAPSHOT, state.get().policy());
+            assertEquals(MaintenancePhase.CANCELLED, state.get().phase());
+            assertFalse(auto.blocksManualStart());
+            verifyNoInteractions(compaction, verifier, policy);
+            assertTrue(stopped.isEmpty());
+        }
+    }
+
+    @Test
+    void pluginCloseDrainsActiveCandidateArchiveBeforeReenable() throws Exception {
+        Path active = Files.createDirectory(root.resolve("compaction-candidates"));
+        Files.writeString(active.resolve("fragguard-compact-old.db"), "original old evidence");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AutomaticMaintenanceWorkflow.CandidateArchiver held = (folder, snapshot, operator) -> {
+            entered.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) {
+                    throw new IOException("Timed out waiting for simulated archive fsync");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Archive interrupted", exception);
+            }
+            return AbandonedCandidateQuarantine.archiveIfAbandoned(folder, snapshot, operator);
+        };
+        var auto = setup(known(), () -> true, held, ForkJoinPool.commonPool());
+        try {
+            var start = auto.start(ADMIN, messages::add, false);
+            assertTrue(entered.await(10, TimeUnit.SECONDS));
+            CountDownLatch closing = new CountDownLatch(1);
+            var shutdown = CompletableFuture.runAsync(() -> {
+                closing.countDown();
+                auto.close();
+            });
+            try {
+                assertTrue(closing.await(10, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> shutdown.get(100, TimeUnit.MILLISECONDS),
+                        "Disable must not finish while the former classloader's "
+                                + "archive task can still rename candidate files");
+                assertTrue(Files.isRegularFile(active.resolve("fragguard-compact-old.db")));
+            } finally {
+                release.countDown();
+            }
+            shutdown.get(10, TimeUnit.SECONDS);
+            assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
+                    start.get(10, TimeUnit.SECONDS).type());
+            assertFalse(Files.exists(active));
+            try (var archived = Files.list(root.resolve("compaction-candidates-old"))) {
+                Path kept = archived.findFirst().orElseThrow();
+                assertEquals("original old evidence",
+                        Files.readString(kept.resolve("fragguard-compact-old.db")));
+            }
+            // A new plugin instance can begin only AFTER close() returned,
+            // so it cannot have a stale old-classloader rename in flight.
+            try (var replacement = setup(known())) {
+                assertEquals(AutomaticMaintenanceWorkflow.ResultType.COUNTDOWN_STARTED,
+                        replacement.start(ADMIN, messages::add, false).join().type());
+            }
+        } finally {
+            release.countDown();
+            auto.close();
+        }
+    }
+
+    @Test
     void cancellationCannotFalselySucceedAfterCountdownWasQueuedForDurableSave()
             throws Exception {
         try (var auto = setup(known())) {
