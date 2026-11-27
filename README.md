@@ -162,6 +162,10 @@ a partial copy. Any candidate and reservation are preserved for staff review.
 The next boot automatically treats an interrupted COMPACTING/VERIFYING
 maintenance state as failed, not as a verified replacement.
 
+### Final full-system maintenance release gate (#208)
+
+The [automatic STRICT regression](src/test/java/org/pinnaclesmp/fragguard/AutomaticMaintenanceReleaseGateTest.java) exercises the real SQLite freeze, paused logging/cleanup, and the one-command automated compaction, complete STRICT verification, original/sidecar backup, offline activation and fresh logging. These are **isolated synthetic SQLite tests, not a production Paper-host sign-off**. The [owner release evidence record](docs/26.3-1.2.2-owner-signoff-record.md) remains **NOT RUN** until safe real-host tests, original + WAL/SHM backup, rollback/undo continuity and multi-GiB data validation are explicitly approved. No CI result or issue closure automatically merges or publishes PR #196.
+
 ### One-command no-loss database maintenance (#207)
 
 **Default:** Run `/fg maintenance start` as an OP with `fragguard.admin`,
@@ -480,7 +484,7 @@ bypass staff can still change blocks, and logging continues.
 
 **Release gate:** all maintenance features are implemented but the 26.3-1.2.2
 release still requires final live Paper/server-owner sign-off. See the
-[release validation matrix, safe host-file-manager checklist and evidence log](docs/26.3-1.2.2-release-validation.md).
+[release validation matrix, one-command owner sign-off and evidence log](docs/26.3-1.2.2-release-validation.md).
 The [Modrinth release text](docs/26.3-1.2.2-modrinth-draft.md) is a draft and
 must not be published before approval.
 
