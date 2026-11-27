@@ -2,7 +2,9 @@
 
 ## 26.3-1.2.2
 
+
 ### Added
+- Added one-command STRICT SQLite release validation and owner evidence checklist (#208).
 - Added one-command automatic STRICT maintenance with preflight consent, paused-logging warnings and safe abandoned-candidate quarantine (#207).
 - Added automatic verified SQLite backup and restart-time activation, with crash-safe sidecar journal and preserved completed-candidate archives (#206).
 - Added end-to-end maintenance release tests, isolated large-history validation guidance and owner sign-off checklist (#172).
