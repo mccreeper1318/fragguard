@@ -61,6 +61,7 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
 
     private static final class Plan {
         final UUID operator;
+        final MaintenanceSnapshot baseline;
         volatile Consumer<String> notice;
         final AtomicBoolean startedCompaction = new AtomicBoolean();
         volatile boolean awaitingConsent;
@@ -71,9 +72,10 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
         volatile String operationId = "";
         volatile CompactionStoragePreflight.Evidence acceptedEvidence;
         volatile String stage = "Checking available space and prior candidates";
-        Plan(UUID operator, Consumer<String> notice) {
+        Plan(UUID operator, Consumer<String> notice, MaintenanceSnapshot baseline) {
             this.operator = operator;
             this.notice = notice;
+            this.baseline = baseline;
         }
     }
 
@@ -151,11 +153,12 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                     && System.currentTimeMillis() - waiting.consentRequestedAt > CONSENT_MILLIS) {
                 current.compareAndSet(waiting, null);
             }
-            if (!MaintenanceUiActions.canSchedule(state.snapshot())) {
+            MaintenanceSnapshot baseline = state.snapshot();
+            if (!MaintenanceUiActions.canSchedule(baseline)) {
                 return CompletableFuture.completedFuture(new StartResult(ResultType.REFUSED,
                         "Another maintenance operation is active. Review status or cancel safely.", ""));
             }
-            plan = new Plan(operator, notifier);
+            plan = new Plan(operator, notifier, baseline);
             if (!current.compareAndSet(null, plan)) {
                 return CompletableFuture.completedFuture(new StartResult(ResultType.REFUSED,
                         "Automatic maintenance is already being prepared. Do not start it twice.", ""));
@@ -172,7 +175,8 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                     try {
                         if (!owned(plan)) return; // Cancel won before task began.
                         MaintenanceSnapshot snapshot = state.snapshot();
-                        if (!MaintenanceUiActions.canSchedule(snapshot)
+                        if (!snapshot.equals(plan.baseline)
+                                || !MaintenanceUiActions.canSchedule(snapshot)
                                 || !loggingWritable.getAsBoolean()) {
                             throw new IOException("Maintenance state/logging changed "
                                     + "during candidate quarantine; files preserved");
@@ -198,7 +202,7 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
             plan.stage = "Inspecting SQLite size, quota and native temp headroom";
             return preflight.run(chosen);
         }).thenCompose(report -> {
-            if (!owned(plan) || !MaintenanceUiActions.canSchedule(state.snapshot())
+            if (!owned(plan) || !state.snapshot().equals(plan.baseline)
                     || !loggingWritable.getAsBoolean()) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("Maintenance changed during capacity preflight"));
@@ -238,8 +242,8 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
                             "Preparation cancelled before countdown submission");
                 }
                 plan.scheduling = true;
-                return state.schedule(operator, now, now + seconds * 1_000L,
-                        MaintenancePolicy.STRICT).thenApply(saved -> {
+                return state.scheduleIfUnchanged(operator, now, now + seconds * 1_000L,
+                        MaintenancePolicy.STRICT, plan.baseline).thenApply(saved -> {
                             if (!owned(plan) || saved.phase() != MaintenancePhase.COUNTDOWN
                                     || !saved.operationId().equals(state.snapshot().operationId())) {
                                 throw new IllegalStateException("Countdown was cancelled or "
@@ -355,6 +359,11 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
         Plan plan = current.get();
         return plan != null && !closed && !plan.operationId.isBlank()
                 && plan.operationId.equals(operationId);
+    }
+
+    /** Prevent the advanced/manual path from bypassing a pending auto preflight. */
+    boolean blocksManualStart() {
+        return !closed && (current.get() != null || archiveMutationLock.isLocked());
     }
 
     /** Cancel only while the DB is still IDLE, before any countdown was saved. */
@@ -473,7 +482,19 @@ final class AutomaticMaintenanceWorkflow implements AutoCloseable {
 
     @Override
     public void close() {
+        // A plugin-only reload must not permit the next plugin instance to
+        // create a candidate while an old archiver is still inside its
+        // ownership check / atomic directory rename. Stop new plans first,
+        // then DRAIN the old filesystem critical section before onDisable
+        // returns. This is a short bounded-entry directory rename/fsync,
+        // never a full database scan. Queued tasks later see !owned(plan).
         closed = true;
         current.set(null);
+        archiveMutationLock.lock();
+        try {
+            // Lock acquisition proves any already-running rename finished.
+        } finally {
+            archiveMutationLock.unlock();
+        }
     }
 }
