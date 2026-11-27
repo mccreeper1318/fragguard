@@ -58,8 +58,14 @@ class AutomaticMaintenanceWorkflowTest {
             java.util.function.BooleanSupplier writable,
             AutomaticMaintenanceWorkflow.CandidateArchiver archiver, Executor archiveExecutor) {
         when(coordinator.snapshot()).thenAnswer(ignored -> state.get());
-        when(coordinator.schedule(eq(ADMIN), anyLong(), anyLong(), eq(MaintenancePolicy.STRICT)))
+        when(coordinator.scheduleIfUnchanged(eq(ADMIN), anyLong(), anyLong(),
+                eq(MaintenancePolicy.STRICT), any(MaintenanceSnapshot.class)))
                 .thenAnswer(args -> {
+                    MaintenanceSnapshot expected = args.getArgument(4);
+                    if (!state.get().equals(expected)) {
+                        return CompletableFuture.failedFuture(
+                                new IllegalStateException("Maintenance generation changed"));
+                    }
                     MaintenanceSnapshot fresh = MaintenanceSnapshot.scheduled(
                             args.getArgument(0), args.getArgument(1), args.getArgument(2),
                             MaintenancePolicy.STRICT);
@@ -100,8 +106,8 @@ class AutomaticMaintenanceWorkflowTest {
             assertTrue(messages.stream().anyMatch(m -> m.contains("continue to be logged")));
             assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
                     auto.start(ADMIN, messages::add, false).join().type());
-            verify(coordinator, times(1)).schedule(eq(ADMIN), anyLong(), anyLong(),
-                    eq(MaintenancePolicy.STRICT));
+            verify(coordinator, times(1)).scheduleIfUnchanged(eq(ADMIN), anyLong(), anyLong(),
+                    eq(MaintenancePolicy.STRICT), any(MaintenanceSnapshot.class));
         }
     }
 
@@ -113,7 +119,8 @@ class AutomaticMaintenanceWorkflowTest {
             assertEquals(AutomaticMaintenanceWorkflow.ResultType.NEEDS_CAPACITY_ACK,
                     pending.type());
             assertEquals(MaintenancePhase.IDLE, state.get().phase());
-            verify(coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+            verify(coordinator, never()).scheduleIfUnchanged(any(), anyLong(), anyLong(), any(),
+                    any(MaintenanceSnapshot.class));
             var confirmed = auto.start(ADMIN, messages::add, true).join();
             assertEquals(AutomaticMaintenanceWorkflow.ResultType.COUNTDOWN_STARTED,
                     confirmed.type());
@@ -135,7 +142,8 @@ class AutomaticMaintenanceWorkflowTest {
             assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED, refused.type());
             assertTrue(refused.detail().contains("logging is not writable"));
             verifyNoInteractions(preflight, compaction, verifier, policy);
-            verify(coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+            verify(coordinator, never()).scheduleIfUnchanged(any(), anyLong(), anyLong(), any(),
+                    any(MaintenanceSnapshot.class));
             assertEquals(MaintenancePhase.IDLE, state.get().phase());
         }
     }
@@ -148,7 +156,8 @@ class AutomaticMaintenanceWorkflowTest {
             assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED, refused.type());
             assertTrue(refused.detail().contains("insufficient"));
             assertEquals(MaintenancePhase.IDLE, state.get().phase());
-            verify(coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+            verify(coordinator, never()).scheduleIfUnchanged(any(), anyLong(), anyLong(), any(),
+                    any(MaintenanceSnapshot.class));
             verifyNoInteractions(compaction, verifier, policy);
         }
     }
@@ -332,7 +341,8 @@ class AutomaticMaintenanceWorkflowTest {
             outstanding.complete(CompactionStoragePreflight.evaluate(measure(), known()));
             assertEquals(AutomaticMaintenanceWorkflow.ResultType.REFUSED,
                     task.join().type());
-            verify(coordinator, never()).schedule(any(), anyLong(), anyLong(), any());
+            verify(coordinator, never()).scheduleIfUnchanged(any(), anyLong(), anyLong(), any(),
+                    any(MaintenanceSnapshot.class));
             verifyNoInteractions(compaction, verifier, policy);
         }
     }
@@ -347,8 +357,8 @@ class AutomaticMaintenanceWorkflowTest {
             doAnswer(args -> {
                 submitted.countDown(); // Worker handoff occurred, durable commit pending.
                 return saving;
-            }).when(coordinator).schedule(eq(ADMIN), anyLong(), anyLong(),
-                    eq(MaintenancePolicy.STRICT));
+            }).when(coordinator).scheduleIfUnchanged(eq(ADMIN), anyLong(), anyLong(),
+                    eq(MaintenancePolicy.STRICT), any(MaintenanceSnapshot.class));
             var starting = auto.start(ADMIN, messages::add, false);
             assertTrue(submitted.await(10, java.util.concurrent.TimeUnit.SECONDS));
             assertTrue(auto.countdownScheduling(ADMIN));
@@ -377,8 +387,8 @@ class AutomaticMaintenanceWorkflowTest {
             doAnswer(args -> {
                 submitted.countDown();
                 return saving;
-            }).when(coordinator).schedule(eq(ADMIN), anyLong(), anyLong(),
-                    eq(MaintenancePolicy.STRICT));
+            }).when(coordinator).scheduleIfUnchanged(eq(ADMIN), anyLong(), anyLong(),
+                    eq(MaintenancePolicy.STRICT), any(MaintenanceSnapshot.class));
             var starting = auto.start(ADMIN, messages::add, false);
             assertTrue(submitted.await(10, java.util.concurrent.TimeUnit.SECONDS));
             MaintenanceSnapshot persisted = MaintenanceSnapshot.scheduled(ADMIN,
