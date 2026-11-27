@@ -134,11 +134,17 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                 }
                 if ("cancel".equals(action) && args.length == 2) {
                     AutomaticMaintenanceWorkflow automatic = plugin.getAutomaticMaintenance();
-                    sender.sendMessage(automatic != null
-                            && automatic.cancelPreparation(CONSOLE_MAINTENANCE_OPERATOR)
-                            ? "Pre-countdown automatic maintenance cancelled safely."
-                            : "No console pre-countdown maintenance to cancel. "
-                                    + "In-progress stages require an in-game administrator.");
+                    if (automatic != null
+                            && automatic.cancelPreparation(CONSOLE_MAINTENANCE_OPERATOR)) {
+                        sender.sendMessage("Pre-countdown automatic maintenance cancelled safely.");
+                    } else if (automatic != null
+                            && automatic.quarantineInProgress(CONSOLE_MAINTENANCE_OPERATOR)) {
+                        sender.sendMessage("Candidate evidence is currently being archived. "
+                                + "Cancellation is NOT confirmed; retry after archiving finishes.");
+                    } else {
+                        sender.sendMessage("No cancellable console preparation. "
+                                + "In-progress stages require an in-game administrator.");
+                    }
                     return true;
                 }
                 if ("start".equals(action)
@@ -2074,6 +2080,12 @@ final class FragGuardCommand implements CommandExecutor, TabCompleter, Listener 
                         && automatic.cancelPreparation(player.getUniqueId())) {
                     player.sendMessage(color("&aPre-countdown storage check cancelled. "
                             + "No history freeze or SQLite replacement started."));
+                    return;
+                }
+                if (automatic != null
+                        && automatic.quarantineInProgress(player.getUniqueId())) {
+                    player.sendMessage(color("&eFragGuard is archiving old candidate evidence. "
+                            + "Nothing has been cancelled yet; retry when the archive finishes."));
                     return;
                 }
                 if (automatic != null && automatic.countdownScheduling(player.getUniqueId())) {
